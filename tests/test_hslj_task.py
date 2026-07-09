@@ -278,8 +278,8 @@ class BattleFlowHsljTask(FakeHsljTask):
             return self.panel_visible_results.pop(0)
         return False
 
-    def auto_battle(self, skill_pages: int = 2, repeat_count: int = 3, interval_ms: int = 500) -> None:
-        self.auto_battle_calls.append((skill_pages, repeat_count, interval_ms))
+    def auto_battle(self, interval_ms: int = 500) -> None:
+        self.auto_battle_calls.append(interval_ms)
 
 
 class ReadyWaitHsljTask(HSLJTask):
@@ -289,6 +289,7 @@ class ReadyWaitHsljTask(HSLJTask):
         confirm_results: list[bool] | None = None,
         ready_results: list[bool] | None = None,
         result_results: list[bool] | None = None,
+        match_success_results: list[bool] | None = None,
         panel_results: list[bool] | None = None,
         complete_1v1_results: list[bool] | None = None,
         complete_3v3_results: list[bool] | None = None,
@@ -298,6 +299,7 @@ class ReadyWaitHsljTask(HSLJTask):
         self.confirm_results = confirm_results or []
         self.ready_results = ready_results or []
         self.result_results = result_results or []
+        self.match_success_results = match_success_results or []
         self.panel_results = panel_results or []
         self.complete_1v1_results = complete_1v1_results or []
         self.complete_3v3_results = complete_3v3_results or []
@@ -315,6 +317,9 @@ class ReadyWaitHsljTask(HSLJTask):
 
     def is_result_panel_visible_quiet(self) -> bool:
         return self.result_results.pop(0) if self.result_results else False
+
+    def is_match_success_visible_quiet(self) -> bool:
+        return self.match_success_results.pop(0) if self.match_success_results else False
 
     def is_hslj_panel_visible_quiet(self) -> bool:
         return self.panel_results.pop(0) if self.panel_results else False
@@ -529,6 +534,16 @@ def test_hslj_click_match_confirms_leave_team_dialog():
 
     task.click_match_button()
 
+    assert task.roi_calls == [
+        (
+            task.BTN_HSLJ_MATCH_TEMPLATES,
+            task.ROI_MATCH_BUTTON,
+            3000,
+            "华山论剑匹配按钮",
+            0.85,
+            500,
+        )
+    ]
     assert task.clicked_points == []
     assert task.find_once_calls == [
         (
@@ -549,6 +564,24 @@ def test_hslj_click_match_continues_when_already_matching():
 
     task.click_match_button()
 
+    assert task.roi_calls == [
+        (
+            task.BTN_HSLJ_MATCH_TEMPLATES,
+            task.ROI_MATCH_BUTTON,
+            3000,
+            "华山论剑匹配按钮",
+            0.85,
+            500,
+        ),
+        (
+            task.BTN_HSLJ_MATCH_EXIT_TEMPLATES,
+            task.ROI_MATCH_BUTTON,
+            1200,
+            "华山论剑取消匹配按钮",
+            0.85,
+            300,
+        ),
+    ]
     assert task.click_offsets == []
     assert task.clicked_points == []
     assert task.find_once_calls == [
@@ -569,6 +602,24 @@ def test_hslj_click_match_raises_when_state_button_missing():
     with pytest.raises(RuntimeError, match="未识别到华山论剑匹配状态按钮"):
         task.click_match_button()
 
+    assert task.roi_calls == [
+        (
+            task.BTN_HSLJ_MATCH_TEMPLATES,
+            task.ROI_MATCH_BUTTON,
+            3000,
+            "华山论剑匹配按钮",
+            0.85,
+            500,
+        ),
+        (
+            task.BTN_HSLJ_MATCH_EXIT_TEMPLATES,
+            task.ROI_MATCH_BUTTON,
+            1200,
+            "华山论剑取消匹配按钮",
+            0.85,
+            300,
+        ),
+    ]
     assert task.debug_prefixes == ["hslj_match_button_missing"]
     assert task.click_offsets == []
     assert task.clicked_points == []
@@ -586,6 +637,20 @@ def test_hslj_ready_wait_returns_when_1v1_completed_on_panel():
     assert task.click_offsets == []
     assert task.wait_calls == []
     assert "华山论剑 1v1 第 1 场已完成并返回面板" in task.logs
+
+
+def test_hslj_ready_wait_continues_on_match_success_transition():
+    task = ReadyWaitHsljTask(
+        ready_results=[False, True],
+        match_success_results=[True],
+    )
+
+    state = task.click_ready_button("3v3", 1)
+
+    assert state == task.MATCH_READY_STATE_READY
+    assert task.click_offsets == [0]
+    assert task.wait_calls == [task.MATCH_WAIT_POLL_INTERVAL_MS, 1000]
+    assert "华山论剑 3v3 第 1 场匹配成功，等待准备/入场" in task.logs
 
 
 def test_hslj_ready_wait_times_out_with_debug_screenshot():
@@ -769,7 +834,7 @@ def test_run_match_battle_clicks_ready_battles_and_exits_result_panel():
     ]
     assert task.click_offsets == [0, 0]
     assert task.swipe_calls == [(105, 455, 105, 385, task.BATTLE_FORWARD_MS)]
-    assert task.auto_battle_calls == [(1, 1, task.AUTO_BATTLE_INTERVAL_MS)]
+    assert task.auto_battle_calls == [task.AUTO_BATTLE_INTERVAL_MS]
     assert task.wait_calls == [1000, 3000]
 
 
@@ -834,5 +899,5 @@ def test_run_match_battle_stops_auto_battle_when_panel_has_returned():
     ]
     assert task.click_offsets == [0]
     assert task.swipe_calls == [(105, 455, 105, 385, task.BATTLE_FORWARD_MS)]
-    assert task.auto_battle_calls == [(1, 1, task.AUTO_BATTLE_INTERVAL_MS)]
+    assert task.auto_battle_calls == [task.AUTO_BATTLE_INTERVAL_MS]
     assert task.wait_calls == [1000]

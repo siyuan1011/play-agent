@@ -202,8 +202,8 @@ class BattleFlowJhyxbTask(FakeJhyxbTask):
             return self.panel_visible_results.pop(0)
         return False
 
-    def auto_battle(self, skill_pages: int = 2, repeat_count: int = 3, interval_ms: int = 500) -> None:
-        self.auto_battle_calls.append((skill_pages, repeat_count, interval_ms))
+    def auto_battle(self, interval_ms: int = 500) -> None:
+        self.auto_battle_calls.append(interval_ms)
 
 
 class ReadyWaitJhyxbTask(JianghuYingxiongbangTask):
@@ -448,7 +448,7 @@ def test_run_match_battle_clicks_ready_walks_battles_and_exits_result_panel():
     ]
     assert task.click_offsets == [0, 0]
     assert task.swipe_calls == [(105, 455, 105, 385, task.BATTLE_FORWARD_MS)]
-    assert task.auto_battle_calls == [(1, 1, task.AUTO_BATTLE_INTERVAL_MS)]
+    assert task.auto_battle_calls == [task.AUTO_BATTLE_INTERVAL_MS]
     assert task.wait_calls == [1000, 3000]
 
 
@@ -477,7 +477,7 @@ def test_run_match_battle_stops_auto_battle_when_panel_has_returned():
     ]
     assert task.click_offsets == [0]
     assert task.swipe_calls == [(105, 455, 105, 385, task.BATTLE_FORWARD_MS)]
-    assert task.auto_battle_calls == [(1, 1, task.AUTO_BATTLE_INTERVAL_MS)]
+    assert task.auto_battle_calls == [task.AUTO_BATTLE_INTERVAL_MS]
     assert task.wait_calls == [1000]
 
 

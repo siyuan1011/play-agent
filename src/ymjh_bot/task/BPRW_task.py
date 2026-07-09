@@ -16,6 +16,8 @@ class BPRWTask(YmGameTask):
     BTN_BANGPAI_TASK_FORWARD = str(YmGameTask.TEMPLATES_DIR / "btn_bangpai_task_forward.png")
     BTN_BANGPAI_TASK_ACCEPT = str(YmGameTask.TEMPLATES_DIR / "btn_bangpai_task_accept.png")
     TEXT_BANGPAI = str(YmGameTask.TEMPLATES_DIR / "text_bangpai.png")
+    TEXT_BANGPAI_DAILY = str(YmGameTask.TEMPLATES_DIR / "text_bangpai_daily.png")
+    SIDEBAR_BANGPAI_TASK_TEMPLATES = [TEXT_BANGPAI, TEXT_BANGPAI_DAILY]
     ROUTE_WAREHOUSE = str(YmGameTask.TEMPLATES_DIR / "route_bangpai_warehouse.png")
     ROUTE_STALL = str(YmGameTask.TEMPLATES_DIR / "route_bangpai_stall.png")
     BTN_WAREHOUSE_SUBMIT = str(YmGameTask.TEMPLATES_DIR / "btn_menke_warehouse_submit.png")
@@ -38,7 +40,6 @@ class BPRWTask(YmGameTask):
 
     TASK_FLOW_TIMEOUT_MS = 900000
     TASK_FLOW_RETRY_WAIT_MS = 3000
-    TASK_MISSING_CONFIRMATION_LIMIT = 3
     TASK_IDLE_CLICK_LIMIT = 3
     TRADE_BUY_THRESHOLD = 0.7
 
@@ -181,14 +182,7 @@ class BPRWTask(YmGameTask):
 
             idle_task_clicks = 0
             missing_task_confirmations += 1
-            if missing_task_confirmations >= self.TASK_MISSING_CONFIRMATION_LIMIT:
-                self._log("江湖任务栏连续未找到帮派任务，确认帮派任务执行完成")
-                return
-
-            self._log(
-                "江湖任务栏暂未找到帮派任务，继续确认 "
-                f"{missing_task_confirmations}/{self.TASK_MISSING_CONFIRMATION_LIMIT}"
-            )
+            self._log(f"江湖任务栏暂未找到帮派任务，继续等待完成信号 ({missing_task_confirmations})")
             self.wait(self.TASK_FLOW_RETRY_WAIT_MS)
 
         raise RuntimeError("帮派任务执行流程超时：未检测到完成对话或明确任务追踪消失")
@@ -203,6 +197,7 @@ class BPRWTask(YmGameTask):
         self._log("点击任务栏帮派任务")
         self.click()
         self.wait(1500)
+        self.confirm_sidebar_task_popup_if_needed()
         return True
 
     def find_bangpai_task_in_sidebar(self, max_scrolls: int = 5) -> bool:
@@ -210,10 +205,10 @@ class BPRWTask(YmGameTask):
         self.switch_task_panel("江湖")
         for attempt in range(max_scrolls + 1):
             if self.wait_find_image_in_roi(
-                self.TEXT_BANGPAI,
+                self.SIDEBAR_BANGPAI_TASK_TEMPLATES,
                 self.ROI_TASK_LIST,
                 timeout_ms=1200,
-                description="任务栏帮派任务",
+                description="任务栏帮派任务或日常环",
                 threshold=0.7,
                 interval_ms=300,
             ):
@@ -224,6 +219,18 @@ class BPRWTask(YmGameTask):
                 self.scroll_task_list_down()
 
         return False
+
+    def confirm_sidebar_task_popup_if_needed(self) -> bool:
+        """Confirm transient prompts that can appear after clicking a sidebar tracker."""
+        if not self.click_template_if_available(
+            self.BTN_MODAL_OK,
+            timeout_ms=2000,
+            description="任务栏帮派任务弹框确定按钮",
+            threshold=0.85,
+            wait_after_click_ms=1000,
+        ):
+            return False
+        return True
 
     def ensure_left_task_sidebar_visible(self) -> None:
         """Open only the compact left task sidebar without switching task panels."""

@@ -267,9 +267,27 @@ def test_hslj_templates_match_reference_screenshots():
             0.95,
         ),
         (
+            root / "screenshots" / "hslj_match_button_missing_20260709_102308_652091.png",
+            root / "src/ymjh_bot/templates/btn_hslj_match_3v3.png",
+            (850, 535, 220, 115),
+            0.95,
+        ),
+        (
             root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260708_234923.png",
             root / "src/ymjh_bot/templates/btn_hslj_match_exit.png",
             (850, 535, 220, 115),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_112937.png",
+            root / "src/ymjh_bot/templates/btn_hslj_match_exit_3v3.png",
+            (850, 535, 220, 115),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_112329.png",
+            root / "src/ymjh_bot/templates/text_hslj_match_success.png",
+            (500, 360, 300, 120),
             0.95,
         ),
         (
@@ -346,6 +364,24 @@ def test_bangpai_templates_match_reference_screenshots():
             (40, 570, 650, 90),
             0.95,
         ),
+        (
+            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_180549.png",
+            root / "src/ymjh_bot/templates/text_bangpai_daily.png",
+            (40, 135, 330, 430),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_194405.png",
+            root / "src/ymjh_bot/templates/text_bangpai_daily.png",
+            (40, 135, 330, 430),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_194405.png",
+            root / "src/ymjh_bot/templates/btn_modal_ok.png",
+            None,
+            0.95,
+        ),
     ]
 
     engine = VisionEngine()
@@ -354,6 +390,14 @@ def test_bangpai_templates_match_reference_screenshots():
 
         assert result.found is True
         assert result.score >= threshold
+
+    daily_result = engine.match_template(
+        load_image(root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_180549.png"),
+        str(root / "src/ymjh_bot/templates/text_bangpai.png"),
+        threshold=0.7,
+        roi=(40, 135, 330, 430),
+    )
+    assert daily_result.found is False
 
 
 def test_kyrw_templates_match_reference_screenshots():

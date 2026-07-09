@@ -55,7 +55,7 @@ class JianghuYingxiongbangTask(YmGameTask):
     MATCH_WAIT_POLL_INTERVAL_MS = 1000
     MATCH_WAIT_HEARTBEAT_MS = 10000
     BATTLE_FORWARD_MS = 3000
-    AUTO_BATTLE_INTERVAL_MS = 150
+    AUTO_BATTLE_INTERVAL_MS = 250
     MATCH_READY_STATE_READY = "ready"
     BATTLE_FINISH_RESULT_PANEL = "result_panel"
     BATTLE_FINISH_RETURNED_PANEL = "jhyxb_panel"
@@ -368,7 +368,7 @@ class JianghuYingxiongbangTask(YmGameTask):
                 self._log("结果面板退出按钮模板尚未生成，将持续自动战斗并在超时时保存截图")
                 missing_template_logged = True
 
-            self.auto_battle(skill_pages=1, repeat_count=1, interval_ms=self.AUTO_BATTLE_INTERVAL_MS)
+            self.auto_battle(interval_ms=self.AUTO_BATTLE_INTERVAL_MS)
 
             if self.is_result_panel_visible():
                 self._log(f"第 {match_index} 次战斗结果面板已出现")

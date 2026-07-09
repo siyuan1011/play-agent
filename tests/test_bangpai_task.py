@@ -214,8 +214,26 @@ def test_find_bangpai_task_in_sidebar_scrolls_until_found():
     assert task.find_bangpai_task_in_sidebar(max_scrolls=2)
 
     assert task.switch_panel_calls == [("江湖", 3000, 0.8, 500)]
+    assert task.roi_calls[0][0] == task.SIDEBAR_BANGPAI_TASK_TEMPLATES
     assert task.scroll_calls == 2
     assert len(task.roi_calls) == 3
+
+
+def test_find_bangpai_task_in_sidebar_matches_daily_keyword_template():
+    task = FakeBPRWTask(roi_results=[True])
+
+    assert task.find_bangpai_task_in_sidebar(max_scrolls=0)
+
+    assert task.roi_calls == [
+        (
+            task.SIDEBAR_BANGPAI_TASK_TEMPLATES,
+            task.ROI_TASK_LIST,
+            1200,
+            "任务栏帮派任务或日常环",
+            0.7,
+            300,
+        )
+    ]
 
 
 def test_click_bangpai_task_from_sidebar_switches_to_jianghu_before_click():
@@ -225,6 +243,16 @@ def test_click_bangpai_task_from_sidebar_switches_to_jianghu_before_click():
 
     assert task.switch_panel_calls == [("江湖", 3000, 0.8, 500)]
     assert task.click_count == 1
+
+
+def test_click_bangpai_task_from_sidebar_confirms_popup_when_visible():
+    task = FakeBPRWTask(roi_results=[True], click_template_results=[True])
+
+    assert task.click_bangpai_task_from_sidebar(max_scrolls=0, required=True)
+
+    assert task.click_template_calls == [
+        (task.BTN_MODAL_OK, 2000, "任务栏帮派任务弹框确定按钮", 0.85, 1000, None),
+    ]
 
 
 def test_resume_existing_task_clicks_and_jumps_to_run_flow():
@@ -323,21 +351,18 @@ def test_submit_panel_clicks_one_key_submit_and_confirms():
     ]
 
 
-def test_run_task_flow_confirms_missing_jianghu_tracker_before_success():
+def test_run_task_flow_times_out_when_sidebar_tracker_is_missing():
     task = FakeBPRWTask(
-        roi_results=[False, False, False, False, False, False, False, False, False],
-        deadline_expired_results=[False, False, False],
+        roi_results=[False, False, False],
+        deadline_expired_results=[False, True],
     )
 
-    task.run_task_flow()
+    with pytest.raises(RuntimeError, match="帮派任务执行流程超时"):
+        task.run_task_flow()
 
-    assert task.switch_panel_calls == [
-        ("江湖", 3000, 0.8, 500),
-        ("江湖", 3000, 0.8, 500),
-        ("江湖", 3000, 0.8, 500),
-    ]
-    assert task.scroll_calls == 6
-    assert "江湖任务栏连续未找到帮派任务，确认帮派任务执行完成" in task.logs
+    assert task.switch_panel_calls == [("江湖", 3000, 0.8, 500)]
+    assert task.scroll_calls == 2
+    assert "江湖任务栏暂未找到帮派任务，继续等待完成信号 (1)" in task.logs
 
 
 def test_run_task_flow_times_out_instead_of_succeeding_after_idle_sidebar_clicks():

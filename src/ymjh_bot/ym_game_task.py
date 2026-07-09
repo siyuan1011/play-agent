@@ -80,6 +80,11 @@ class YmGameTask(GameTask):
     POINT_HUODONG_SHEJIAO = (882, 680)
     POINT_MAIN_TASK = (22, 160)
     POINT_MAIN_TEAM = (22, 276)
+    POINT_MINIMAP = (1198, 45)
+    POINT_LOCAL_MAP_WORLD = (1235, 668)
+    POINT_WORLD_MAP_JINLING = (902, 215)
+    POINT_JINLING_JIMING_TEMPLE = (532, 122)
+    POINT_MAP_CLOSE = (1238, 45)
     POINT_TASK_TAB_TASK = (88, 124)
     POINT_TASK_TAB_JIANGHU = (174, 124)
     POINT_TASK_TAB_QIYU = (258, 124)
@@ -99,7 +104,11 @@ class YmGameTask(GameTask):
         (1055, 653),
     )
     DIRECTION_JOYSTICK_RADIUS = 70
-    BATTLE_PAGE_ROUND_COUNT = 4
+    BATTLE_SKILL_PAGE_COUNT = 2
+    BATTLE_PAGE_ROUND_COUNT = 2
+    BATTLE_NORMAL_ATTACK_COUNT = 3
+    BATTLE_SKILL_BUTTON_COUNT = 4
+    BATTLE_SKILL_BUTTON_TAP_COUNT = 1
 
     ROI_HEALTH_BAR = (74, 27, 260, 20)
     ROI_BIAOQING_BUTTON = (330, 650, 90, 70)
@@ -261,36 +270,31 @@ class YmGameTask(GameTask):
         """Walk right by dragging the movement joystick rightward."""
         self.walk("right", duration_ms=duration_ms)
 
-    def auto_battle(
-        self,
-        skill_pages: int = 2,
-        repeat_count: int = 3,
-        interval_ms: int = 500,
-    ) -> None:
-        """Cycle normal attacks and battle skills by page, then return to the first page."""
-        if skill_pages < 1:
-            raise ValueError("skill_pages must be at least 1")
-        if repeat_count < 1:
-            raise ValueError("repeat_count must be at least 1")
+    def auto_battle(self, interval_ms: int = 500) -> None:
+        """Run the fixed two-page battle rhythm and return to the first skill page."""
         if interval_ms < 0:
             raise ValueError("interval_ms must be greater than or equal to 0")
 
         self._log(
-            f"开始自动战斗：技能页 {skill_pages} 页，每页循环 {self.BATTLE_PAGE_ROUND_COUNT} 轮，"
-            f"每个按钮点击 {repeat_count} 次"
+            f"开始自动战斗：技能页 {self.BATTLE_SKILL_PAGE_COUNT} 页，每页循环 {self.BATTLE_PAGE_ROUND_COUNT} 轮，"
+            f"普攻 {self.BATTLE_NORMAL_ATTACK_COUNT} 次，技能位各点击 {self.BATTLE_SKILL_BUTTON_TAP_COUNT} 次"
         )
 
-        for page_index in range(skill_pages):
+        skill_points = self.POINT_BATTLE_SKILL_BUTTONS[: self.BATTLE_SKILL_BUTTON_COUNT]
+        for _ in range(self.BATTLE_SKILL_PAGE_COUNT):
             for _ in range(self.BATTLE_PAGE_ROUND_COUNT):
-                self._tap_battle_button(self.POINT_BATTLE_NORMAL_ATTACK, repeat_count, interval_ms)
-                for skill_point in self.POINT_BATTLE_SKILL_BUTTONS:
-                    self._tap_battle_button(skill_point, repeat_count, interval_ms)
+                self._tap_battle_button(
+                    self.POINT_BATTLE_NORMAL_ATTACK,
+                    self.BATTLE_NORMAL_ATTACK_COUNT,
+                    interval_ms,
+                )
+                for skill_point in skill_points:
+                    self._tap_battle_button(
+                        skill_point,
+                        self.BATTLE_SKILL_BUTTON_TAP_COUNT,
+                        interval_ms,
+                    )
 
-            if page_index < skill_pages - 1:
-                self.turn_battle_skill_page()
-                self.wait(interval_ms)
-
-        if skill_pages > 1:
             self.turn_battle_skill_page()
             self.wait(interval_ms)
 
@@ -308,10 +312,10 @@ class YmGameTask(GameTask):
     def _tap_battle_button(
         self,
         point: tuple[int, int],
-        repeat_count: int,
+        tap_count: int,
         interval_ms: int,
     ) -> None:
-        for _ in range(repeat_count):
+        for _ in range(tap_count):
             self.click_point(point[0], point[1], offset=0)
             self.wait(interval_ms)
 
@@ -687,6 +691,7 @@ class YmGameTask(GameTask):
         *,
         timeout_ms: int = 5000,
         wait_after_click_ms: int = 500,
+        back_safe: bool = False,
     ) -> None:
         """Close visible panels by repeatedly tapping known close buttons."""
         targets = templates or [self.BTN_CLOSE, self.BTN_PANE_CLOSE, self.BTN_WELCOME_CLOSE]
@@ -696,6 +701,31 @@ class YmGameTask(GameTask):
             self.wait(wait_after_click_ms)
         self.collapse_chat_if_open()
         self._log("已关闭所有弹窗")
+        if back_safe:
+            self.return_to_safe_zone()
+
+    def return_to_safe_zone(
+        self,
+        path_timeout_ms: int = 90000,
+        wait_after_click_ms: int = 1000,
+    ) -> None:
+        """Use the map to auto-path back to Jinling Jiming Temple."""
+        if not self.is_game_main_ready():
+            raise RuntimeError("当前不是干净主界面，无法返回鸡鸣寺安全区")
+
+        self._log("开始返回鸡鸣寺安全区")
+        for point in (
+            self.POINT_MINIMAP,
+            self.POINT_LOCAL_MAP_WORLD,
+            self.POINT_WORLD_MAP_JINLING,
+            self.POINT_JINLING_JIMING_TEMPLE,
+            self.POINT_MAP_CLOSE,
+        ):
+            self.click_point(point[0], point[1], offset=0)
+            self.wait(wait_after_click_ms)
+
+        self.wait_auto_pathfinding(timeout_ms=path_timeout_ms)
+        self._log("已回到鸡鸣寺安全区")
 
     def find_image_once(
         self,

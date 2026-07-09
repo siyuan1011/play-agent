@@ -28,7 +28,11 @@ class HSLJTask(YmGameTask):
     TAB_HSLJ_1V1_ACTIVE = str(YmGameTask.TEMPLATES_DIR / "tab_hslj_1v1_active.png")
     TAB_HSLJ_3V3_ACTIVE = str(YmGameTask.TEMPLATES_DIR / "tab_hslj_3v3_active.png")
     BTN_HSLJ_MATCH = str(YmGameTask.TEMPLATES_DIR / "btn_hslj_match.png")
+    BTN_HSLJ_MATCH_3V3 = str(YmGameTask.TEMPLATES_DIR / "btn_hslj_match_3v3.png")
     BTN_HSLJ_MATCH_EXIT = str(YmGameTask.TEMPLATES_DIR / "btn_hslj_match_exit.png")
+    BTN_HSLJ_MATCH_EXIT_3V3 = str(YmGameTask.TEMPLATES_DIR / "btn_hslj_match_exit_3v3.png")
+    BTN_HSLJ_MATCH_TEMPLATES = [BTN_HSLJ_MATCH, BTN_HSLJ_MATCH_3V3]
+    BTN_HSLJ_MATCH_EXIT_TEMPLATES = [BTN_HSLJ_MATCH_EXIT, BTN_HSLJ_MATCH_EXIT_3V3]
     BTN_HSLJ_READY = str(YmGameTask.TEMPLATES_DIR / "btn_hslj_ready.png")
     ICON_HSLJ_FIRST_WIN = str(YmGameTask.TEMPLATES_DIR / "icon_hslj_first_win.png")
     ICON_HSLJ_FIRST_WIN_READY = str(YmGameTask.TEMPLATES_DIR / "icon_hslj_first_win_ready.png")
@@ -36,6 +40,7 @@ class HSLJTask(YmGameTask):
     TEXT_HSLJ_1V1_COMPLETE = str(YmGameTask.TEMPLATES_DIR / "text_hslj_1v1_complete.png")
     TEXT_HSLJ_3V3_COMPLETE = str(YmGameTask.TEMPLATES_DIR / "text_hslj_3v3_complete.png")
     TEXT_HSLJ_EXIT = str(YmGameTask.TEMPLATES_DIR / "text_exit.png")
+    TEXT_HSLJ_MATCH_SUCCESS = str(YmGameTask.TEMPLATES_DIR / "text_hslj_match_success.png")
 
     # 固定坐标点 (设计分辨率 1280x720 下)
     POINT_ACTIVITY_HSLJ_ICON = (220, 222)
@@ -51,6 +56,7 @@ class HSLJTask(YmGameTask):
     ROI_PANEL_TITLE = (170, 45, 330, 80)
     ROI_SIDE_TABS = (1035, 115, 165, 285)
     ROI_MATCH_BUTTON = (850, 535, 220, 115)
+    ROI_MATCH_SUCCESS = (500, 360, 300, 120)
     ROI_FIRST_WIN_CHEST = (900, 450, 130, 100)
     ROI_1V1_COMPLETE = (730, 455, 230, 85)
     ROI_3V3_COMPLETE = (730, 455, 230, 85)
@@ -83,7 +89,7 @@ class HSLJTask(YmGameTask):
     MATCH_WAIT_POLL_INTERVAL_MS = 1000
     MATCH_WAIT_HEARTBEAT_MS = 10000
     BATTLE_FORWARD_MS = 5000
-    AUTO_BATTLE_INTERVAL_MS = 150
+    AUTO_BATTLE_INTERVAL_MS = 250
     MATCH_READY_STATE_READY = "ready"
     BATTLE_FINISH_RESULT_PANEL = "result_panel"
     BATTLE_FINISH_RETURNED_PANEL = "hslj_panel"
@@ -512,7 +518,7 @@ class HSLJTask(YmGameTask):
     def click_match_button(self) -> None:
         """Click the Huashan Lunjian match button."""
         if self.wait_find_image_in_roi(
-            self.BTN_HSLJ_MATCH,
+            self.BTN_HSLJ_MATCH_TEMPLATES,
             self.ROI_MATCH_BUTTON,
             timeout_ms=3000,
             description="华山论剑匹配按钮",
@@ -524,8 +530,9 @@ class HSLJTask(YmGameTask):
             self.confirm_match_leave_team_dialog_if_needed("华山论剑")
             return
 
+        match_score = getattr(self, "_last_match_score", 0.0)
         if self.wait_find_image_in_roi(
-            self.BTN_HSLJ_MATCH_EXIT,
+            self.BTN_HSLJ_MATCH_EXIT_TEMPLATES,
             self.ROI_MATCH_BUTTON,
             timeout_ms=1200,
             description="华山论剑取消匹配按钮",
@@ -536,6 +543,8 @@ class HSLJTask(YmGameTask):
             self.confirm_match_leave_team_dialog_if_needed("华山论剑")
             return
 
+        exit_score = getattr(self, "_last_match_score", 0.0)
+        self._log(f"华山论剑匹配状态未识别：匹配最高得分={match_score:.3f}，匹配中最高得分={exit_score:.3f}")
         debug_path = self.save_debug_screenshot("hslj_match_button_missing")
         raise RuntimeError(f"未识别到华山论剑匹配状态按钮，已保存截图：{debug_path}")
 
@@ -576,6 +585,11 @@ class HSLJTask(YmGameTask):
                 self._log(f"华山论剑 {mode} 第 {match_index} 场在等待准备时已出现结果面板")
                 return self.BATTLE_FINISH_RESULT_PANEL
 
+            if self.is_match_success_visible_quiet():
+                self._log(f"华山论剑 {mode} 第 {match_index} 场匹配成功，等待准备/入场")
+                self.wait(self.MATCH_WAIT_POLL_INTERVAL_MS)
+                continue
+
             if self.is_hslj_panel_visible_quiet():
                 if mode == "1v1" and self.is_1v1_complete_quiet():
                     self._log(f"华山论剑 {mode} 第 {match_index} 场已完成并返回面板")
@@ -607,9 +621,17 @@ class HSLJTask(YmGameTask):
     def is_match_button_visible_quiet(self) -> bool:
         """Return whether the panel has returned to a clickable match state."""
         return self.find_image_once(
-            self.BTN_HSLJ_MATCH,
+            self.BTN_HSLJ_MATCH_TEMPLATES,
             threshold=0.85,
             roi=self.scale_roi(self.ROI_MATCH_BUTTON),
+        )
+
+    def is_match_success_visible_quiet(self) -> bool:
+        """Return whether the match-success transition overlay is visible."""
+        return self.find_image_once(
+            self.TEXT_HSLJ_MATCH_SUCCESS,
+            threshold=0.85,
+            roi=self.scale_roi(self.ROI_MATCH_SUCCESS),
         )
 
     def is_hslj_panel_visible_quiet(self) -> bool:
@@ -665,7 +687,7 @@ class HSLJTask(YmGameTask):
                 self._log(f"华山论剑 {mode} 第 {match_index} 场已返回面板")
                 return self.BATTLE_FINISH_RETURNED_PANEL
 
-            self.auto_battle(skill_pages=1, repeat_count=1, interval_ms=self.AUTO_BATTLE_INTERVAL_MS)
+            self.auto_battle(interval_ms=self.AUTO_BATTLE_INTERVAL_MS)
 
             if self.is_result_panel_visible():
                 self._log(f"华山论剑 {mode} 第 {match_index} 场结果面板已出现")

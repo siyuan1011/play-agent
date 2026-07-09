@@ -295,6 +295,46 @@ class FakeActivityPanelTask(YmGameTask):
         self.logs.append(message)
 
 
+class FakeSafeZoneTask(YmGameTask):
+    def __init__(self, *, main_ready: bool = True, image_results: list[bool] | None = None):
+        super().__init__()
+        self.main_ready = main_ready
+        self.image_results = image_results or []
+        self.image_calls = []
+        self.clicked_points = []
+        self.click_offsets = []
+        self.wait_calls = []
+        self.main_ready_calls = []
+        self.auto_path_calls = []
+        self.logs = []
+
+    def is_chat_open(self) -> bool:
+        return False
+
+    def wait_image_appear(self, template, timeout_ms=10000, threshold=0.8, callback=None, interval_ms=500):
+        self.image_calls.append((template, timeout_ms, threshold))
+        return self.image_results.pop(0) if self.image_results else False
+
+    def click(self, offset: int = 3) -> None:
+        self.click_offsets.append(offset)
+
+    def click_point(self, x: int, y: int, offset: int = 3) -> None:
+        self.clicked_points.append((x, y, offset))
+
+    def is_game_main_ready(self, *, timeout_ms: int = 2000, threshold: float = 0.8) -> bool:
+        self.main_ready_calls.append((timeout_ms, threshold))
+        return self.main_ready
+
+    def wait_auto_pathfinding(self, **kwargs) -> None:
+        self.auto_path_calls.append(kwargs)
+
+    def wait(self, ms):
+        self.wait_calls.append(ms)
+
+    def _log(self, message: str) -> None:
+        self.logs.append(message)
+
+
 def assert_value_error(message: str, callback) -> None:
     try:
         callback()
@@ -304,14 +344,14 @@ def assert_value_error(message: str, callback) -> None:
         raise AssertionError("Expected ValueError")
 
 
-def auto_battle_round_actions(task: YmGameTask, repeat_count: int) -> list[tuple]:
+def auto_battle_round_actions(task: YmGameTask) -> list[tuple]:
     normal_attack = ("point", task.POINT_BATTLE_NORMAL_ATTACK[0], task.POINT_BATTLE_NORMAL_ATTACK[1], 0)
     return [
-        *[normal_attack for _ in range(repeat_count)],
+        *[normal_attack for _ in range(task.BATTLE_NORMAL_ATTACK_COUNT)],
         *[
             ("point", x, y, 0)
-            for x, y in task.POINT_BATTLE_SKILL_BUTTONS
-            for _ in range(repeat_count)
+            for x, y in task.POINT_BATTLE_SKILL_BUTTONS[: task.BATTLE_SKILL_BUTTON_COUNT]
+            for _ in range(task.BATTLE_SKILL_BUTTON_TAP_COUNT)
         ],
     ]
 
@@ -539,6 +579,52 @@ def test_close_all_panels_collapses_chat_before_and_after_closing():
     ]
 
 
+def test_close_all_panels_does_not_return_to_safe_zone_by_default():
+    task = FakeSafeZoneTask()
+
+    task.close_all_panels()
+
+    assert task.clicked_points == []
+    assert task.main_ready_calls == []
+    assert task.auto_path_calls == []
+    assert task.image_calls == [
+        ([task.BTN_CLOSE, task.BTN_PANE_CLOSE, task.BTN_WELCOME_CLOSE], 5000, 0.8)
+    ]
+
+
+def test_close_all_panels_returns_to_safe_zone_when_requested():
+    task = FakeSafeZoneTask()
+
+    task.close_all_panels(back_safe=True)
+
+    assert task.clicked_points == [
+        (task.POINT_MINIMAP[0], task.POINT_MINIMAP[1], 0),
+        (task.POINT_LOCAL_MAP_WORLD[0], task.POINT_LOCAL_MAP_WORLD[1], 0),
+        (task.POINT_WORLD_MAP_JINLING[0], task.POINT_WORLD_MAP_JINLING[1], 0),
+        (task.POINT_JINLING_JIMING_TEMPLE[0], task.POINT_JINLING_JIMING_TEMPLE[1], 0),
+        (task.POINT_MAP_CLOSE[0], task.POINT_MAP_CLOSE[1], 0),
+    ]
+    assert task.wait_calls == [1000, 1000, 1000, 1000, 1000]
+    assert task.main_ready_calls == [(2000, 0.8)]
+    assert task.auto_path_calls == [{"timeout_ms": 90000}]
+    assert "已回到鸡鸣寺安全区" in task.logs
+
+
+def test_return_to_safe_zone_rejects_non_main_scene_without_clicking_map():
+    task = FakeSafeZoneTask(main_ready=False)
+
+    try:
+        task.return_to_safe_zone()
+    except RuntimeError as exc:
+        assert str(exc) == "当前不是干净主界面，无法返回鸡鸣寺安全区"
+    else:
+        raise AssertionError("Expected RuntimeError")
+
+    assert task.clicked_points == []
+    assert task.wait_calls == []
+    assert task.auto_path_calls == []
+
+
 def test_recover_health_if_needed_meditates_until_full():
     task = FakeHealthRecoveryTask([0.79, 0.85, 0.90])
 
@@ -589,39 +675,49 @@ def test_auto_battle_clicks_normal_attack_skills_and_turns_page_by_default():
 
     task.auto_battle()
 
-    page_actions = auto_battle_round_actions(task, repeat_count=3) * task.BATTLE_PAGE_ROUND_COUNT
+    page_actions = auto_battle_round_actions(task) * task.BATTLE_PAGE_ROUND_COUNT
     page_turn = ("swipe", 1118, 389, 1022, 449, 350)
-
-    assert task.actions == [
+    expected_actions = [
         *page_actions,
         page_turn,
         *page_actions,
         page_turn,
     ]
-    assert task.wait_calls == [500] * 146
+
+    assert task.actions == expected_actions
+    assert task.wait_calls == [500] * len(expected_actions)
     assert "自动战斗点击完成" in task.logs
 
 
-def test_auto_battle_repeats_each_skill_position_before_next_skill():
+def test_auto_battle_clicks_each_skill_position_once_per_round():
     task = FakeAutoBattleTask()
 
-    task.auto_battle(skill_pages=1, repeat_count=3, interval_ms=0)
+    task.auto_battle(interval_ms=0)
 
-    first_round = task.actions[:18]
+    first_round = task.actions[:7]
     first_skill = ("point", task.POINT_BATTLE_SKILL_BUTTONS[0][0], task.POINT_BATTLE_SKILL_BUTTONS[0][1], 0)
     second_skill = ("point", task.POINT_BATTLE_SKILL_BUTTONS[1][0], task.POINT_BATTLE_SKILL_BUTTONS[1][1], 0)
 
-    assert first_round[3:6] == [first_skill, first_skill, first_skill]
-    assert first_round[6:9] == [second_skill, second_skill, second_skill]
+    assert first_round == auto_battle_round_actions(task)
+    assert first_round[3:5] == [first_skill, second_skill]
+    assert first_round.count(first_skill) == 1
+    assert first_round.count(second_skill) == 1
 
 
-def test_auto_battle_can_run_one_skill_page_without_turning_page():
+def test_auto_battle_uses_custom_interval_for_taps_and_page_turns():
     task = FakeAutoBattleTask()
 
-    task.auto_battle(skill_pages=1, repeat_count=1, interval_ms=250)
+    task.auto_battle(interval_ms=250)
 
-    assert task.actions == auto_battle_round_actions(task, repeat_count=1) * task.BATTLE_PAGE_ROUND_COUNT
-    assert task.wait_calls == [250] * 24
+    expected_actions = [
+        *(auto_battle_round_actions(task) * task.BATTLE_PAGE_ROUND_COUNT),
+        ("swipe", 1118, 389, 1022, 449, 350),
+        *(auto_battle_round_actions(task) * task.BATTLE_PAGE_ROUND_COUNT),
+        ("swipe", 1118, 389, 1022, 449, 350),
+    ]
+
+    assert task.actions == expected_actions
+    assert task.wait_calls == [250] * len(expected_actions)
 
 
 def test_turn_battle_skill_page_uses_fixed_design_coordinates():
@@ -706,8 +802,6 @@ def test_wake_from_power_saving_taps_right_joystick_center():
 def test_auto_battle_rejects_invalid_arguments():
     task = FakeAutoBattleTask()
 
-    assert_value_error("skill_pages must be at least 1", lambda: task.auto_battle(skill_pages=0))
-    assert_value_error("repeat_count must be at least 1", lambda: task.auto_battle(repeat_count=0))
     assert_value_error(
         "interval_ms must be greater than or equal to 0",
         lambda: task.auto_battle(interval_ms=-1),

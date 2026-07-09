@@ -14,3 +14,4 @@ ymjh_bot.spec
 pytest-cache-files-*
 *.egg-info/
 .claude/
+.screenshots/
