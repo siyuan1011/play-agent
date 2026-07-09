@@ -33,7 +33,6 @@ class FakePozhenSheyanTask(PozhenSheyanTask):
         self.logs = []
         self.closed = 0
         self.opened_activity = 0
-        self.ensured_bangpai = 0
 
     def wait_find_image_in_roi(
         self,
@@ -76,9 +75,6 @@ class FakePozhenSheyanTask(PozhenSheyanTask):
 
     def open_activity_panel(self, *args, **kwargs) -> None:
         self.opened_activity += 1
-
-    def ensure_bangpai_activity_tab(self, *args, **kwargs) -> None:
-        self.ensured_bangpai += 1
 
     def click(self, offset: int = 3) -> None:
         self.click_count += 1
@@ -275,7 +271,6 @@ def test_verify_completion_accepts_missing_activity_entry():
 
     assert task.closed == 1
     assert task.opened_activity == 1
-    assert task.ensured_bangpai == 1
     assert "完成验证：活动页已无破阵设宴入口" in task.logs
 
 

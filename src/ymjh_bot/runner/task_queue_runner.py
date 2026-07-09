@@ -158,7 +158,7 @@ class TaskQueueRunner:
             self._emit(f">>> 开始执行任务 {self.current_task_index + 1}/{self.total_tasks}: {task_name}")
 
             # 设置任务运行时依赖
-            task._screen_resolution = screen_size
+            task._screen_resolution = getattr(task, "FIXED_RESOLUTION", task.design_resolution)
             task.setup(self.adb, self.vision, self.logger, self.event_callback)
 
             # 执行单个任务

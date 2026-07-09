@@ -21,7 +21,6 @@ class MRYGTask(YmGameTask):
     ICON_CGSS_COMPLETE = str(YmGameTask.TEMPLATES_DIR / "icon_cgss_complete.png")
 
     # 固定坐标点 (设计分辨率 1280x720 下)
-    POINT_HUODONG_YOULI = (756, 680)
     POINT_QIANWANG = (434, 416)
     POINT_ANSWER = (1232, 540)
 
@@ -39,7 +38,7 @@ class MRYGTask(YmGameTask):
     @step(retry=3, timeout_ms=30000)
     def open_huodong(self) -> None:
         """打开活动界面。"""
-        self.open_activity_panel(self.POINT_HUODONG_YOULI, "游历", wait_after_category_ms=2000)
+        self.open_activity_panel("游历", wait_after_category_ms=2000)
         # 条件检查：如果已经检测到 CGSS_COMPLETE 图标，说明已茶馆说书已完成
         if self.wait_image_appear(self.ICON_CGSS_COMPLETE, timeout_ms=2000):
             self._log("检测到每日一卦已完成，直接结束任务")
@@ -71,6 +70,7 @@ class MRYGTask(YmGameTask):
     def on_finish(self, results: list) -> None:
         """任务结束处理。"""
         success_count = sum(1 for r in results if r.success)
+        self.close_all()
         self._log("=" * 40)
         self._log(f"每日一卦任务完成：{success_count}/{len(results)} 步骤成功")
         self._log("=" * 40)

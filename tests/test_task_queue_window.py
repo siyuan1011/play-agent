@@ -1,4 +1,5 @@
 import os
+import re
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -125,4 +126,17 @@ def test_queue_window_screenshot_button_saves_current_device(monkeypatch, tmp_pa
     assert len(writes) == 1
     assert "screenshots" in writes[0][0]
     assert "ymjh_queue_127.0.0.1_16416_" in writes[0][0]
-    assert "截图已保存：" in window.log_view.toPlainText()
+    log_text = window.log_view.toPlainText()
+    assert "截图已保存：" in log_text
+    assert re.search(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] 截图已保存：", log_text)
+
+
+def test_queue_window_append_log_keeps_existing_full_timestamp():
+    app = QApplication.instance() or QApplication([])
+    window = TaskQueueWindow.__new__(TaskQueueWindow)
+    window.log_view = QTextEdit()
+
+    window._append_log("[2026-07-08 15:04:05] 已带时间")
+
+    assert app is not None
+    assert window.log_view.toPlainText() == "[2026-07-08 15:04:05] 已带时间"

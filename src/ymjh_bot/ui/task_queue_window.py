@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import re
 from pathlib import Path
 
 import cv2
@@ -54,6 +55,16 @@ HSLJ_STRATEGY_OPTIONS = (
     (HSLJ_STRATEGY_INFINITE, "无限刷"),
     (HSLJ_STRATEGY_FIXED_COUNT, "固定次数"),
 )
+
+
+_LOG_TIMESTAMP_PATTERN = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]")
+
+
+def _format_log_text(text: str) -> str:
+    if _LOG_TIMESTAMP_PATTERN.match(text):
+        return text
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return f"[{timestamp}] {text}"
 
 
 def is_visible_task_class(task_class: type[GameTask]) -> bool:
@@ -742,6 +753,7 @@ class TaskQueueWindow(QMainWindow):
 
     def _append_log(self, text: str) -> None:
         """Append text to log view."""
+        text = _format_log_text(text)
         if hasattr(self, "log_view"):
             self.log_view.append(text)
         else:

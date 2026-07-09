@@ -81,7 +81,7 @@ class FakeChaguanTask(ChaguanTask):
 
     def open_activity_panel(
         self,
-        category_point=None,
+        category=None,
         category_name=None,
         *,
         timeout_ms=30000,
@@ -91,7 +91,7 @@ class FakeChaguanTask(ChaguanTask):
         self.panel_calls.append(
             (
                 "open_activity_panel",
-                category_point,
+                category,
                 category_name,
                 timeout_ms,
                 wait_after_open_ms,
@@ -137,7 +137,7 @@ def test_open_huodong_clicks_chaguan_entry_from_activity_card():
     task.open_huodong()
 
     assert task.panel_calls == [
-        ("open_activity_panel", task.POINT_HUODONG_JIANGHU, "江湖", 30000, 2000, 2000),
+        ("open_activity_panel", "江湖", None, 30000, 2000, 2000),
     ]
     assert task.roi_calls == [
         (
@@ -241,7 +241,7 @@ def test_verify_completion_accepts_missing_activity_entry():
 
     assert task.panel_calls == [
         ("close_all_panels", None, 5000, 500),
-        ("open_activity_panel", task.POINT_HUODONG_JIANGHU, "江湖", 30000, 2000, 2000),
+        ("open_activity_panel", "江湖", None, 30000, 2000, 2000),
     ]
     assert task.roi_calls == [
         (

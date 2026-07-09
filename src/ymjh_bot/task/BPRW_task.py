@@ -1,7 +1,6 @@
 """帮派任务 - Python DSL 实现。"""
 
 from botCore import step
-from botCore.coords import scale_point
 
 from ymjh_bot.ym_game_task import YmGameTask
 
@@ -79,11 +78,7 @@ class BangpaiTask(YmGameTask):
     def open_bangpai_activity(self) -> None:
         """打开活动界面并切换到帮派页签。"""
         self.close_all_panels(timeout_ms=3000)
-        self.require_image(self.BTN_HD, timeout_ms=30000, description="主界面活动按钮")
-        self.click(0)
-        self.wait(3000)
-        self._log("已打开活动界面")
-        self.ensure_bangpai_activity_tab()
+        self.open_activity_panel("帮派", wait_after_open_ms=3000)
 
     @step(retry=3, timeout_ms=30000)
     def start_auto_pathfinding(self) -> None:
@@ -220,9 +215,8 @@ class BangpaiTask(YmGameTask):
 
     def scroll_task_list_down(self) -> None:
         """Scroll the task list down to reveal lower entries."""
-        current_resolution = self._screen_resolution or self.design_resolution
-        start = scale_point(self.POINT_TASK_LIST_SCROLL_START, self.design_resolution, current_resolution)
-        end = scale_point(self.POINT_TASK_LIST_SCROLL_END, self.design_resolution, current_resolution)
+        start = self.POINT_TASK_LIST_SCROLL_START
+        end = self.POINT_TASK_LIST_SCROLL_END
         self.swipe(start[0], start[1], end[0], end[1], duration_ms=350)
         self.wait(800)
 

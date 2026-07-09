@@ -251,6 +251,43 @@ def test_jhyxb_templates_match_reference_screenshots():
         assert result.score >= threshold
 
 
+def test_hslj_templates_match_reference_screenshots():
+    root = Path(__file__).resolve().parents[1]
+    cases = [
+        (
+            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260708_234214.png",
+            root / "src/ymjh_bot/templates/text_exit.png",
+            (540, 630, 180, 80),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260708_234230.png",
+            root / "src/ymjh_bot/templates/btn_hslj_match.png",
+            (850, 535, 220, 115),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260708_234923.png",
+            root / "src/ymjh_bot/templates/btn_hslj_match_exit.png",
+            (850, 535, 220, 115),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260708_235916.png",
+            root / "src/ymjh_bot/templates/icon_hslj_first_win.png",
+            (900, 450, 130, 100),
+            0.95,
+        ),
+    ]
+
+    engine = VisionEngine()
+    for screenshot_path, template_path, roi, threshold in cases:
+        result = engine.match_template(load_image(screenshot_path), str(template_path), threshold=threshold, roi=roi)
+
+        assert result.found is True
+        assert result.score >= threshold
+
+
 def test_bangpai_templates_match_reference_screenshots():
     root = Path(__file__).resolve().parents[1]
     menke_prefix = "\u95e8\u5ba2\u8bbe\u5bb4"
@@ -385,6 +422,69 @@ def test_kyrw_templates_match_reference_screenshots():
 
         assert result.found is True
         assert result.score >= threshold
+
+
+def test_zgwx_templates_match_reference_screenshots():
+    root = Path(__file__).resolve().parents[1]
+    zgwx_dir = root / "screenshots" / "zgwx"
+    cases = [
+        (
+            zgwx_dir / "zgwx_02_activity_youli_panel.png",
+            root / "src/ymjh_bot/templates/btn_bangpai_task_forward.png",
+            (120, 250, 220, 120),
+            0.95,
+        ),
+        (
+            zgwx_dir / "zgwx_04_auto_path_wait_1.png",
+            root / "src/ymjh_bot/templates/text_zgwx_meditating.png",
+            None,
+            0.95,
+        ),
+        (
+            zgwx_dir / "zgwx_05_meditation_wait_min_1.png",
+            root / "src/ymjh_bot/templates/text_zgwx_meditating.png",
+            None,
+            0.9,
+        ),
+    ]
+
+    engine = VisionEngine()
+    for screenshot_path, template_path, roi, threshold in cases:
+        result = engine.match_template(load_image(screenshot_path), str(template_path), threshold=threshold, roi=roi)
+
+        assert result.found is True
+        assert result.score >= threshold
+
+
+def test_zgwx_templates_avoid_completion_false_positives():
+    root = Path(__file__).resolve().parents[1]
+    zgwx_dir = root / "screenshots" / "zgwx"
+    cases = [
+        (
+            zgwx_dir / "zgwx_08_activity_youli_verify_complete.png",
+            root / "src/ymjh_bot/templates/btn_bangpai_task_forward.png",
+            (120, 250, 220, 120),
+            0.8,
+        ),
+        (
+            zgwx_dir / "zgwx_03_after_activity_forward.png",
+            root / "src/ymjh_bot/templates/text_zgwx_meditating.png",
+            None,
+            0.9,
+        ),
+        (
+            zgwx_dir / "zgwx_06_after_meditation_complete.png",
+            root / "src/ymjh_bot/templates/text_zgwx_meditating.png",
+            None,
+            0.9,
+        ),
+    ]
+
+    engine = VisionEngine()
+    for screenshot_path, template_path, roi, threshold in cases:
+        result = engine.match_template(load_image(screenshot_path), str(template_path), threshold=threshold, roi=roi)
+
+        assert result.found is False
 
 
 def test_kyrw_reuses_bangpai_stall_route_template():

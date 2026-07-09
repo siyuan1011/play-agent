@@ -56,6 +56,7 @@ TASK_KEY_ALIASES: dict[str, str] = {
     "mryg": "MRYG",
     "pozhen_sheyan": "PZSY",
     "pzsy": "PZSY",
+    "zgwx": "ZGWX",
 }
 
 SAFE_SERIAL_FALLBACK = "default"

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import re
 import time
 from dataclasses import dataclass
@@ -12,7 +11,7 @@ from typing import Any
 import numpy as np
 
 from botCore import GameTask
-from botCore.coords import scale_point
+from botCore.coords import apply_random_offset
 
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -34,7 +33,8 @@ class YmGameTask(GameTask):
 
     __abstract_task__ = True
 
-    design_resolution = (1280, 720)
+    FIXED_RESOLUTION = (1280, 720)
+    design_resolution = FIXED_RESOLUTION
     loop_count = 1
 
     PACKAGE_NAME = "com.netease.wyclx"
@@ -63,10 +63,21 @@ class YmGameTask(GameTask):
     TEXT_AUTO_PATH = str(TEMPLATES_DIR / "text_zidongxunlu.png")
     TEXT_POWER_SAVING = str(TEMPLATES_DIR / "text_power_saving.png")
     TAB_BANGPAI_ACTIVE = str(TEMPLATES_DIR / "tab_bangpai_active.png")
+    ACTIVITY_TAB_JIANGHU_ACTIVE = str(TEMPLATES_DIR / "activity_tab_jianghu_active.png")
+    ACTIVITY_TAB_BANGPAI_ACTIVE = str(TEMPLATES_DIR / "activity_tab_bangpai_active.png")
+    ACTIVITY_TAB_FENZHENG_ACTIVE = str(TEMPLATES_DIR / "activity_tab_fenzheng_active.png")
+    ACTIVITY_TAB_HANGDANG_ACTIVE = str(TEMPLATES_DIR / "activity_tab_hangdang_active.png")
+    ACTIVITY_TAB_YOULI_ACTIVE = str(TEMPLATES_DIR / "activity_tab_youli_active.png")
+    ACTIVITY_TAB_SHEJIAO_ACTIVE = str(TEMPLATES_DIR / "activity_tab_shejiao_active.png")
 
     # 固定坐标点 (设计分辨率 1280x720 下)
     POINT_WAKE_SCREEN = (640, 360)
-    POINT_HUODONG_BANGPAI = (326, 680)
+    POINT_HUODONG_JIANGHU = (192, 680)
+    POINT_HUODONG_BANGPAI = (332, 680)
+    POINT_HUODONG_FENZHENG = (462, 680)
+    POINT_HUODONG_HANGDANG = (612, 680)
+    POINT_HUODONG_YOULI = (756, 680)
+    POINT_HUODONG_SHEJIAO = (882, 680)
     POINT_MAIN_TASK = (22, 160)
     POINT_MAIN_TEAM = (22, 276)
     POINT_TASK_TAB_TASK = (88, 124)
@@ -105,6 +116,24 @@ class YmGameTask(GameTask):
     HEALTH_RECOVER_POLL_INTERVAL_MS = 2000
     HEALTH_RED_MIN_VALUE = 120
     HEALTH_RED_MIN_DELTA = 45
+    ACTIVITY_CATEGORY_POINTS = {
+        "江湖": POINT_HUODONG_JIANGHU,
+        "帮派": POINT_HUODONG_BANGPAI,
+        "纷争": POINT_HUODONG_FENZHENG,
+        "行当": POINT_HUODONG_HANGDANG,
+        "游历": POINT_HUODONG_YOULI,
+        "社交": POINT_HUODONG_SHEJIAO,
+    }
+    ACTIVITY_CATEGORY_TEMPLATES = {
+        "江湖": ACTIVITY_TAB_JIANGHU_ACTIVE,
+        "帮派": ACTIVITY_TAB_BANGPAI_ACTIVE,
+        "纷争": ACTIVITY_TAB_FENZHENG_ACTIVE,
+        "行当": ACTIVITY_TAB_HANGDANG_ACTIVE,
+        "游历": ACTIVITY_TAB_YOULI_ACTIVE,
+        "社交": ACTIVITY_TAB_SHEJIAO_ACTIVE,
+    }
+    ACTIVITY_CATEGORY_VERIFY_TIMEOUT_MS = 1500
+    ACTIVITY_CATEGORY_VERIFY_THRESHOLD = 0.85
 
     LOGIN_STATE_NOTICE = "notice"
     LOGIN_STATE_LOGIN = "login"
@@ -149,15 +178,6 @@ class YmGameTask(GameTask):
         super().before_step(step_name, step_meta)
         self.recover_health_if_needed()
 
-    def refresh_screen_resolution(self) -> None:
-        """Refresh the cached screen resolution from the latest screenshot."""
-        screenshot = self.screenshot()
-        height, width = screenshot.shape[:2]
-        resolution = (width, height)
-        if self._screen_resolution != resolution:
-            self._log(f"刷新截图分辨率：{resolution}")
-            self._screen_resolution = resolution
-
     def is_power_saving_mode(self) -> bool:
         """Return whether the current game view is the power-saving overlay."""
         return self.find_image(
@@ -174,7 +194,6 @@ class YmGameTask(GameTask):
         self._log("检测到省电模式，点击右下角摇杆中心唤醒")
         self.click_point(self.POINT_RIGHT_JOYSTICK_CENTER[0], self.POINT_RIGHT_JOYSTICK_CENTER[1], offset=0)
         self.wait(1000)
-        self.refresh_screen_resolution()
         return True
 
     def wake_foreground_screen_once(self) -> None:
@@ -182,7 +201,6 @@ class YmGameTask(GameTask):
         self._log("前台画面未识别，点击右下角摇杆中心尝试唤醒")
         self.click_point(self.POINT_RIGHT_JOYSTICK_CENTER[0], self.POINT_RIGHT_JOYSTICK_CENTER[1], offset=0)
         self.wait(1000)
-        self.refresh_screen_resolution()
 
     def is_chat_open(self) -> bool:
         """Return whether the chat panel is expanded."""
@@ -202,6 +220,12 @@ class YmGameTask(GameTask):
         self.wait(wait_after_click_ms)
         return True
 
+    def click_point(self, x: int, y: int, offset: int = 3) -> None:
+        """Tap a fixed 1280x720 coordinate without runtime resolution scaling."""
+        if offset > 0:
+            x, y = apply_random_offset((x, y), offset)
+        self.tap(x, y)
+
     def walk(self, direction: str, duration_ms: int = 500) -> None:
         """Drag the lower-left movement joystick in the requested direction."""
         if duration_ms < 0:
@@ -219,10 +243,7 @@ class YmGameTask(GameTask):
             start[0] + vector[0] * self.DIRECTION_JOYSTICK_RADIUS,
             start[1] + vector[1] * self.DIRECTION_JOYSTICK_RADIUS,
         )
-        current_resolution = self._screen_resolution or self.design_resolution
-        scaled_start = scale_point(start, self.design_resolution, current_resolution)
-        scaled_end = scale_point(end, self.design_resolution, current_resolution)
-        self.swipe(scaled_start[0], scaled_start[1], scaled_end[0], scaled_end[1], duration_ms=duration_ms)
+        self.swipe(start[0], start[1], end[0], end[1], duration_ms=duration_ms)
 
     def walk_forward(self, duration_ms: int = 500) -> None:
         """Walk forward by dragging the movement joystick upward."""
@@ -254,7 +275,6 @@ class YmGameTask(GameTask):
         if interval_ms < 0:
             raise ValueError("interval_ms must be greater than or equal to 0")
 
-        self.refresh_screen_resolution()
         self._log(
             f"开始自动战斗：技能页 {skill_pages} 页，每页循环 {self.BATTLE_PAGE_ROUND_COUNT} 轮，"
             f"每个按钮点击 {repeat_count} 次"
@@ -276,17 +296,14 @@ class YmGameTask(GameTask):
 
         self._log("自动战斗点击完成")
 
-    def turn_battle_skill_page(self, degrees: float = 60, duration_ms: int = 350) -> None:
-        """Turn the battle skill wheel from the top skill toward the lower-left page gesture."""
+    def turn_battle_skill_page(self, duration_ms: int = 350) -> None:
+        """Turn the battle skill wheel by swiping from the first skill to the second."""
         if duration_ms < 0:
             raise ValueError("duration_ms must be greater than or equal to 0")
 
         start = self.POINT_BATTLE_SKILL_BUTTONS[0]
-        end = self._rotate_point(start, self.POINT_BATTLE_NORMAL_ATTACK, -degrees)
-        current_resolution = self._screen_resolution or self.design_resolution
-        scaled_start = scale_point(start, self.design_resolution, current_resolution)
-        scaled_end = scale_point(end, self.design_resolution, current_resolution)
-        self.swipe(scaled_start[0], scaled_start[1], scaled_end[0], scaled_end[1], duration_ms=duration_ms)
+        end = self.POINT_BATTLE_SKILL_BUTTONS[1]
+        self.swipe(start[0], start[1], end[0], end[1], duration_ms=duration_ms)
 
     def _tap_battle_button(
         self,
@@ -298,22 +315,6 @@ class YmGameTask(GameTask):
             self.click_point(point[0], point[1], offset=0)
             self.wait(interval_ms)
 
-    @staticmethod
-    def _rotate_point(
-        point: tuple[int, int],
-        center: tuple[int, int],
-        degrees: float,
-    ) -> tuple[int, int]:
-        radians = math.radians(degrees)
-        point_x, point_y = point
-        center_x, center_y = center
-        dx = point_x - center_x
-        dy = point_y - center_y
-        return (
-            int(round(center_x + dx * math.cos(radians) - dy * math.sin(radians))),
-            int(round(center_y + dx * math.sin(radians) + dy * math.cos(radians))),
-        )
-
     def detect_health_ratio(self) -> float | None:
         """Return the visible HP bar fill ratio, or None when it cannot be read."""
         screenshot = self.screenshot()
@@ -321,10 +322,7 @@ class YmGameTask(GameTask):
             return None
 
         screen_height, screen_width = screenshot.shape[:2]
-        x, y, width, height = self._scale_roi_to_resolution(
-            self.ROI_HEALTH_BAR,
-            (screen_width, screen_height),
-        )
+        x, y, width, height = self.ROI_HEALTH_BAR
         x2 = min(screen_width, x + width)
         y2 = min(screen_height, y + height)
         if x < 0 or y < 0 or x >= x2 or y >= y2:
@@ -338,10 +336,7 @@ class YmGameTask(GameTask):
         filled_width = self._anchored_true_run(red_columns)
         if filled_width <= 0:
             return None
-        full_width = max(
-            1,
-            int(round(self.HEALTH_FULL_WIDTH * screen_width / self.design_resolution[0])),
-        )
+        full_width = max(1, self.HEALTH_FULL_WIDTH)
         return min(1.0, filled_width / full_width)
 
     def recover_health_if_needed(self) -> None:
@@ -444,21 +439,6 @@ class YmGameTask(GameTask):
             else:
                 current = 0
         return longest
-
-    def _scale_roi_to_resolution(
-        self,
-        roi: tuple[int, int, int, int],
-        resolution: tuple[int, int],
-    ) -> tuple[int, int, int, int]:
-        screen_width, screen_height = resolution
-        design_width, design_height = self.design_resolution
-        x, y, width, height = roi
-        return (
-            int(round(x * screen_width / design_width)),
-            int(round(y * screen_height / design_height)),
-            int(round(width * screen_width / design_width)),
-            int(round(height * screen_height / design_height)),
-        )
 
     def is_game_process_running(self) -> bool:
         """Return whether the game process currently exists on the device."""
@@ -763,7 +743,7 @@ class YmGameTask(GameTask):
 
     def open_activity_panel(
         self,
-        category_point: tuple[int, int] | None = None,
+        category: str | tuple[int, int] | None = None,
         category_name: str | None = None,
         *,
         timeout_ms: int = 30000,
@@ -776,14 +756,48 @@ class YmGameTask(GameTask):
         self.wait(wait_after_open_ms)
         self._log("已打开活动界面")
 
-        if category_point is None:
+        if category is None:
             return
 
-        self.click_point(category_point[0], category_point[1])
+        if isinstance(category, str):
+            self.open_activity_category(
+                category,
+                wait_after_click_ms=wait_after_category_ms or 1500,
+            )
+            return
+
+        self.click_point(category[0], category[1], offset=0)
         if wait_after_category_ms > 0:
             self.wait(wait_after_category_ms)
         if category_name:
             self._log(f"已打开活动 - {category_name}界面")
+
+    def open_activity_category(
+        self,
+        category_name: str,
+        *,
+        max_attempts: int = 3,
+        wait_after_click_ms: int = 1500,
+    ) -> None:
+        point = self.ACTIVITY_CATEGORY_POINTS.get(category_name)
+        template = self.ACTIVITY_CATEGORY_TEMPLATES.get(category_name)
+        if point is None or template is None:
+            raise ValueError(f"Unsupported activity category: {category_name}")
+
+        for attempt in range(1, max_attempts + 1):
+            self.click_point(point[0], point[1], offset=0)
+            if wait_after_click_ms > 0:
+                self.wait(wait_after_click_ms)
+            if self.wait_image_appear(
+                template,
+                timeout_ms=self.ACTIVITY_CATEGORY_VERIFY_TIMEOUT_MS,
+                threshold=self.ACTIVITY_CATEGORY_VERIFY_THRESHOLD,
+            ):
+                self._log(f"已打开活动 - {category_name}界面")
+                return
+            self._log(f"活动 - {category_name}界面未确认，重试 {attempt}/{max_attempts}")
+
+        raise RuntimeError(f"未能切换到活动 - {category_name}界面")
 
     def switch_task_panel(
         self,
@@ -849,15 +863,7 @@ class YmGameTask(GameTask):
 
     def ensure_bangpai_activity_tab(self, max_attempts: int = 3) -> None:
         """Switch to the activity Bangpai tab and verify it is active."""
-        for attempt in range(1, max_attempts + 1):
-            self.click_point(self.POINT_HUODONG_BANGPAI[0], self.POINT_HUODONG_BANGPAI[1])
-            self.wait(1500)
-            if self.wait_image_appear(self.TAB_BANGPAI_ACTIVE, timeout_ms=1500, threshold=0.85):
-                self._log("已打开活动 - 帮派界面")
-                return
-            self._log(f"活动 - 帮派界面未确认，重试 {attempt}/{max_attempts}")
-
-        raise RuntimeError("未能切换到活动 - 帮派界面")
+        self.open_activity_category("帮派", max_attempts=max_attempts)
 
     def wait_find_image_in_roi(
         self,
@@ -882,13 +888,5 @@ class YmGameTask(GameTask):
         return False
 
     def scale_roi(self, roi: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
-        """Scale a design-resolution ROI to the current screenshot resolution."""
-        screen_width, screen_height = self._screen_resolution or self.design_resolution
-        design_width, design_height = self.design_resolution
-        x, y, width, height = roi
-        return (
-            int(round(x * screen_width / design_width)),
-            int(round(y * screen_height / design_height)),
-            int(round(width * screen_width / design_width)),
-            int(round(height * screen_height / design_height)),
-        )
+        """Return a fixed 1280x720 ROI without runtime resolution scaling."""
+        return roi

@@ -32,6 +32,7 @@ class FakeKyrwTask(KyrwTask):
         self.find_image_calls = []
         self.course_click_calls = []
         self.close_panel_calls = []
+        self.open_activity_calls = []
         self.clicked_points = []
         self.click_count = 0
         self.wait_calls = []
@@ -40,6 +41,19 @@ class FakeKyrwTask(KyrwTask):
 
     def close_all_panels(self, templates=None, *, timeout_ms=5000, wait_after_click_ms=500):
         self.close_panel_calls.append((templates, timeout_ms, wait_after_click_ms))
+
+    def open_activity_panel(
+        self,
+        category=None,
+        category_name=None,
+        *,
+        timeout_ms=30000,
+        wait_after_open_ms=2000,
+        wait_after_category_ms=0,
+    ) -> None:
+        self.open_activity_calls.append(
+            (category, category_name, timeout_ms, wait_after_open_ms, wait_after_category_ms)
+        )
 
     def click_course_task_from_sidebar(self, *, max_scrolls: int, required: bool) -> bool:
         self.course_click_calls.append((max_scrolls, required))

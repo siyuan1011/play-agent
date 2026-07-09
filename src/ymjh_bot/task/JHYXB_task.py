@@ -9,7 +9,6 @@ from pathlib import Path
 import cv2
 
 from botCore import step
-from botCore.coords import scale_point
 
 from ymjh_bot.ym_game_task import YmGameTask
 
@@ -31,7 +30,6 @@ class JianghuYingxiongbangTask(YmGameTask):
     BTN_JHYXB_RESULT_EXIT = str(YmGameTask.TEMPLATES_DIR / "btn_jhyxb_result_exit.png")
 
     # 固定坐标点 (设计分辨率 1280x720 下)
-    POINT_HUODONG_FENZHENG = (462, 680)
     POINT_JHYXB_MATCH = (1076, 584)
     POINT_FIRST_BATTLE_CHEST = (433, 585)
     POINT_JHYXB_READY = (640, 97)
@@ -80,7 +78,6 @@ class JianghuYingxiongbangTask(YmGameTask):
     @step(retry=1, timeout_ms=30000)
     def close_all(self) -> None:
         """关闭所有弹窗，回到游戏主界面。"""
-        self.refresh_screen_resolution()
         self.close_all_panels_for_jhyxb()
         if self.wake_from_power_saving_if_needed():
             self.close_all_panels_for_jhyxb()
@@ -131,22 +128,11 @@ class JianghuYingxiongbangTask(YmGameTask):
 
     def open_fenzheng_activity_panel(self) -> None:
         """Open the activity panel and switch to the Fen Zheng tab."""
-        self.refresh_screen_resolution()
         self.open_activity_panel(
-            self.POINT_HUODONG_FENZHENG,
             "纷争",
             wait_after_open_ms=2500,
             wait_after_category_ms=1500,
         )
-
-    def refresh_screen_resolution(self) -> None:
-        """Refresh resolution from the latest screenshot after game orientation changes."""
-        screenshot = self.screenshot()
-        height, width = screenshot.shape[:2]
-        resolution = (width, height)
-        if self._screen_resolution != resolution:
-            self._log(f"刷新截图分辨率：{resolution}")
-            self._screen_resolution = resolution
 
     def open_jhyxb_from_activity(self) -> None:
         """Click the Jianghu Yingxiongbang entry from Activity - Fen Zheng."""
@@ -360,10 +346,8 @@ class JianghuYingxiongbangTask(YmGameTask):
 
     def walk_forward_for_battle(self, duration_ms: int) -> None:
         """Walk forward in battle without requiring the clean main-scene guard."""
-        self.refresh_screen_resolution()
-        current_resolution = self._screen_resolution or self.design_resolution
-        start = scale_point(self.POINT_DIRECTION_JOYSTICK_CENTER, self.design_resolution, current_resolution)
-        end = scale_point(self.POINT_DIRECTION_JOYSTICK_FORWARD, self.design_resolution, current_resolution)
+        start = self.POINT_DIRECTION_JOYSTICK_CENTER
+        end = self.POINT_DIRECTION_JOYSTICK_FORWARD
         self._log(f"江湖英雄榜战斗中向前走 {duration_ms}ms")
         self.swipe(start[0], start[1], end[0], end[1], duration_ms=duration_ms)
 

@@ -20,7 +20,6 @@ class ChaguanTask(YmGameTask):
     BTN_TCCG = str(YmGameTask.TEMPLATES_DIR / "btn_TCCG.png")
 
     # 固定坐标点 (设计分辨率 1280x720 下)
-    POINT_HUODONG_JIANGHU = (192, 680)
     POINT_ANSWER = (1232, 540)
     ROI_CHAGUANSHUOSHU_ENTRY = (170, 430, 230, 210)
 
@@ -41,7 +40,6 @@ class ChaguanTask(YmGameTask):
     def open_huodong(self) -> None:
         """打开活动界面。"""
         self.open_activity_panel(
-            self.POINT_HUODONG_JIANGHU,
             "江湖",
             wait_after_category_ms=2000,
         )
@@ -99,7 +97,6 @@ class ChaguanTask(YmGameTask):
         """验证茶馆说书已完成。"""
         self.close_all_panels()
         self.open_activity_panel(
-            self.POINT_HUODONG_JIANGHU,
             "江湖",
             wait_after_category_ms=2000,
         )

@@ -131,7 +131,7 @@ def test_old_task_keys_are_migrated_when_state_loads(tmp_path):
     path.write_text(
         """
 {
-  "selected_task_keys": ["launch", "bangpai", "hslj", "kyrw", "mksy", "pzsy", "hslj"],
+  "selected_task_keys": ["launch", "bangpai", "hslj", "kyrw", "mksy", "pzsy", "zgwx", "hslj"],
   "task_settings": {
     "hslj": {"lunjian_count": 2, "infinite": false},
     "custom": {"enabled": true}
@@ -143,7 +143,7 @@ def test_old_task_keys_are_migrated_when_state_loads(tmp_path):
 
     state = load_state(path)
 
-    assert state["selected_task_keys"] == ["QDYX", "BPRW", "HSLJ", "KYRW", "MKSY", "PZSY"]
+    assert state["selected_task_keys"] == ["QDYX", "BPRW", "HSLJ", "KYRW", "MKSY", "PZSY", "ZGWX"]
     assert state["task_settings"]["HSLJ"] == hslj_settings(three_v_three_count=2)
     assert state["task_settings"]["custom"] == {"enabled": True}
 

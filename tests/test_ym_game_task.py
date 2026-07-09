@@ -41,7 +41,6 @@ class ScriptedLoginTask(YmGameTask):
         self.taps: list[str | None] = []
         self.clicked_points: list[tuple[int, int, int]] = []
         self.waits: list[int | float] = []
-        self.refresh_calls = 0
         self.logs: list[str] = []
 
     def shell(self, command: str) -> str:
@@ -89,10 +88,6 @@ class ScriptedLoginTask(YmGameTask):
 
     def click_point(self, x: int, y: int, offset: int = 3) -> None:
         self.clicked_points.append((x, y, offset))
-
-    def refresh_screen_resolution(self) -> None:
-        self.refresh_calls += 1
-        self._screen_resolution = self.design_resolution
 
     def wait(self, ms):
         self.waits.append(ms)
@@ -219,12 +214,7 @@ class FakeAutoBattleTask(YmGameTask):
         super().__init__()
         self.actions = []
         self.wait_calls = []
-        self.refresh_calls = 0
         self.logs = []
-
-    def refresh_screen_resolution(self) -> None:
-        self.refresh_calls += 1
-        self._screen_resolution = self.design_resolution
 
     def click_point(self, x: int, y: int, offset: int = 3) -> None:
         self.actions.append(("point", x, y, offset))
@@ -246,7 +236,6 @@ class FakeMovementTask(YmGameTask):
         self.power_saving = power_saving
         self.actions = []
         self.wait_calls = []
-        self.refresh_calls = 0
         self.main_ready_calls = []
         self.logs = []
 
@@ -266,9 +255,41 @@ class FakeMovementTask(YmGameTask):
     def wait(self, ms):
         self.wait_calls.append(ms)
 
-    def refresh_screen_resolution(self) -> None:
-        self.refresh_calls += 1
-        self._screen_resolution = self.design_resolution
+    def _log(self, message: str) -> None:
+        self.logs.append(message)
+
+
+class FakeFixedCoordinateTask(YmGameTask):
+    def __init__(self):
+        super().__init__()
+        self.taps = []
+
+    def tap(self, x=None, y=None):
+        self.taps.append((x, y))
+
+
+class FakeActivityPanelTask(YmGameTask):
+    def __init__(self, image_results: list[bool]):
+        super().__init__()
+        self.image_results = image_results
+        self.image_calls = []
+        self.click_offsets = []
+        self.clicked_points = []
+        self.wait_calls = []
+        self.logs = []
+
+    def wait_image_appear(self, template, timeout_ms=10000, threshold=0.8, callback=None, interval_ms=500):
+        self.image_calls.append((template, timeout_ms, threshold))
+        return self.image_results.pop(0) if self.image_results else False
+
+    def click(self, offset: int = 3) -> None:
+        self.click_offsets.append(offset)
+
+    def click_point(self, x: int, y: int, offset: int = 3) -> None:
+        self.clicked_points.append((x, y, offset))
+
+    def wait(self, ms):
+        self.wait_calls.append(ms)
 
     def _log(self, message: str) -> None:
         self.logs.append(message)
@@ -387,7 +408,6 @@ def test_ym_game_task_wakes_power_saving_foreground_before_login_flow():
     assert task.clicked_points == [
         (task.POINT_RIGHT_JOYSTICK_CENTER[0], task.POINT_RIGHT_JOYSTICK_CENTER[1], 0)
     ]
-    assert task.refresh_calls == 1
     assert task.taps == []
     assert "检测到省电模式，点击右下角摇杆中心唤醒" in task.logs
     assert "检测到游戏已在前台，跳过启动" in task.logs
@@ -407,7 +427,6 @@ def test_ym_game_task_wakes_unrecognized_foreground_once_before_login_flow():
     assert task.clicked_points == [
         (task.POINT_RIGHT_JOYSTICK_CENTER[0], task.POINT_RIGHT_JOYSTICK_CENTER[1], 0)
     ]
-    assert task.refresh_calls == 1
     assert task.taps == []
     assert "前台画面未识别，点击右下角摇杆中心尝试唤醒" in task.logs
     assert "检测到游戏已在前台，跳过启动" in task.logs
@@ -571,9 +590,8 @@ def test_auto_battle_clicks_normal_attack_skills_and_turns_page_by_default():
     task.auto_battle()
 
     page_actions = auto_battle_round_actions(task, repeat_count=3) * task.BATTLE_PAGE_ROUND_COUNT
-    page_turn = ("swipe", 1118, 389, 984, 486, 350)
+    page_turn = ("swipe", 1118, 389, 1022, 449, 350)
 
-    assert task.refresh_calls == 1
     assert task.actions == [
         *page_actions,
         page_turn,
@@ -584,6 +602,19 @@ def test_auto_battle_clicks_normal_attack_skills_and_turns_page_by_default():
     assert "自动战斗点击完成" in task.logs
 
 
+def test_auto_battle_repeats_each_skill_position_before_next_skill():
+    task = FakeAutoBattleTask()
+
+    task.auto_battle(skill_pages=1, repeat_count=3, interval_ms=0)
+
+    first_round = task.actions[:18]
+    first_skill = ("point", task.POINT_BATTLE_SKILL_BUTTONS[0][0], task.POINT_BATTLE_SKILL_BUTTONS[0][1], 0)
+    second_skill = ("point", task.POINT_BATTLE_SKILL_BUTTONS[1][0], task.POINT_BATTLE_SKILL_BUTTONS[1][1], 0)
+
+    assert first_round[3:6] == [first_skill, first_skill, first_skill]
+    assert first_round[6:9] == [second_skill, second_skill, second_skill]
+
+
 def test_auto_battle_can_run_one_skill_page_without_turning_page():
     task = FakeAutoBattleTask()
 
@@ -591,16 +622,15 @@ def test_auto_battle_can_run_one_skill_page_without_turning_page():
 
     assert task.actions == auto_battle_round_actions(task, repeat_count=1) * task.BATTLE_PAGE_ROUND_COUNT
     assert task.wait_calls == [250] * 24
-    assert task.refresh_calls == 1
 
 
-def test_turn_battle_skill_page_scales_swipe_to_current_resolution():
+def test_turn_battle_skill_page_uses_fixed_design_coordinates():
     task = FakeAutoBattleTask()
     task._screen_resolution = (1920, 1080)
 
     task.turn_battle_skill_page(duration_ms=450)
 
-    assert task.actions == [("swipe", 1677, 584, 1476, 729, 450)]
+    assert task.actions == [("swipe", 1118, 389, 1022, 449, 450)]
 
 
 def test_walk_forward_drags_left_joystick_on_clean_main_scene():
@@ -612,13 +642,40 @@ def test_walk_forward_drags_left_joystick_on_clean_main_scene():
     assert task.main_ready_calls == [(2000, 0.8)]
 
 
-def test_walk_scales_joystick_drag_to_current_resolution():
+def test_walk_uses_fixed_design_coordinates():
     task = FakeMovementTask(main_ready=True)
     task._screen_resolution = (1920, 1080)
 
     task.walk("向右", duration_ms=250)
 
-    assert task.actions == [("swipe", 158, 682, 262, 682, 250)]
+    assert task.actions == [("swipe", 105, 455, 175, 455, 250)]
+
+
+def test_fixed_click_point_and_roi_ignore_runtime_resolution():
+    task = FakeFixedCoordinateTask()
+    task._screen_resolution = (1920, 1080)
+
+    task.click_point(100, 50, offset=0)
+
+    assert task.taps == [(100, 50)]
+    assert task.scale_roi((10, 20, 30, 40)) == (10, 20, 30, 40)
+
+
+def test_open_activity_panel_uses_category_mapping_and_retries_verification():
+    task = FakeActivityPanelTask([True, False, True])
+
+    task.open_activity_panel("纷争", wait_after_open_ms=2500, wait_after_category_ms=1500)
+
+    assert task.click_offsets == [0]
+    assert task.clicked_points == [(462, 680, 0), (462, 680, 0)]
+    assert task.wait_calls == [2500, 1500, 1500]
+    assert task.image_calls == [
+        (task.BTN_HD, 30000, 0.8),
+        (task.ACTIVITY_TAB_FENZHENG_ACTIVE, 1500, 0.85),
+        (task.ACTIVITY_TAB_FENZHENG_ACTIVE, 1500, 0.85),
+    ]
+    assert "活动 - 纷争界面未确认，重试 1/3" in task.logs
+    assert "已打开活动 - 纷争界面" in task.logs
 
 
 def test_walk_rejects_movement_when_main_scene_is_not_clean():
@@ -643,7 +700,6 @@ def test_wake_from_power_saving_taps_right_joystick_center():
         ("point", task.POINT_RIGHT_JOYSTICK_CENTER[0], task.POINT_RIGHT_JOYSTICK_CENTER[1], 0)
     ]
     assert task.wait_calls == [1000]
-    assert task.refresh_calls == 1
     assert "检测到省电模式，点击右下角摇杆中心唤醒" in task.logs
 
 

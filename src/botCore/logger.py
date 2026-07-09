@@ -20,6 +20,8 @@ class RunLogger:
         self.shots_dir.mkdir(parents=True, exist_ok=True)
 
     def log_event(self, event: dict[str, Any]) -> None:
+        event = dict(event)
+        event.setdefault("ts", datetime.now().isoformat())
         self.events_path.parent.mkdir(parents=True, exist_ok=True)
         with self.events_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")

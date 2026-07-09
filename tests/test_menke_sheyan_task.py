@@ -101,11 +101,8 @@ class FakeMenkeSheyanTask(MenkeSheyanTask):
     def close_all_panels(self) -> None:
         self.panel_calls.append(("close_all_panels",))
 
-    def open_activity_panel(self, wait_after_open_ms: int = 2000) -> None:
-        self.panel_calls.append(("open_activity_panel", wait_after_open_ms))
-
-    def ensure_bangpai_activity_tab(self) -> None:
-        self.panel_calls.append(("ensure_bangpai_activity_tab",))
+    def open_activity_panel(self, category=None, *, wait_after_open_ms: int = 2000, **kwargs) -> None:
+        self.panel_calls.append(("open_activity_panel", category, wait_after_open_ms))
 
     def _log(self, message: str) -> None:
         self.logs.append(message)
@@ -375,8 +372,7 @@ def test_verify_completion_accepts_missing_activity_entry():
 
     assert task.panel_calls == [
         ("close_all_panels",),
-        ("open_activity_panel", 3000),
-        ("ensure_bangpai_activity_tab",),
+        ("open_activity_panel", "帮派", 3000),
     ]
     assert task.click_count == 0
     assert "完成验证：活动页已无门客设宴入口" in task.logs

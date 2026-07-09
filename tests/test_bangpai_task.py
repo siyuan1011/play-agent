@@ -29,6 +29,7 @@ class FakeBangpaiTask(BangpaiTask):
         self.scroll_calls = 0
         self.completion_dialog_calls = 0
         self.close_panel_calls = []
+        self.open_activity_calls = []
         self.close_transient_calls = 0
         self.click_template_calls = []
         self.route_panel_calls = 0
@@ -36,7 +37,6 @@ class FakeBangpaiTask(BangpaiTask):
         self.auto_path_waits = []
         self.clicked_points = []
         self.click_count = 0
-        self.refresh_calls = 0
         self.wait_calls = []
         self.logs = []
 
@@ -62,13 +62,23 @@ class FakeBangpaiTask(BangpaiTask):
     def close_all_panels(self, templates=None, *, timeout_ms=5000, wait_after_click_ms=500):
         self.close_panel_calls.append((templates, timeout_ms, wait_after_click_ms))
 
+    def open_activity_panel(
+        self,
+        category=None,
+        category_name=None,
+        *,
+        timeout_ms=30000,
+        wait_after_open_ms=2000,
+        wait_after_category_ms=0,
+    ) -> None:
+        self.open_activity_calls.append(
+            (category, category_name, timeout_ms, wait_after_open_ms, wait_after_category_ms)
+        )
+
     def is_power_saving_mode(self) -> bool:
         if self.power_saving_results:
             return self.power_saving_results.pop(0)
         return False
-
-    def refresh_screen_resolution(self) -> None:
-        self.refresh_calls += 1
 
     def close_completion_dialog_if_visible(self) -> bool:
         self.completion_dialog_calls += 1
@@ -146,7 +156,6 @@ def test_close_all_wakes_only_when_power_saving_mode_is_visible():
         (None, 5000, 500),
     ]
     assert task.completion_dialog_calls == 2
-    assert task.refresh_calls == 1
     assert "检测到省电模式，点击右下角摇杆中心唤醒" in task.logs
 
 

@@ -29,7 +29,6 @@ class FakeJhyxbTask(JianghuYingxiongbangTask):
         self.safe_close_panel_calls = []
         self.clicked_points = []
         self.click_offsets = []
-        self.refresh_calls = 0
         self.swipe_calls = []
         self.wait_calls = []
         self.logs = []
@@ -57,7 +56,7 @@ class FakeJhyxbTask(JianghuYingxiongbangTask):
 
     def open_activity_panel(
         self,
-        category_point=None,
+        category=None,
         category_name=None,
         *,
         timeout_ms=30000,
@@ -66,7 +65,7 @@ class FakeJhyxbTask(JianghuYingxiongbangTask):
     ) -> None:
         self.open_activity_calls.append(
             (
-                category_point,
+                category,
                 category_name,
                 timeout_ms,
                 wait_after_open_ms,
@@ -90,10 +89,6 @@ class FakeJhyxbTask(JianghuYingxiongbangTask):
         if self.power_saving_results:
             return self.power_saving_results.pop(0)
         return False
-
-    def refresh_screen_resolution(self) -> None:
-        self.refresh_calls += 1
-        self._screen_resolution = self.design_resolution
 
     def click(self, offset: int = 3) -> None:
         self.click_offsets.append(offset)
@@ -314,7 +309,6 @@ def test_close_all_wakes_power_saving_with_right_joystick_center():
         (5000, 500, None),
         (5000, 500, None),
     ]
-    assert task.refresh_calls == 2
     assert task.wait_calls == [1000, 1000]
     assert "检测到省电模式，点击右下角摇杆中心唤醒" in task.logs
 
@@ -325,7 +319,7 @@ def test_open_fenzheng_activity_uses_fenzheng_tab_point():
     task.open_fenzheng_activity()
 
     assert task.open_activity_calls == [
-        (task.POINT_HUODONG_FENZHENG, "纷争", 30000, 2500, 1500),
+        ("纷争", None, 30000, 2500, 1500),
     ]
 
 

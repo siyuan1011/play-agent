@@ -1,7 +1,6 @@
 """课业任务 - Python DSL 实现。"""
 
 from botCore import step
-from botCore.coords import scale_point
 
 from ymjh_bot.ym_game_task import YmGameTask
 
@@ -29,7 +28,6 @@ class KyrwTask(YmGameTask):
     BTN_MODAL_CANCEL = str(YmGameTask.TEMPLATES_DIR / "btn_modal_cancel.png")
 
     # 固定坐标点 (设计分辨率 1280x720 下)
-    POINT_HUODONG_JIANGHU = (192, 680)
     POINT_WUCHAN_ACTIVITY_FORWARD = (215, 276)
     POINT_WUCHAN_COURSE_FORWARD = (276, 498)
     POINT_NPC_ACTION = (1100, 465)
@@ -95,7 +93,6 @@ class KyrwTask(YmGameTask):
     def open_wuchan_activity(self) -> None:
         """打开活动-江湖并点击悟禅前往。"""
         self.open_activity_panel(
-            self.POINT_HUODONG_JIANGHU,
             "江湖",
             wait_after_category_ms=2000,
         )
@@ -298,9 +295,8 @@ class KyrwTask(YmGameTask):
 
     def scroll_task_list_down(self) -> None:
         """Scroll the task list down to reveal lower entries."""
-        current_resolution = self._screen_resolution or self.design_resolution
-        start = scale_point(self.POINT_TASK_LIST_SCROLL_START, self.design_resolution, current_resolution)
-        end = scale_point(self.POINT_TASK_LIST_SCROLL_END, self.design_resolution, current_resolution)
+        start = self.POINT_TASK_LIST_SCROLL_START
+        end = self.POINT_TASK_LIST_SCROLL_END
         self.swipe(start[0], start[1], end[0], end[1], duration_ms=350)
         self.wait(800)
 

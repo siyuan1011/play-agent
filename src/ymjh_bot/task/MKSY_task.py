@@ -75,8 +75,7 @@ class MenkeSheyanTask(BanquetAcquireMixin, YmGameTask):
     @step(retry=3, timeout_ms=30000)
     def open_bangpai_activity(self) -> None:
         """打开活动界面并切换到帮派页签。"""
-        self.open_activity_panel(wait_after_open_ms=3000)
-        self.ensure_bangpai_activity_tab()
+        self.open_activity_panel("帮派", wait_after_open_ms=3000)
 
     @step(retry=3, timeout_ms=30000)
     def open_guest_list(self) -> None:
@@ -159,8 +158,7 @@ class MenkeSheyanTask(BanquetAcquireMixin, YmGameTask):
     def verify_completion(self) -> None:
         """回到活动-帮派页验证门客设宴是否已完成。"""
         self.close_all_panels()
-        self.open_activity_panel(wait_after_open_ms=3000)
-        self.ensure_bangpai_activity_tab()
+        self.open_activity_panel("帮派", wait_after_open_ms=3000)
 
         if not self.wait_find_image_in_roi(
             self.BTN_MENKE_SHEYAN_ENTRY,
