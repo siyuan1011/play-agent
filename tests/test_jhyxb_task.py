@@ -31,6 +31,7 @@ class FakeJhyxbTask(JianghuYingxiongbangTask):
         self.click_offsets = []
         self.swipe_calls = []
         self.wait_calls = []
+        self.safe_zone_calls = []
         self.logs = []
 
     def wait_find_image_in_roi(
@@ -101,6 +102,9 @@ class FakeJhyxbTask(JianghuYingxiongbangTask):
 
     def wait(self, ms):
         self.wait_calls.append(ms)
+
+    def return_to_safe_zone(self) -> None:
+        self.safe_zone_calls.append(())
 
     def _log(self, message: str) -> None:
         self.logs.append(message)
@@ -273,15 +277,17 @@ def test_jhyxb_task_loads_and_is_visible():
 
 
 def test_jhyxb_step_order():
-    steps = [name for name, _, _ in JianghuYingxiongbangTask.get_steps()]
+    steps = JianghuYingxiongbangTask.get_steps()
+    step_names = [name for name, _, _ in steps]
 
-    assert steps == [
+    assert step_names == [
         "close_all",
         "open_fenzheng_activity",
         "open_jhyxb_panel",
         "use_all_challenges",
         "claim_first_battle_chest",
     ]
+    assert steps[0][2]["timeout_ms"] == 120000
 
 
 def test_jhyxb_safe_close_panels_collapses_chat_before_and_after():
@@ -310,7 +316,18 @@ def test_close_all_wakes_power_saving_with_right_joystick_center():
         (5000, 500, None),
     ]
     assert task.wait_calls == [1000, 1000]
+    assert task.safe_zone_calls == [()]
     assert "检测到省电模式，点击右下角摇杆中心唤醒" in task.logs
+
+
+def test_close_all_returns_to_safe_zone_after_cleanup():
+    task = FakeJhyxbTask()
+
+    task.close_all()
+
+    assert task.safe_close_panel_calls == [(5000, 500, None)]
+    assert task.wait_calls == [1000]
+    assert task.safe_zone_calls == [()]
 
 
 def test_open_fenzheng_activity_uses_fenzheng_tab_point():

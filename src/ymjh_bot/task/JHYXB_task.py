@@ -75,13 +75,14 @@ class JianghuYingxiongbangTask(YmGameTask):
         self._log("江湖英雄榜任务开始")
         self._log("=" * 40)
 
-    @step(retry=1, timeout_ms=30000)
+    @step(retry=1, timeout_ms=120000)
     def close_all(self) -> None:
         """关闭所有弹窗，回到游戏主界面。"""
         self.close_all_panels_for_jhyxb()
         if self.wake_from_power_saving_if_needed():
             self.close_all_panels_for_jhyxb()
         self.wait(1000)
+        self.return_to_safe_zone()
 
     @step(retry=3, timeout_ms=30000)
     def open_fenzheng_activity(self) -> None:

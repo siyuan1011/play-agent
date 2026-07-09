@@ -31,6 +31,7 @@ class FakeHsljTask(HSLJTask):
         self.swipe_calls = []
         self.wait_calls = []
         self.debug_prefixes = []
+        self.safe_zone_calls = []
         self.logs = []
 
     def wait_find_image_in_roi(
@@ -98,6 +99,9 @@ class FakeHsljTask(HSLJTask):
 
     def wait(self, ms):
         self.wait_calls.append(ms)
+
+    def return_to_safe_zone(self) -> None:
+        self.safe_zone_calls.append(())
 
     def save_debug_screenshot(self, prefix: str) -> str:
         self.debug_prefixes.append(prefix)
@@ -365,9 +369,10 @@ def test_hslj_activity_open_button_uses_detail_panel_template():
 
 
 def test_hslj_step_order():
-    steps = [name for name, _, _ in HSLJTask.get_steps()]
+    steps = HSLJTask.get_steps()
+    step_names = [name for name, _, _ in steps]
 
-    assert steps == [
+    assert step_names == [
         "close_all",
         "open_fenzheng_activity",
         "open_panel",
@@ -377,6 +382,33 @@ def test_hslj_step_order():
         "complete_3v3_matches",
         "final_cleanup",
     ]
+    assert steps[0][2]["timeout_ms"] == 120000
+
+
+def test_hslj_close_all_returns_to_safe_zone_after_cleanup():
+    task = FakeHsljTask()
+
+    task.close_all()
+
+    assert task.safe_close_panel_calls == [(5000, 500, None)]
+    assert task.wait_calls == [1000]
+    assert task.safe_zone_calls == [()]
+
+
+def test_hslj_close_all_wakes_power_saving_then_returns_to_safe_zone():
+    task = FakeHsljTask(power_saving_results=[True])
+
+    task.close_all()
+
+    assert task.clicked_points == [
+        (task.POINT_RIGHT_JOYSTICK_CENTER[0], task.POINT_RIGHT_JOYSTICK_CENTER[1], 0)
+    ]
+    assert task.safe_close_panel_calls == [
+        (5000, 500, None),
+        (5000, 500, None),
+    ]
+    assert task.wait_calls == [1000, 1000]
+    assert task.safe_zone_calls == [()]
 
 
 def test_hslj_safe_close_panels_collapses_chat_before_and_after():
