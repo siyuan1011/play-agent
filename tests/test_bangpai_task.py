@@ -1,10 +1,10 @@
 import pytest
 
 from botCore.task import StepJumpException
-from ymjh_bot.task.BPRW_task import BangpaiTask
+from ymjh_bot.task.BPRW_task import BPRWTask
 
 
-class FakeBangpaiTask(BangpaiTask):
+class FakeBPRWTask(BPRWTask):
     def __init__(
         self,
         *,
@@ -15,6 +15,7 @@ class FakeBangpaiTask(BangpaiTask):
         power_saving_results: list[bool] | None = None,
         confirm_results: list[bool] | None = None,
         completion_dialog_results: list[bool] | None = None,
+        deadline_expired_results: list[bool] | None = None,
     ):
         super().__init__()
         self.roi_results = roi_results or []
@@ -24,7 +25,9 @@ class FakeBangpaiTask(BangpaiTask):
         self.power_saving_results = power_saving_results or []
         self.confirm_results = confirm_results or []
         self.completion_dialog_results = completion_dialog_results or []
+        self.deadline_expired_results = deadline_expired_results
         self.ensure_sidebar_calls = 0
+        self.switch_panel_calls = []
         self.roi_calls = []
         self.scroll_calls = 0
         self.completion_dialog_calls = 0
@@ -42,6 +45,28 @@ class FakeBangpaiTask(BangpaiTask):
 
     def ensure_left_task_sidebar_visible(self) -> None:
         self.ensure_sidebar_calls += 1
+
+    def switch_task_panel(
+        self,
+        panel: str,
+        *,
+        timeout_ms: int = 3000,
+        threshold: float = 0.8,
+        wait_after_click_ms: int = 500,
+    ) -> None:
+        self.switch_panel_calls.append((panel, timeout_ms, threshold, wait_after_click_ms))
+
+    def _make_deadline(self, timeout_ms):
+        if self.deadline_expired_results is None:
+            return super()._make_deadline(timeout_ms)
+        return object()
+
+    def _is_deadline_expired(self, deadline):
+        if self.deadline_expired_results is None:
+            return super()._is_deadline_expired(deadline)
+        if self.deadline_expired_results:
+            return self.deadline_expired_results.pop(0)
+        return False
 
     def wait_find_image_in_roi(
         self,
@@ -124,6 +149,8 @@ class FakeBangpaiTask(BangpaiTask):
         self.click_template_calls.append(
             (template, timeout_ms, description, threshold, wait_after_click_ms, roi)
         )
+        if not self.click_template_results:
+            return False
         return self.click_template_results.pop(0)
 
     def close_transient_panels(self, max_attempts: int = 4) -> bool:
@@ -144,7 +171,7 @@ class FakeBangpaiTask(BangpaiTask):
 
 
 def test_close_all_wakes_only_when_power_saving_mode_is_visible():
-    task = FakeBangpaiTask(power_saving_results=[True])
+    task = FakeBPRWTask(power_saving_results=[True])
 
     task.close_all()
 
@@ -160,7 +187,7 @@ def test_close_all_wakes_only_when_power_saving_mode_is_visible():
 
 
 def test_close_all_does_not_wake_when_power_saving_mode_is_missing():
-    task = FakeBangpaiTask(power_saving_results=[False])
+    task = FakeBPRWTask(power_saving_results=[False])
 
     task.close_all()
 
@@ -170,7 +197,7 @@ def test_close_all_does_not_wake_when_power_saving_mode_is_missing():
 
 
 def test_close_all_closes_completion_dialog_without_power_wake():
-    task = FakeBangpaiTask(
+    task = FakeBPRWTask(
         completion_dialog_results=[True],
         power_saving_results=[False],
     )
@@ -182,17 +209,26 @@ def test_close_all_closes_completion_dialog_without_power_wake():
 
 
 def test_find_bangpai_task_in_sidebar_scrolls_until_found():
-    task = FakeBangpaiTask(roi_results=[False, False, True])
+    task = FakeBPRWTask(roi_results=[False, False, True])
 
     assert task.find_bangpai_task_in_sidebar(max_scrolls=2)
 
-    assert task.ensure_sidebar_calls == 1
+    assert task.switch_panel_calls == [("江湖", 3000, 0.8, 500)]
     assert task.scroll_calls == 2
     assert len(task.roi_calls) == 3
 
 
+def test_click_bangpai_task_from_sidebar_switches_to_jianghu_before_click():
+    task = FakeBPRWTask(roi_results=[True])
+
+    assert task.click_bangpai_task_from_sidebar(max_scrolls=0, required=True)
+
+    assert task.switch_panel_calls == [("江湖", 3000, 0.8, 500)]
+    assert task.click_count == 1
+
+
 def test_resume_existing_task_clicks_and_jumps_to_run_flow():
-    task = FakeBangpaiTask(roi_results=[True])
+    task = FakeBPRWTask(roi_results=[True])
 
     with pytest.raises(StepJumpException) as exc_info:
         task.resume_existing_task()
@@ -203,7 +239,7 @@ def test_resume_existing_task_clicks_and_jumps_to_run_flow():
 
 
 def test_resume_existing_task_continues_when_sidebar_task_missing():
-    task = FakeBangpaiTask(roi_results=[False, False, False, False, False, False])
+    task = FakeBPRWTask(roi_results=[False, False, False, False, False, False])
 
     task.resume_existing_task()
 
@@ -213,7 +249,7 @@ def test_resume_existing_task_continues_when_sidebar_task_missing():
 
 
 def test_task_item_flow_submits_from_warehouse_before_stall():
-    task = FakeBangpaiTask(
+    task = FakeBPRWTask(
         acquire_visible_results=[True],
         click_template_results=[True, True],
     )
@@ -228,7 +264,7 @@ def test_task_item_flow_submits_from_warehouse_before_stall():
 
 
 def test_task_item_flow_falls_back_to_stall_and_all_server_then_stops():
-    task = FakeBangpaiTask(
+    task = FakeBPRWTask(
         acquire_visible_results=[True],
         click_template_results=[True, False, True, False, True, False],
     )
@@ -250,7 +286,7 @@ def test_task_item_flow_falls_back_to_stall_and_all_server_then_stops():
 
 
 def test_buy_retries_when_button_still_visible_after_no_confirm():
-    task = FakeBangpaiTask(
+    task = FakeBPRWTask(
         roi_results=[True],
         click_template_results=[True],
         confirm_results=[False, False],
@@ -277,7 +313,7 @@ def test_buy_retries_when_button_still_visible_after_no_confirm():
 
 
 def test_submit_panel_clicks_one_key_submit_and_confirms():
-    task = FakeBangpaiTask(click_template_results=[True, True])
+    task = FakeBPRWTask(click_template_results=[True, True])
 
     assert task.handle_submit_panel_if_visible()
 
@@ -285,3 +321,33 @@ def test_submit_panel_clicks_one_key_submit_and_confirms():
         (task.BTN_ONE_KEY_SUBMIT, 600, "帮派任务一键提交按钮", 0.85, 1500, task.ROI_ONE_KEY_SUBMIT),
         ([task.BTN_MODAL_OK, task.BTN_OK], 3000, "帮派任务提交确认按钮", 0.85, 1500, None),
     ]
+
+
+def test_run_task_flow_confirms_missing_jianghu_tracker_before_success():
+    task = FakeBPRWTask(
+        roi_results=[False, False, False, False, False, False, False, False, False],
+        deadline_expired_results=[False, False, False],
+    )
+
+    task.run_task_flow()
+
+    assert task.switch_panel_calls == [
+        ("江湖", 3000, 0.8, 500),
+        ("江湖", 3000, 0.8, 500),
+        ("江湖", 3000, 0.8, 500),
+    ]
+    assert task.scroll_calls == 6
+    assert "江湖任务栏连续未找到帮派任务，确认帮派任务执行完成" in task.logs
+
+
+def test_run_task_flow_times_out_instead_of_succeeding_after_idle_sidebar_clicks():
+    task = FakeBPRWTask(
+        roi_results=[True, True, True],
+        deadline_expired_results=[False, False, False, True],
+    )
+
+    with pytest.raises(RuntimeError, match="帮派任务执行流程超时"):
+        task.run_task_flow()
+
+    assert task.click_count == 3
+    assert "连续点击左侧帮派任务未出现新流程，继续等待完成信号" in task.logs

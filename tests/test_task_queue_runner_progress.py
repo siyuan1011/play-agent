@@ -2,6 +2,7 @@ import threading
 import time
 
 import numpy as np
+import pytest
 
 from botCore import GameTask, step
 from ymjh_bot.runner.task_queue_runner import TaskQueueRunner
@@ -47,6 +48,12 @@ class WaitingTask(GameTask):
     def wait_until_paused(self):
         self.entered.set()
         self.wait(1000)
+
+
+class FailingTask(GameTask):
+    @step(retry=0)
+    def fail(self):
+        raise RuntimeError("boom")
 
 
 def make_runner(task, progress_callback=None):
@@ -97,3 +104,19 @@ def test_queue_runner_pause_keeps_current_progress():
     runner.stop()
     thread.join(timeout=1.0)
     assert not thread.is_alive()
+
+
+def test_queue_runner_stops_on_failed_step_without_advancing_task():
+    failing_task = FailingTask()
+    next_task = LinearTask()
+    runner = TaskQueueRunner(
+        [failing_task, next_task],
+        FakeADB(),  # type: ignore[arg-type]
+        FakeVision(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RuntimeError, match="任务 .* 步骤 fail 执行失败：boom"):
+        runner.run()
+
+    assert runner.get_progress() == {"current_task_index": 0, "current_step_index": 0}
+    assert next_task.calls == []

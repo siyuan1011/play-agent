@@ -3,7 +3,7 @@ import time
 
 from botCore.vision import load_image
 from ymjh_bot.task.QDYX_task import StartTask
-from ymjh_bot.task.BPRW_task import BangpaiTask
+from ymjh_bot.task.BPRW_task import BPRWTask
 from ymjh_bot.ui.task_queue_window import is_visible_task_class
 from ymjh_bot.ym_game_task import LoginState, YmGameTask
 
@@ -724,7 +724,7 @@ def test_auto_battle_rejects_invalid_arguments():
 
 
 def test_bangpai_task_steps_include_sidebar_execution_after_accept():
-    step_names = [name for name, _, _ in BangpaiTask.get_steps()]
+    step_names = [name for name, _, _ in BPRWTask.get_steps()]
 
     assert step_names == [
         "close_all",

@@ -90,7 +90,7 @@ def test_dev_task_loader_rejects_yaml(tmp_path):
 @pytest.mark.parametrize(
     ("file_name", "class_name", "task_key"),
     [
-        ("BPRW_task.py", "BangpaiTask", "BPRW"),
+        ("BPRW_task.py", "BPRWTask", "BPRW"),
         ("CGSS_task.py", "ChaguanTask", "CGSS"),
         ("HSLJ_task.py", "HSLJTask", "HSLJ"),
         ("JHYXB_task.py", "JianghuYingxiongbangTask", "JHYXB"),

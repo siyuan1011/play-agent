@@ -44,6 +44,7 @@ class TaskQueueRunner:
         self.current_step_index = 0
         self.total_tasks = len(task_list)
         self._started_task_index: int | None = None
+        self._last_failure_message: str | None = None
         self._executor = DslStepExecutor(
             should_stop=lambda: self._stop_requested or self._paused,
             emit=self._emit,
@@ -121,6 +122,7 @@ class TaskQueueRunner:
         """
         self._stop_requested = False
         self._paused = False
+        self._last_failure_message = None
         self._emit_progress()
         self.adb.ensure_device()
 
@@ -167,8 +169,12 @@ class TaskQueueRunner:
 
             if self._stop_requested:
                 break
-            if self._paused or not task_completed:
+            if self._paused:
                 continue
+            if not task_completed:
+                if self._last_failure_message:
+                    raise RuntimeError(self._last_failure_message)
+                break
 
             # 任务完成后，更新索引
             self.current_task_index += 1
@@ -247,6 +253,15 @@ class TaskQueueRunner:
                     f"    [{step_name}] {'OK' if result.success else 'FAIL'} - "
                     f"{result.reason} ({result.elapsed_ms} ms)"
                 )
+
+                if not result.success:
+                    self.current_step_index = step_index
+                    self._last_failure_message = (
+                        f"任务 {task_name} 步骤 {step_name} 执行失败：{result.reason}"
+                    )
+                    self._emit(f"    {self._last_failure_message}，队列停止")
+                    self._emit_progress()
+                    return results, False
 
                 # 检查跳转请求
                 if task._jump_target:

@@ -5,7 +5,7 @@ from botCore import step
 from ymjh_bot.ym_game_task import YmGameTask
 
 
-class BangpaiTask(YmGameTask):
+class BPRWTask(YmGameTask):
     """一梦江湖帮派任务。"""
 
     task_key = "BPRW"
@@ -37,6 +37,9 @@ class BangpaiTask(YmGameTask):
     POINT_DIALOG_NEXT = (1230, 690)
 
     TASK_FLOW_TIMEOUT_MS = 900000
+    TASK_FLOW_RETRY_WAIT_MS = 3000
+    TASK_MISSING_CONFIRMATION_LIMIT = 3
+    TASK_IDLE_CLICK_LIMIT = 3
     TRADE_BUY_THRESHOLD = 0.7
 
     def before_start(self) -> None:
@@ -129,51 +132,69 @@ class BangpaiTask(YmGameTask):
         """循环执行帮派任务，处理第五环任务物品。"""
         deadline = self._make_deadline(self.TASK_FLOW_TIMEOUT_MS)
         idle_task_clicks = 0
+        missing_task_confirmations = 0
         while not self._is_deadline_expired(deadline):
             if self.close_completion_dialog_if_visible():
                 return
 
             if self.handle_submit_panel_if_visible():
                 idle_task_clicks = 0
+                missing_task_confirmations = 0
                 continue
 
             if self.handle_trade_panel_if_visible():
                 idle_task_clicks = 0
+                missing_task_confirmations = 0
                 continue
 
             if self.handle_acquire_route_panel_if_visible():
                 idle_task_clicks = 0
+                missing_task_confirmations = 0
                 continue
 
             self.wait_auto_pathfinding(timeout_ms=30000)
 
             if self.handle_submit_panel_if_visible():
                 idle_task_clicks = 0
+                missing_task_confirmations = 0
                 continue
 
             if self.handle_trade_panel_if_visible():
                 idle_task_clicks = 0
+                missing_task_confirmations = 0
                 continue
 
             if self.handle_acquire_route_panel_if_visible():
                 idle_task_clicks = 0
+                missing_task_confirmations = 0
                 continue
 
             self.close_transient_panels(max_attempts=2)
             if self.click_bangpai_task_from_sidebar(max_scrolls=2, required=False):
+                missing_task_confirmations = 0
                 idle_task_clicks += 1
-                if idle_task_clicks >= 3:
-                    self._log("连续点击左侧帮派任务未出现新流程，停止本轮执行")
-                    return
+                if idle_task_clicks >= self.TASK_IDLE_CLICK_LIMIT:
+                    self._log("连续点击左侧帮派任务未出现新流程，继续等待完成信号")
+                    idle_task_clicks = 0
+                    self.wait(self.TASK_FLOW_RETRY_WAIT_MS)
                 continue
 
-            self._log("任务栏未找到帮派任务，默认帮派任务执行完成")
-            return
+            idle_task_clicks = 0
+            missing_task_confirmations += 1
+            if missing_task_confirmations >= self.TASK_MISSING_CONFIRMATION_LIMIT:
+                self._log("江湖任务栏连续未找到帮派任务，确认帮派任务执行完成")
+                return
 
-        raise RuntimeError("帮派任务执行流程超时")
+            self._log(
+                "江湖任务栏暂未找到帮派任务，继续确认 "
+                f"{missing_task_confirmations}/{self.TASK_MISSING_CONFIRMATION_LIMIT}"
+            )
+            self.wait(self.TASK_FLOW_RETRY_WAIT_MS)
+
+        raise RuntimeError("帮派任务执行流程超时：未检测到完成对话或明确任务追踪消失")
 
     def click_bangpai_task_from_sidebar(self, *, max_scrolls: int, required: bool) -> bool:
-        """Find and click the Bangpai task in the Jianghu task sidebar."""
+        """Find and click the BPRW task in the Jianghu task sidebar."""
         if not self.find_bangpai_task_in_sidebar(max_scrolls=max_scrolls):
             if required:
                 self._log("任务栏未找到帮派任务")
@@ -186,7 +207,7 @@ class BangpaiTask(YmGameTask):
 
     def find_bangpai_task_in_sidebar(self, max_scrolls: int = 5) -> bool:
         """Find Bangpai in the current left task sidebar, scrolling down if needed."""
-        self.ensure_left_task_sidebar_visible()
+        self.switch_task_panel("江湖")
         for attempt in range(max_scrolls + 1):
             if self.wait_find_image_in_roi(
                 self.TEXT_BANGPAI,
