@@ -296,11 +296,19 @@ class FakeActivityPanelTask(YmGameTask):
 
 
 class FakeSafeZoneTask(YmGameTask):
-    def __init__(self, *, main_ready: bool = True, image_results: list[bool] | None = None):
+    def __init__(
+        self,
+        *,
+        main_ready: bool = True,
+        image_results: list[bool] | None = None,
+        roi_results: list[bool] | None = None,
+    ):
         super().__init__()
         self.main_ready = main_ready
         self.image_results = image_results or []
+        self.roi_results = roi_results if roi_results is not None else [True, True, True, True]
         self.image_calls = []
+        self.roi_calls = []
         self.clicked_points = []
         self.click_offsets = []
         self.wait_calls = []
@@ -314,6 +322,19 @@ class FakeSafeZoneTask(YmGameTask):
     def wait_image_appear(self, template, timeout_ms=10000, threshold=0.8, callback=None, interval_ms=500):
         self.image_calls.append((template, timeout_ms, threshold))
         return self.image_results.pop(0) if self.image_results else False
+
+    def wait_find_image_in_roi(
+        self,
+        template,
+        roi,
+        *,
+        timeout_ms,
+        description,
+        threshold=0.8,
+        interval_ms=500,
+    ):
+        self.roi_calls.append((template, roi, timeout_ms, description, threshold, interval_ms))
+        return self.roi_results.pop(0) if self.roi_results else False
 
     def click(self, offset: int = 3) -> None:
         self.click_offsets.append(offset)
@@ -599,11 +620,44 @@ def test_close_all_panels_returns_to_safe_zone_when_requested():
 
     assert task.clicked_points == [
         (task.POINT_MINIMAP[0], task.POINT_MINIMAP[1], 0),
-        (task.POINT_LOCAL_MAP_WORLD[0], task.POINT_LOCAL_MAP_WORLD[1], 0),
-        (task.POINT_WORLD_MAP_JINLING[0], task.POINT_WORLD_MAP_JINLING[1], 0),
-        (task.POINT_JINLING_JIMING_TEMPLE[0], task.POINT_JINLING_JIMING_TEMPLE[1], 0),
-        (task.POINT_MAP_CLOSE[0], task.POINT_MAP_CLOSE[1], 0),
     ]
+    assert task.POINT_MINIMAP == (1198, 100)
+    assert task.roi_calls == [
+        (
+            task.MAP_BTN_WORLD,
+            task.ROI_MAP_WORLD_BUTTON,
+            5000,
+            "地图世界按钮",
+            task.MAP_TEMPLATE_THRESHOLD,
+            500,
+        ),
+        (
+            task.MAP_WORLD_JINLING,
+            task.ROI_MAP_WORLD_JINLING,
+            5000,
+            "世界地图金陵",
+            task.MAP_TEMPLATE_THRESHOLD,
+            500,
+        ),
+        (
+            task.MAP_JINLING_JIMING_TEMPLE,
+            task.ROI_MAP_JINLING_JIMING_TEMPLE,
+            5000,
+            "金陵地图鸡鸣寺",
+            task.MAP_TEMPLATE_THRESHOLD,
+            500,
+        ),
+        (
+            task.MAP_CLOSE_TEMPLATES,
+            task.ROI_MAP_CLOSE,
+            5000,
+            "地图关闭按钮",
+            task.MAP_TEMPLATE_THRESHOLD,
+            500,
+        ),
+    ]
+    assert task.MAP_CLOSE_TEMPLATES == [task.BTN_CLOSE, task.BTN_WELCOME_CLOSE, task.BTN_PANE_CLOSE]
+    assert task.click_offsets == [0, 0, 0, 0]
     assert task.wait_calls == [1000, 1000, 1000, 1000, 1000]
     assert task.main_ready_calls == [(2000, 0.8)]
     assert task.auto_path_calls == [{"timeout_ms": 90000}]
@@ -623,6 +677,26 @@ def test_return_to_safe_zone_rejects_non_main_scene_without_clicking_map():
     assert task.clicked_points == []
     assert task.wait_calls == []
     assert task.auto_path_calls == []
+
+
+def test_return_to_safe_zone_raises_when_map_template_is_missing():
+    cases = [
+        ([False], "未找到地图世界按钮"),
+        ([True, False], "未找到世界地图金陵"),
+        ([True, True, False], "未找到金陵地图鸡鸣寺"),
+        ([True, True, True, False], "未找到地图关闭按钮"),
+    ]
+
+    for roi_results, message in cases:
+        task = FakeSafeZoneTask(roi_results=roi_results)
+        try:
+            task.return_to_safe_zone()
+        except RuntimeError as exc:
+            assert str(exc) == message
+        else:
+            raise AssertionError("Expected RuntimeError")
+
+        assert task.auto_path_calls == []
 
 
 def test_recover_health_if_needed_meditates_until_full():

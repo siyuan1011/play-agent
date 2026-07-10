@@ -69,6 +69,9 @@ class YmGameTask(GameTask):
     ACTIVITY_TAB_HANGDANG_ACTIVE = str(TEMPLATES_DIR / "activity_tab_hangdang_active.png")
     ACTIVITY_TAB_YOULI_ACTIVE = str(TEMPLATES_DIR / "activity_tab_youli_active.png")
     ACTIVITY_TAB_SHEJIAO_ACTIVE = str(TEMPLATES_DIR / "activity_tab_shejiao_active.png")
+    MAP_BTN_WORLD = str(TEMPLATES_DIR / "map_btn_world.png")
+    MAP_WORLD_JINLING = str(TEMPLATES_DIR / "map_world_jinling.png")
+    MAP_JINLING_JIMING_TEMPLE = str(TEMPLATES_DIR / "map_jinling_jiming_temple.png")
 
     # 固定坐标点 (设计分辨率 1280x720 下)
     POINT_WAKE_SCREEN = (640, 360)
@@ -80,11 +83,7 @@ class YmGameTask(GameTask):
     POINT_HUODONG_SHEJIAO = (882, 680)
     POINT_MAIN_TASK = (22, 160)
     POINT_MAIN_TEAM = (22, 276)
-    POINT_MINIMAP = (1198, 45)
-    POINT_LOCAL_MAP_WORLD = (1235, 668)
-    POINT_WORLD_MAP_JINLING = (902, 215)
-    POINT_JINLING_JIMING_TEMPLE = (532, 122)
-    POINT_MAP_CLOSE = (1238, 45)
+    POINT_MINIMAP = (1198, 100)
     POINT_TASK_TAB_TASK = (88, 124)
     POINT_TASK_TAB_JIANGHU = (174, 124)
     POINT_TASK_TAB_QIYU = (258, 124)
@@ -115,6 +114,10 @@ class YmGameTask(GameTask):
     ROI_CHAT_SEND_BUTTON = (500, 640, 160, 80)
     ROI_POWER_SAVING = (480, 470, 340, 140)
     ROI_CENTER_MODAL_OK = (730, 440, 250, 120)
+    ROI_MAP_WORLD_BUTTON = (1160, 610, 120, 110)
+    ROI_MAP_WORLD_JINLING = (850, 120, 120, 170)
+    ROI_MAP_JINLING_JIMING_TEMPLE = (460, 60, 130, 140)
+    ROI_MAP_CLOSE = (1180, 0, 100, 95)
     HEALTH_FULL_WIDTH = 255
     HEALTH_RECOVER_THRESHOLD = 0.80
     HEALTH_FULL_THRESHOLD = 0.90
@@ -143,6 +146,8 @@ class YmGameTask(GameTask):
     }
     ACTIVITY_CATEGORY_VERIFY_TIMEOUT_MS = 1500
     ACTIVITY_CATEGORY_VERIFY_THRESHOLD = 0.85
+    MAP_TEMPLATE_THRESHOLD = 0.9
+    MAP_CLOSE_TEMPLATES = [BTN_CLOSE, BTN_WELCOME_CLOSE, BTN_PANE_CLOSE]
 
     LOGIN_STATE_NOTICE = "notice"
     LOGIN_STATE_LOGIN = "login"
@@ -714,18 +719,54 @@ class YmGameTask(GameTask):
             raise RuntimeError("当前不是干净主界面，无法返回鸡鸣寺安全区")
 
         self._log("开始返回鸡鸣寺安全区")
-        for point in (
-            self.POINT_MINIMAP,
-            self.POINT_LOCAL_MAP_WORLD,
-            self.POINT_WORLD_MAP_JINLING,
-            self.POINT_JINLING_JIMING_TEMPLE,
-            self.POINT_MAP_CLOSE,
-        ):
-            self.click_point(point[0], point[1], offset=0)
-            self.wait(wait_after_click_ms)
+        self.click_point(self.POINT_MINIMAP[0], self.POINT_MINIMAP[1], offset=0)
+        self.wait(wait_after_click_ms)
+        self._click_map_target(
+            self.MAP_BTN_WORLD,
+            self.ROI_MAP_WORLD_BUTTON,
+            "地图世界按钮",
+            wait_after_click_ms=wait_after_click_ms,
+        )
+        self._click_map_target(
+            self.MAP_WORLD_JINLING,
+            self.ROI_MAP_WORLD_JINLING,
+            "世界地图金陵",
+            wait_after_click_ms=wait_after_click_ms,
+        )
+        self._click_map_target(
+            self.MAP_JINLING_JIMING_TEMPLE,
+            self.ROI_MAP_JINLING_JIMING_TEMPLE,
+            "金陵地图鸡鸣寺",
+            wait_after_click_ms=wait_after_click_ms,
+        )
+        self._click_map_target(
+            self.MAP_CLOSE_TEMPLATES,
+            self.ROI_MAP_CLOSE,
+            "地图关闭按钮",
+            wait_after_click_ms=wait_after_click_ms,
+        )
 
         self.wait_auto_pathfinding(timeout_ms=path_timeout_ms)
         self._log("已回到鸡鸣寺安全区")
+
+    def _click_map_target(
+        self,
+        template: str | list[str],
+        roi: tuple[int, int, int, int],
+        description: str,
+        *,
+        wait_after_click_ms: int,
+    ) -> None:
+        if not self.wait_find_image_in_roi(
+            template,
+            roi,
+            timeout_ms=5000,
+            description=description,
+            threshold=self.MAP_TEMPLATE_THRESHOLD,
+        ):
+            raise RuntimeError(f"未找到{description}")
+        self.click(offset=0)
+        self.wait(wait_after_click_ms)
 
     def find_image_once(
         self,

@@ -41,6 +41,37 @@ def test_template_match_not_found():
     assert result.found is False
 
 
+def test_safe_zone_map_templates_match_reference_screenshots():
+    root = Path(__file__).resolve().parents[1]
+    local_map = root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_211024.png"
+    world_map = root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_211854.png"
+    cases = [
+        (
+            local_map,
+            root / "src/ymjh_bot/templates/map_btn_world.png",
+            (1160, 610, 120, 110),
+        ),
+        (
+            world_map,
+            root / "src/ymjh_bot/templates/map_world_jinling.png",
+            (850, 120, 120, 170),
+        ),
+        (
+            local_map,
+            root / "src/ymjh_bot/templates/map_jinling_jiming_temple.png",
+            (460, 60, 130, 140),
+        ),
+    ]
+
+    engine = VisionEngine()
+    for screenshot_path, template_path, roi in cases:
+        assert template_path.exists()
+        result = engine.match_template(load_image(screenshot_path), str(template_path), threshold=0.95, roi=roi)
+
+        assert result.found is True
+        assert result.score >= 0.95
+
+
 def test_menke_sheyan_templates_match_reference_screenshots():
     root = Path(__file__).resolve().parents[1]
     screenshot_prefix = "\u95e8\u5ba2\u8bbe\u5bb4"
