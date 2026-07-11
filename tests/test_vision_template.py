@@ -72,6 +72,46 @@ def test_safe_zone_map_templates_match_reference_screenshots():
         assert result.score >= 0.95
 
 
+def test_health_bar_anchor_template_matches_reference_screenshots():
+    root = Path(__file__).resolve().parents[1]
+    template_path = root / "src/ymjh_bot/templates/health_bar_anchor.png"
+    cases = [
+        (root / "screenshots" / "1.png", True),
+        (root / "screenshots" / "5.png", True),
+        (root / "screenshots" / "hslj_debug_current_1v1.png", False),
+    ]
+
+    engine = VisionEngine()
+    assert template_path.exists()
+    for screenshot_path, expected_found in cases:
+        result = engine.match_template(
+            load_image(screenshot_path),
+            str(template_path),
+            threshold=0.8,
+            roi=(0, 0, 380, 90),
+        )
+
+        assert result.found is expected_found
+        if expected_found:
+            assert result.score >= 0.8
+            assert result.bbox == (73, 24, 118, 51)
+
+
+def test_emotion_meditate_template_matches_reference_screenshot():
+    root = Path(__file__).resolve().parents[1]
+    engine = VisionEngine()
+    result = engine.match_template(
+        load_image(root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260712_021342.png"),
+        str(root / "src/ymjh_bot/templates/btn_emotion_meditate.png"),
+        threshold=0.9,
+        roi=(250, 480, 730, 240),
+    )
+
+    assert result.found is True
+    assert result.score >= 0.9
+    assert result.center == (556, 581)
+
+
 def test_menke_sheyan_templates_match_reference_screenshots():
     root = Path(__file__).resolve().parents[1]
     screenshot_prefix = "\u95e8\u5ba2\u8bbe\u5bb4"
@@ -337,6 +377,79 @@ def test_hslj_templates_match_reference_screenshots():
         assert result.score >= threshold
 
 
+def test_team_templates_match_reference_screenshots():
+    root = Path(__file__).resolve().parents[1]
+    cases = [
+        (
+            root / "screenshots" / "ymjh_queue_127.0.0.1_16384_20260710_192949.png",
+            root / "src/ymjh_bot/templates/btn_team_create.png",
+            (720, 600, 220, 115),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "ymjh_queue_127.0.0.1_16384_20260710_192949.png",
+            root / "src/ymjh_bot/templates/btn_team_quick.png",
+            (1010, 600, 220, 115),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "ymjh_queue_127.0.0.1_16384_20260710_193125.png",
+            root / "src/ymjh_bot/templates/btn_team_leave.png",
+            (1010, 600, 220, 115),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "team_debug_quick_after_user_note_16416.png",
+            root / "src/ymjh_bot/templates/btn_team_auto_match.png",
+            (880, 620, 370, 90),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "team_debug_quick_after_user_note_16416.png",
+            root / "src/ymjh_bot/templates/btn_team_refresh_list.png",
+            (880, 620, 370, 90),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "team_report_04_quick_auto_match_jypy.png",
+            root / "src/ymjh_bot/templates/btn_team_follow_ok.png",
+            (730, 440, 250, 120),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "team_debug_quick_hangdang_16416.png",
+            root / "src/ymjh_bot/templates/text_team_target_jianghu_xingshang.png",
+            (40, 90, 280, 560),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "team_debug_quick_hangdang_16416.png",
+            root / "src/ymjh_bot/templates/text_team_target_juyi_pingyuan.png",
+            (40, 90, 280, 560),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "team_debug_quick_jianghu_expanded_16416.png",
+            root / "src/ymjh_bot/templates/text_team_target_daily.png",
+            (40, 90, 280, 560),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "activity_tasks_20260708/jypy_20_after_click_tracker_linchong.png",
+            root / "src/ymjh_bot/templates/text_jypy_sidebar_chapter.png",
+            (40, 135, 330, 430),
+            0.95,
+        ),
+    ]
+
+    engine = VisionEngine()
+    for screenshot_path, template_path, roi, threshold in cases:
+        result = engine.match_template(load_image(screenshot_path), str(template_path), threshold=threshold, roi=roi)
+
+        assert result.found is True
+        assert result.score >= threshold
+
+
 def test_bangpai_templates_match_reference_screenshots():
     root = Path(__file__).resolve().parents[1]
     menke_prefix = "\u95e8\u5ba2\u8bbe\u5bb4"
@@ -570,6 +683,48 @@ def test_kyrw_reuses_bangpai_stall_route_template():
         str(root / "src/ymjh_bot/templates/route_bangpai_stall.png"),
         threshold=0.95,
         roi=(720, 120, 480, 500),
+    )
+
+    assert result.found is True
+    assert result.score >= 0.95
+
+
+def test_mryg_smzb_template_matches_reference_screenshot():
+    root = Path(__file__).resolve().parents[1]
+    engine = VisionEngine()
+    result = engine.match_template(
+        load_image(root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260711_222110.png"),
+        str(root / "src/ymjh_bot/templates/btn_SMZB.png"),
+        threshold=0.95,
+        roi=(900, 340, 370, 180),
+    )
+
+    assert result.found is True
+    assert result.score >= 0.95
+
+
+def test_mryg_ttym_still_matches_left_entry_on_result_panel():
+    root = Path(__file__).resolve().parents[1]
+    engine = VisionEngine()
+    result = engine.match_template(
+        load_image(root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260711_231344.png"),
+        str(root / "src/ymjh_bot/templates/btn_TTYM.png"),
+        threshold=0.95,
+        roi=(240, 500, 180, 130),
+    )
+
+    assert result.found is True
+    assert result.score >= 0.95
+
+
+def test_mryg_jsgx_template_matches_result_panel_bottom_button():
+    root = Path(__file__).resolve().parents[1]
+    engine = VisionEngine()
+    result = engine.match_template(
+        load_image(root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260711_231344.png"),
+        str(root / "src/ymjh_bot/templates/btn_JSGX.png"),
+        threshold=0.95,
+        roi=(420, 560, 430, 120),
     )
 
     assert result.found is True

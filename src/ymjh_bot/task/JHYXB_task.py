@@ -78,9 +78,9 @@ class JianghuYingxiongbangTask(YmGameTask):
     @step(retry=1, timeout_ms=120000)
     def close_all(self) -> None:
         """关闭所有弹窗，回到游戏主界面。"""
-        self.close_all_panels_for_jhyxb()
+        self.close_all_panels()
         if self.wake_from_power_saving_if_needed():
-            self.close_all_panels_for_jhyxb()
+            self.close_all_panels()
         self.wait(1000)
         self.return_to_safe_zone()
 
@@ -159,36 +159,9 @@ class JianghuYingxiongbangTask(YmGameTask):
             return
 
         self._log("江湖英雄榜面板不可见，尝试从主界面重新打开")
-        self.close_all_panels_for_jhyxb(timeout_ms=1500, max_attempts=6)
+        self.close_all_panels(timeout_ms=1500, max_attempts=6)
         self.open_fenzheng_activity_panel()
         self.open_jhyxb_from_activity()
-
-    def close_all_panels_for_jhyxb(
-        self,
-        *,
-        timeout_ms: int = 5000,
-        wait_after_click_ms: int = 500,
-        max_attempts: int | None = None,
-    ) -> None:
-        """Close overlays with a guard for the challenge purchase dialog."""
-        attempts = max_attempts or self.CLOSE_ALL_MAX_ATTEMPTS
-        targets = [self.BTN_CLOSE, self.BTN_PANE_CLOSE, self.BTN_WELCOME_CLOSE]
-
-        self.collapse_chat_if_open()
-        for _ in range(attempts):
-            if self.close_purchase_dialog_if_needed():
-                continue
-
-            if not self.wait_image_appear(targets, timeout_ms=timeout_ms):
-                self.collapse_chat_if_open()
-                self._log("已关闭所有弹窗")
-                return
-
-            self.click()
-            self.wait(wait_after_click_ms)
-
-        self.collapse_chat_if_open()
-        self._log(f"关闭弹窗达到上限 {attempts} 次，继续后续流程")
 
     def close_purchase_dialog_if_needed(self) -> bool:
         """Close the extra challenge purchase dialog without hitting the panel close button behind it."""

@@ -20,6 +20,9 @@ class MRYGTask(YmGameTask):
 
     ICON_CGSS_COMPLETE = str(YmGameTask.TEMPLATES_DIR / "icon_cgss_complete.png")
 
+    TTYM_RESULT_TIMEOUT_MS = 180000
+    TTYM_CLICK_INTERVAL_MS = 1500
+
     # 固定坐标点 (设计分辨率 1280x720 下)
     POINT_QIANWANG = (434, 416)
     POINT_ANSWER = (1232, 540)
@@ -51,21 +54,45 @@ class MRYGTask(YmGameTask):
         """等待自动寻路开始（检测到"自动寻路"文字消失）。"""
         self.wait_auto_pathfinding()
 
-    @step(retry=3, timeout_ms=60000)
+    @step(retry=0, timeout_ms=240000)
     def enter_panel(self) -> None:
         """点击进入茶馆（循环点击直到消失）。"""
-        self.wait_image_appear([self.BTN_SMZB, self.BTN_OK])
-        self.wait_image_missing(
-            [self.BTN_SMZB, self.BTN_OK],
-            callback=lambda found, count: (self.click(), self.wait(1500)) if found else None,
-        )
-        self.wait_image_appear(
-            self.BTN_TTYM,
-            callback=lambda found: (self.click(), self.wait(1500), self.click_point(1024, 580), self.wait(1500)),
-        )
-        self.wait_image_appear(self.BTN_JSGX, callback=lambda found: (self.click(), self.wait(1500)) if found else None)
-        self.wait_image_appear(self.BTN_MODAL_OK)
-        self.wait_image_missing(self.BTN_MODAL_OK, callback=lambda found, count: (self.click(), self.wait(1500)) if found else None)
+        fortune_targets = [self.BTN_SMZB, self.BTN_OK]
+        if not self.wait_image_appear(fortune_targets, timeout_ms=180000):
+            raise RuntimeError("未找到算命占卜按钮")
+        self._click_current_match_and_wait()
+
+        if not self.wait_image_missing(
+            fortune_targets,
+            callback=lambda found, count: self._click_current_match_and_wait() if found else None,
+        ):
+            raise RuntimeError("算命占卜按钮点击后未消失")
+
+        if not self.wait_image_appear(self.BTN_TTYM):
+            raise RuntimeError("未找到听天由命按钮")
+        self._click_current_match_and_wait()
+
+        if not self.wait_image_appear(
+            self.BTN_JSGX,
+            timeout_ms=self.TTYM_RESULT_TIMEOUT_MS,
+            interval_ms=self.TTYM_CLICK_INTERVAL_MS,
+            callback=lambda found: self.click_point(1024, 580) if not found else None,
+        ):
+            raise RuntimeError("听天由命后未出现接受卦象按钮")
+        self._click_current_match_and_wait()
+
+        if not self.wait_image_appear(self.BTN_MODAL_OK):
+            raise RuntimeError("未找到每日一卦确认按钮")
+        self._click_current_match_and_wait()
+        if not self.wait_image_missing(
+            self.BTN_MODAL_OK,
+            callback=lambda found, count: self._click_current_match_and_wait() if found else None,
+        ):
+            raise RuntimeError("每日一卦确认按钮点击后未消失")
+
+    def _click_current_match_and_wait(self, wait_ms: int = 1500) -> None:
+        self.click()
+        self.wait(wait_ms)
 
     def on_finish(self, results: list) -> None:
         """任务结束处理。"""

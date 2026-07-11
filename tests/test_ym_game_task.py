@@ -141,12 +141,20 @@ class HealthScreenshotTask(YmGameTask):
 
 
 class FakeHealthRecoveryTask(YmGameTask):
-    def __init__(self, health_ratios: list[float | None], *, emotion_found: bool = True):
+    def __init__(
+        self,
+        health_ratios: list[float | None],
+        *,
+        emotion_found: bool = True,
+        meditate_found: bool = True,
+    ):
         super().__init__()
         self.health_ratios = health_ratios
         self.emotion_found = emotion_found
+        self.meditate_found = meditate_found
         self.actions = []
         self.image_calls = []
+        self.wait_find_calls = []
         self.chat_collapse_calls = []
         self.wait_calls = []
         self.logs = []
@@ -167,6 +175,22 @@ class FakeHealthRecoveryTask(YmGameTask):
         if template == self.BTN_BIAOQING:
             self._last_match_center = (370, 692) if self.emotion_found else None
             return self.emotion_found
+        return False
+
+    def wait_find_image_in_roi(
+        self,
+        template,
+        roi,
+        *,
+        timeout_ms,
+        description,
+        threshold=0.8,
+        interval_ms=500,
+    ) -> bool:
+        self.wait_find_calls.append((template, roi, timeout_ms, description, threshold, interval_ms))
+        if template == self.BTN_EMOTION_MEDITATE:
+            self._last_match_center = (556, 581) if self.meditate_found else None
+            return self.meditate_found
         return False
 
     def click(self, offset: int = 3) -> None:
@@ -204,6 +228,42 @@ class FakeChatTask(YmGameTask):
 
     def wait(self, ms):
         self.wait_calls.append(ms)
+
+    def _log(self, message: str) -> None:
+        self.logs.append(message)
+
+
+class FakeCloseAllTask(YmGameTask):
+    def __init__(
+        self,
+        *,
+        task_key: str = "",
+        image_results: list[bool] | None = None,
+        purchase_results: list[bool] | None = None,
+    ):
+        super().__init__()
+        self.task_key = task_key
+        self.image_results = image_results or []
+        self.purchase_results = purchase_results or []
+        self.events = []
+        self.logs = []
+
+    def is_chat_open(self) -> bool:
+        return False
+
+    def close_purchase_dialog_if_needed(self) -> bool:
+        self.events.append("purchase")
+        return self.purchase_results.pop(0) if self.purchase_results else False
+
+    def wait_image_appear(self, template, timeout_ms=10000, threshold=0.8, callback=None, interval_ms=500):
+        self.events.append("image")
+        return self.image_results.pop(0) if self.image_results else False
+
+    def click(self, offset: int = 3) -> None:
+        self.events.append("click")
+
+    def wait(self, ms):
+        self.events.append(("wait", ms))
 
     def _log(self, message: str) -> None:
         self.logs.append(message)
@@ -274,16 +334,23 @@ class FakeActivityPanelTask(YmGameTask):
         self.image_results = image_results
         self.image_calls = []
         self.click_offsets = []
+        self.taps = []
         self.clicked_points = []
         self.wait_calls = []
         self.logs = []
 
     def wait_image_appear(self, template, timeout_ms=10000, threshold=0.8, callback=None, interval_ms=500):
         self.image_calls.append((template, timeout_ms, threshold))
-        return self.image_results.pop(0) if self.image_results else False
+        result = self.image_results.pop(0) if self.image_results else False
+        if result and template == self.BTN_HD:
+            self._last_match_center = (920, 63)
+        return result
 
     def click(self, offset: int = 3) -> None:
         self.click_offsets.append(offset)
+
+    def tap(self, x=None, y=None):
+        self.taps.append((x, y))
 
     def click_point(self, x: int, y: int, offset: int = 3) -> None:
         self.clicked_points.append((x, y, offset))
@@ -354,6 +421,128 @@ class FakeSafeZoneTask(YmGameTask):
 
     def _log(self, message: str) -> None:
         self.logs.append(message)
+
+
+class FakeTeamTask(YmGameTask):
+    def __init__(
+        self,
+        *,
+        in_team: bool = False,
+        team_panel_open: bool = False,
+        quick_panel_open: bool = False,
+        template_click_results: list[bool] | None = None,
+    ):
+        super().__init__()
+        self.in_team = in_team
+        self.team_panel_open = team_panel_open
+        self.quick_panel_open = quick_panel_open
+        self.template_click_results = template_click_results or []
+        self.modal_ok_visible = False
+        self.leave_pending = False
+        self.clicked_points = []
+        self.clicks = []
+        self.template_clicks = []
+        self.roi_calls = []
+        self.find_calls = []
+        self.wait_calls = []
+        self.logs = []
+
+    def collapse_chat_if_open(self, wait_after_click_ms: int = 800) -> bool:
+        return False
+
+    def find_image_once(self, template, *, threshold=0.8, roi=None, log_found=False, log_missing=False):
+        self.find_calls.append((template, threshold, roi))
+        if self._contains_template(template, self.BTN_MODAL_OK) or self._contains_template(
+            template, self.BTN_TEAM_FOLLOW_OK
+        ):
+            return self.modal_ok_visible
+        if self._contains_template(template, self.BTN_TEAM_QUICK):
+            return self.team_panel_open and not self.quick_panel_open
+        if self._contains_template(template, self.BTN_TEAM_LEAVE):
+            return self.team_panel_open and self.in_team and not self.quick_panel_open
+        if self._contains_template(template, self.BTN_TEAM_REFRESH_LIST) or self._contains_template(
+            template, self.BTN_TEAM_AUTO_MATCH
+        ):
+            return self.quick_panel_open
+        return False
+
+    def wait_find_image_in_roi(
+        self,
+        template,
+        roi,
+        *,
+        timeout_ms,
+        description,
+        threshold=0.8,
+        interval_ms=500,
+    ):
+        self.roi_calls.append((template, roi, timeout_ms, description, threshold, interval_ms))
+        if self._contains_template(template, self.BTN_TEAM_QUICK):
+            return self.team_panel_open and not self.quick_panel_open
+        if self._contains_template(template, self.BTN_TEAM_LEAVE):
+            return self.team_panel_open and self.in_team and not self.quick_panel_open
+        if self._contains_template(template, self.BTN_TEAM_REFRESH_LIST):
+            return self.quick_panel_open
+        return False
+
+    def click_template_if_available(
+        self,
+        template,
+        *,
+        timeout_ms=3000,
+        description,
+        threshold=0.8,
+        roi=None,
+        wait_after_click_ms=1000,
+    ):
+        self.template_clicks.append((template, timeout_ms, description, threshold, roi, wait_after_click_ms))
+        return self.template_click_results.pop(0) if self.template_click_results else True
+
+    def click(self, offset: int = 3) -> None:
+        self.clicks.append(offset)
+        if self.modal_ok_visible:
+            self.modal_ok_visible = False
+            if self.leave_pending:
+                self.in_team = False
+                self.leave_pending = False
+                self.team_panel_open = True
+                self.quick_panel_open = False
+
+    def click_point(self, x: int, y: int, offset: int = 3) -> None:
+        self.clicked_points.append((x, y, offset))
+        point = (x, y)
+        if point == self.POINT_MAIN_TEAM:
+            self.team_panel_open = True
+            self.quick_panel_open = False
+        elif point == self.POINT_TEAM_LEAVE and self.in_team:
+            self.modal_ok_visible = True
+            self.leave_pending = True
+        elif point in {self.POINT_TEAM_QUICK_BOTTOM, self.POINT_TEAM_QUICK_TOP}:
+            self.quick_panel_open = True
+            self.team_panel_open = False
+        elif point == self.POINT_TEAM_QUICK_RETURN:
+            self.quick_panel_open = False
+            self.team_panel_open = True
+        elif point == self.POINT_TEAM_CREATE:
+            self.in_team = True
+            self.team_panel_open = True
+            self.quick_panel_open = False
+        elif point in self.POINT_TEAM_CREATE_RAID_OPTIONS.values():
+            self.in_team = True
+            self.team_panel_open = True
+            self.quick_panel_open = False
+
+    def wait(self, ms):
+        self.wait_calls.append(ms)
+
+    def _log(self, message: str) -> None:
+        self.logs.append(message)
+
+    @staticmethod
+    def _contains_template(template, target) -> bool:
+        if isinstance(template, list):
+            return target in template
+        return template == target
 
 
 def assert_value_error(message: str, callback) -> None:
@@ -600,6 +789,33 @@ def test_close_all_panels_collapses_chat_before_and_after_closing():
     ]
 
 
+def test_close_all_panels_checks_jhyxb_purchase_dialog_before_regular_close():
+    task = FakeCloseAllTask(task_key="JHYXB", purchase_results=[True, False], image_results=[False])
+
+    task.close_all_panels()
+
+    assert task.events == ["purchase", "purchase", "image"]
+    assert "已关闭所有弹窗" in task.logs
+
+
+def test_close_all_panels_does_not_check_purchase_dialog_for_other_tasks():
+    task = FakeCloseAllTask(task_key="BPRW", purchase_results=[True], image_results=[False])
+
+    task.close_all_panels()
+
+    assert task.events == ["image"]
+
+
+def test_close_all_panels_uses_jhyxb_default_close_attempt_limit():
+    task = FakeCloseAllTask(task_key="JHYXB", purchase_results=[True, True, True], image_results=[True])
+    task.CLOSE_ALL_MAX_ATTEMPTS = 2
+
+    task.close_all_panels()
+
+    assert task.events == ["purchase", "purchase"]
+    assert "关闭弹窗达到上限 2 次，继续后续流程" in task.logs
+
+
 def test_close_all_panels_does_not_return_to_safe_zone_by_default():
     task = FakeSafeZoneTask()
 
@@ -708,10 +924,20 @@ def test_recover_health_if_needed_meditates_until_full():
     assert task.image_calls == [
         (task.BTN_BIAOQING, 0.9, task.ROI_BIAOQING_BUTTON)
     ]
+    assert task.wait_find_calls == [
+        (
+            task.BTN_EMOTION_MEDITATE,
+            task.ROI_EMOTION_PANEL,
+            3000,
+            "打坐表情",
+            task.EMOTION_MEDITATE_THRESHOLD,
+            500,
+        )
+    ]
     assert task.actions == [
         ("click", 0),
         ("point", task.POINT_EMOTION_SINGLE_TAB[0], task.POINT_EMOTION_SINGLE_TAB[1], 0),
-        ("point", task.POINT_EMOTION_MEDITATE[0], task.POINT_EMOTION_MEDITATE[1], 0),
+        ("click", 0),
         ("point", task.POINT_EMOTION_COLLAPSE[0], task.POINT_EMOTION_COLLAPSE[1], 0),
         ("point", task.POINT_LIGHTNESS[0], task.POINT_LIGHTNESS[1], 0),
     ]
@@ -742,6 +968,32 @@ def test_recover_health_if_needed_skips_when_emotion_button_is_missing():
     assert task.health_ratios == [0.79]
     assert task.actions == []
     assert "未找到主界面表情按钮，跳过自动打坐" in task.logs
+
+
+def test_recover_health_if_needed_fails_when_meditate_emotion_is_missing():
+    task = FakeHealthRecoveryTask([0.79], meditate_found=False)
+
+    try:
+        task.recover_health_if_needed()
+    except RuntimeError as exc:
+        assert str(exc) == "未找到打坐表情"
+    else:
+        raise AssertionError("Expected RuntimeError")
+
+    assert task.wait_find_calls == [
+        (
+            task.BTN_EMOTION_MEDITATE,
+            task.ROI_EMOTION_PANEL,
+            3000,
+            "打坐表情",
+            task.EMOTION_MEDITATE_THRESHOLD,
+            500,
+        )
+    ]
+    assert task.actions == [
+        ("click", 0),
+        ("point", task.POINT_EMOTION_SINGLE_TAB[0], task.POINT_EMOTION_SINGLE_TAB[1], 0),
+    ]
 
 
 def test_auto_battle_clicks_normal_attack_skills_and_turns_page_by_default():
@@ -836,7 +1088,8 @@ def test_open_activity_panel_uses_category_mapping_and_retries_verification():
 
     task.open_activity_panel("纷争", wait_after_open_ms=2500, wait_after_category_ms=1500)
 
-    assert task.click_offsets == [0]
+    assert task.taps == [(920, 53)]
+    assert task.click_offsets == []
     assert task.clicked_points == [(462, 680, 0), (462, 680, 0)]
     assert task.wait_calls == [2500, 1500, 1500]
     assert task.image_calls == [
@@ -968,5 +1221,106 @@ def test_switch_task_panel_rejects_unknown_panel():
         task.switch_task_panel("帮派")
     except ValueError as exc:
         assert str(exc) == "Unsupported task panel: 帮派"
+    else:
+        raise AssertionError("Expected ValueError")
+
+
+def test_create_own_team_creates_raid_and_sets_target():
+    task = FakeTeamTask()
+
+    task.create_own_team(
+        target=YmGameTask.TEAM_TARGET_JIANGHU_DAILY,
+        member_count=10,
+        wait_after_click_ms=0,
+    )
+
+    assert task.clicked_points == [
+        (task.POINT_MAIN_TEAM[0], task.POINT_MAIN_TEAM[1], 0),
+        (task.POINT_TEAM_CREATE_RAID[0], task.POINT_TEAM_CREATE_RAID[1], 0),
+        (task.POINT_TEAM_CREATE_RAID_OPTIONS[10][0], task.POINT_TEAM_CREATE_RAID_OPTIONS[10][1], 0),
+        (task.POINT_TEAM_TARGET_DROPDOWN[0], task.POINT_TEAM_TARGET_DROPDOWN[1], 0),
+        (task.POINT_TEAM_TARGET_CATEGORY_JIANGHU[0], task.POINT_TEAM_TARGET_CATEGORY_JIANGHU[1], 0),
+        (task.POINT_TEAM_TARGET_ITEM_FIRST[0], task.POINT_TEAM_TARGET_ITEM_FIRST[1], 0),
+        (task.POINT_TEAM_TARGET_CONFIRM[0], task.POINT_TEAM_TARGET_CONFIRM[1], 0),
+    ]
+    assert task.in_team
+    assert "创建团队：人数=10" in task.logs
+    assert "设置队伍目标：江湖纪事-日常" in task.logs
+
+
+def test_quick_team_selects_target_and_clicks_auto_match():
+    task = FakeTeamTask(template_click_results=[False, True, True, True])
+
+    task.quick_team(
+        YmGameTask.TEAM_TARGET_JUYI_PINGYUAN,
+        wait_after_click_ms=0,
+    )
+
+    assert task.clicked_points == [
+        (task.POINT_MAIN_TEAM[0], task.POINT_MAIN_TEAM[1], 0),
+        (task.POINT_TEAM_QUICK_BOTTOM[0], task.POINT_TEAM_QUICK_BOTTOM[1], 0),
+    ]
+    assert task.template_clicks == [
+        (
+            task.TEXT_TEAM_TARGET_JUYI_PINGYUAN,
+            1000,
+            "便捷组队目标 行当玩法-聚义平冤",
+            0.85,
+            task.ROI_TEAM_QUICK_LEFT_PANEL,
+            0,
+        ),
+        (
+            [
+                task.TEXT_TEAM_QUICK_CATEGORY_HANGDANG,
+                task.TEXT_TEAM_QUICK_CATEGORY_HANGDANG_ACTIVE,
+            ],
+            2000,
+            "便捷组队分类 行当玩法-聚义平冤",
+            0.85,
+            task.ROI_TEAM_QUICK_LEFT_PANEL,
+            0,
+        ),
+        (
+            task.TEXT_TEAM_TARGET_JUYI_PINGYUAN,
+            2000,
+            "便捷组队目标 行当玩法-聚义平冤",
+            0.85,
+            task.ROI_TEAM_QUICK_LEFT_PANEL,
+            0,
+        ),
+        (
+            task.BTN_TEAM_AUTO_MATCH,
+            5000,
+            "自动匹配按钮",
+            0.9,
+            task.ROI_TEAM_QUICK_ACTIONS,
+            0,
+        ),
+    ]
+    assert "已点击便捷组队自动匹配" in task.logs
+
+
+def test_leave_team_confirms_dialog_and_returns_to_unteamed_state():
+    task = FakeTeamTask(in_team=True)
+
+    assert task.leave_team(wait_after_click_ms=0)
+
+    assert task.clicked_points == [
+        (task.POINT_MAIN_TEAM[0], task.POINT_MAIN_TEAM[1], 0),
+        (task.POINT_TEAM_LEAVE[0], task.POINT_TEAM_LEAVE[1], 0),
+    ]
+    assert task.clicks == [0]
+    assert not task.in_team
+    assert "退出队伍" in task.logs
+    assert "检测到退出队伍确认，点击确定" in task.logs
+
+
+def test_team_target_rejects_unknown_target():
+    task = FakeTeamTask()
+
+    try:
+        task.quick_team("不存在的目标")
+    except ValueError as exc:
+        assert str(exc) == "Unsupported team target: 不存在的目标"
     else:
         raise AssertionError("Expected ValueError")

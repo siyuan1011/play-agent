@@ -94,11 +94,13 @@ def test_dev_task_loader_rejects_yaml(tmp_path):
         ("CGSS_task.py", "ChaguanTask", "CGSS"),
         ("HSLJ_task.py", "HSLJTask", "HSLJ"),
         ("JHYXB_task.py", "JianghuYingxiongbangTask", "JHYXB"),
+        ("JYPY_task.py", "JYPYTask", "JYPY"),
         ("KYRW_task.py", "KyrwTask", "KYRW"),
         ("MKSY_task.py", "MenkeSheyanTask", "MKSY"),
         ("MRYG_task.py", "MRYGTask", "MRYG"),
         ("PZSY_task.py", "PozhenSheyanTask", "PZSY"),
         ("QDYX_task.py", "StartTask", "QDYX"),
+        ("RCFB_task.py", "RichangFubenTask", "RCFB"),
         ("ZGWX_task.py", "ZGWXTask", "ZGWX"),
     ],
 )

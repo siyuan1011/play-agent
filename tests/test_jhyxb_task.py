@@ -26,7 +26,6 @@ class FakeJhyxbTask(JianghuYingxiongbangTask):
         self.find_once_calls = []
         self.open_activity_calls = []
         self.close_panel_calls = []
-        self.safe_close_panel_calls = []
         self.clicked_points = []
         self.click_offsets = []
         self.swipe_calls = []
@@ -74,17 +73,16 @@ class FakeJhyxbTask(JianghuYingxiongbangTask):
             )
         )
 
-    def close_all_panels(self, templates=None, *, timeout_ms=5000, wait_after_click_ms=500):
-        self.close_panel_calls.append((templates, timeout_ms, wait_after_click_ms))
-
-    def close_all_panels_for_jhyxb(
+    def close_all_panels(
         self,
+        templates=None,
         *,
-        timeout_ms: int = 5000,
-        wait_after_click_ms: int = 500,
-        max_attempts: int | None = None,
-    ) -> None:
-        self.safe_close_panel_calls.append((timeout_ms, wait_after_click_ms, max_attempts))
+        timeout_ms=5000,
+        wait_after_click_ms=500,
+        max_attempts=None,
+        back_safe=False,
+    ):
+        self.close_panel_calls.append((templates, timeout_ms, wait_after_click_ms, max_attempts, back_safe))
 
     def is_power_saving_mode(self) -> bool:
         if self.power_saving_results:
@@ -293,7 +291,7 @@ def test_jhyxb_step_order():
 def test_jhyxb_safe_close_panels_collapses_chat_before_and_after():
     task = SafeCloseJhyxbTask(image_results=[False])
 
-    task.close_all_panels_for_jhyxb()
+    task.close_all_panels()
 
     assert task.chat_collapse_calls == [800, 800]
     assert task.image_calls == [
@@ -311,9 +309,9 @@ def test_close_all_wakes_power_saving_with_right_joystick_center():
     assert task.clicked_points == [
         (task.POINT_RIGHT_JOYSTICK_CENTER[0], task.POINT_RIGHT_JOYSTICK_CENTER[1], 0)
     ]
-    assert task.safe_close_panel_calls == [
-        (5000, 500, None),
-        (5000, 500, None),
+    assert task.close_panel_calls == [
+        (None, 5000, 500, None, False),
+        (None, 5000, 500, None, False),
     ]
     assert task.wait_calls == [1000, 1000]
     assert task.safe_zone_calls == [()]
@@ -325,7 +323,7 @@ def test_close_all_returns_to_safe_zone_after_cleanup():
 
     task.close_all()
 
-    assert task.safe_close_panel_calls == [(5000, 500, None)]
+    assert task.close_panel_calls == [(None, 5000, 500, None, False)]
     assert task.wait_calls == [1000]
     assert task.safe_zone_calls == [()]
 
