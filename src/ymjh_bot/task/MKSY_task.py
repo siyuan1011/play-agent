@@ -13,7 +13,7 @@ class MenkeSheyanTask(BanquetAcquireMixin, YmGameTask):
     task_name = "门客设宴"
     task_description = "门客设宴自动邀约"
 
-    BTN_ACTIVITY_FORWARD = str(YmGameTask.TEMPLATES_DIR / "btn_bangpai_task_forward.png")
+    BTN_ACTIVITY_FORWARD = str(YmGameTask.TEMPLATES_DIR / "btn_activity_forward.png")
     BTN_MENKE_SHEYAN_ENTRY = str(YmGameTask.TEMPLATES_DIR / "btn_menke_sheyan_entry.png")
     BTN_MENKE_INVITE_FORWARD = str(YmGameTask.TEMPLATES_DIR / "btn_menke_invite_forward.png")
     BTN_MENKE_BANQUET_INVITE = str(YmGameTask.TEMPLATES_DIR / "btn_menke_banquet_invite.png")
@@ -22,11 +22,11 @@ class MenkeSheyanTask(BanquetAcquireMixin, YmGameTask):
     BTN_MENKE_ONE_KEY_SUBMIT = str(YmGameTask.TEMPLATES_DIR / "btn_menke_one_key_submit.png")
     BTN_MENKE_START_ACTIVE = str(YmGameTask.TEMPLATES_DIR / "btn_menke_start_active.png")
     ROUTE_MENKE_WAREHOUSE_RECOMMENDED = str(YmGameTask.TEMPLATES_DIR / "route_menke_warehouse_recommended.png")
-    ROUTE_MENKE_MALL = str(YmGameTask.TEMPLATES_DIR / "route_menke_mall.png")
-    ROUTE_MENKE_STALL = str(YmGameTask.TEMPLATES_DIR / "route_menke_stall.png")
-    BTN_MENKE_WAREHOUSE_SUBMIT = str(YmGameTask.TEMPLATES_DIR / "btn_menke_warehouse_submit.png")
-    BTN_MENKE_VIEW_ALL_SERVER = str(YmGameTask.TEMPLATES_DIR / "btn_menke_view_all_server.png")
-    BTN_MENKE_MALL_BUY_AREA = str(YmGameTask.TEMPLATES_DIR / "btn_menke_mall_buy_area.png")
+    ROUTE_MENKE_MALL = str(YmGameTask.TEMPLATES_DIR / "route_mall.png")
+    ROUTE_MENKE_STALL = str(YmGameTask.TEMPLATES_DIR / "route_stall.png")
+    BTN_MENKE_WAREHOUSE_SUBMIT = str(YmGameTask.TEMPLATES_DIR / "btn_warehouse_submit.png")
+    BTN_MENKE_VIEW_ALL_SERVER = str(YmGameTask.TEMPLATES_DIR / "btn_view_all_server.png")
+    BTN_MENKE_MALL_BUY_AREA = str(YmGameTask.TEMPLATES_DIR / "btn_mall_buy_area.png")
     BTN_BUY = str(YmGameTask.TEMPLATES_DIR / "btn_buy.png")
     BTN_BANQUET_GET_ITEM = BTN_MENKE_GET_ITEM
     BTN_BANQUET_ONE_KEY_SUBMIT = BTN_MENKE_ONE_KEY_SUBMIT

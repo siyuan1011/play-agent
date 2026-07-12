@@ -38,7 +38,7 @@
 
 3. `CGSS` 在答题循环中不可靠。
    - `src/ymjh_bot/task/CGSS_task.py` 固定 `POINT_ANSWER = (1232, 540)`，即第三选项。
-   - `click_answer` 步骤 `timeout_ms=None`，退出条件只有识别到 `btn_TCCG.png`。
+   - `click_answer` 步骤 `timeout_ms=None`，退出条件只有识别到 `btn_CGSS_TCCG.png`。
    - 现场截图显示高额奖励次数从 `1/5` 仅推进到 `2/5`，脚本仍持续点击第三选项，未出现退出按钮。
    - 单测只覆盖“退出按钮最终出现”的理想路径，没有覆盖答题次数不推进或长时间未完成。
 
@@ -51,7 +51,7 @@
 
 1. 修复 `CGSS.click_answer` 的无限循环风险。
    - 给 `click_answer` 增加总超时或最大答题轮数。
-   - 增加现场状态日志，例如每 N 次记录当前 `btn_TCCG` 匹配分、答题循环次数。
+   - 增加现场状态日志，例如每 N 次记录当前 `btn_CGSS_TCCG` 匹配分、答题循环次数。
    - 超时后保存截图并抛出明确异常，避免阻塞后续任务。
 
 2. 修复茶馆答题策略。

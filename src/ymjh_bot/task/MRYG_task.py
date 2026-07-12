@@ -14,9 +14,9 @@ class MRYGTask(YmGameTask):
     task_name = "每日一卦"
     task_description = "每日一卦任务"
 
-    BTN_SMZB = str(YmGameTask.TEMPLATES_DIR / "btn_SMZB.png")
-    BTN_TTYM = str(YmGameTask.TEMPLATES_DIR / "btn_TTYM.png")
-    BTN_JSGX = str(YmGameTask.TEMPLATES_DIR / "btn_JSGX.png")
+    BTN_SMZB = str(YmGameTask.TEMPLATES_DIR / "btn_MRYG_SMZB.png")
+    BTN_TTYM = str(YmGameTask.TEMPLATES_DIR / "btn_MRYG_TTYM.png")
+    BTN_JSGX = str(YmGameTask.TEMPLATES_DIR / "btn_MRYG_JSGX.png")
 
     ICON_CGSS_COMPLETE = str(YmGameTask.TEMPLATES_DIR / "icon_cgss_complete.png")
 

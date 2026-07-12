@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
-from pathlib import Path
 
 import cv2
 
@@ -23,11 +22,11 @@ class JianghuYingxiongbangTask(YmGameTask):
 
     BTN_JHYXB_ACTIVITY_OPEN = str(YmGameTask.TEMPLATES_DIR / "btn_jhyxb_activity_open.png")
     BTN_JHYXB_MATCH = str(YmGameTask.TEMPLATES_DIR / "btn_jhyxb_match.png")
-    TITLE_JHYXB = str(YmGameTask.TEMPLATES_DIR / "title_jhyxb.png")
+    TITLE_JHYXB = str(YmGameTask.TEMPLATES_DIR / "text_JHYXB_title.png")
     ICON_JHYXB_FIRST_CHEST = str(YmGameTask.TEMPLATES_DIR / "icon_jhyxb_first_chest.png")
     TEXT_JHYXB_CHALLENGE_ZERO = str(YmGameTask.TEMPLATES_DIR / "text_jhyxb_challenge_zero.png")
     BTN_JHYXB_READY = str(YmGameTask.TEMPLATES_DIR / "btn_jhyxb_ready.png")
-    BTN_JHYXB_RESULT_EXIT = str(YmGameTask.TEMPLATES_DIR / "btn_jhyxb_result_exit.png")
+    BTN_JHYXB_RESULT_EXIT: str | None = None
 
     # 固定坐标点 (设计分辨率 1280x720 下)
     POINT_JHYXB_MATCH = (1076, 584)
@@ -82,7 +81,10 @@ class JianghuYingxiongbangTask(YmGameTask):
         if self.wake_from_power_saving_if_needed():
             self.close_all_panels()
         self.wait(1000)
-        self.return_to_safe_zone()
+        try:
+            self.return_to_safe_zone()
+        except RuntimeError as exc:
+            self._log(f"返回鸡鸣寺安全区未完成，继续从当前界面打开江湖英雄榜：{exc}")
 
     @step(retry=3, timeout_ms=30000)
     def open_fenzheng_activity(self) -> None:
@@ -310,7 +312,7 @@ class JianghuYingxiongbangTask(YmGameTask):
 
     def is_result_panel_visible_quiet(self) -> bool:
         """Return whether the result panel is visible without noisy miss logs."""
-        if not Path(self.BTN_JHYXB_RESULT_EXIT).exists():
+        if not self.BTN_JHYXB_RESULT_EXIT:
             return False
         return self.find_image_once(
             self.BTN_JHYXB_RESULT_EXIT,
@@ -338,7 +340,7 @@ class JianghuYingxiongbangTask(YmGameTask):
                 self._log(f"第 {match_index} 次战斗已返回江湖英雄榜面板")
                 return self.BATTLE_FINISH_RETURNED_PANEL
 
-            if not Path(self.BTN_JHYXB_RESULT_EXIT).exists() and not missing_template_logged:
+            if not self.BTN_JHYXB_RESULT_EXIT and not missing_template_logged:
                 self._log("结果面板退出按钮模板尚未生成，将持续自动战斗并在超时时保存截图")
                 missing_template_logged = True
 
@@ -357,7 +359,7 @@ class JianghuYingxiongbangTask(YmGameTask):
 
     def is_result_panel_visible(self) -> bool:
         """Return whether the post-battle result panel is visible."""
-        if not Path(self.BTN_JHYXB_RESULT_EXIT).exists():
+        if not self.BTN_JHYXB_RESULT_EXIT:
             return False
         return self.find_image(
             self.BTN_JHYXB_RESULT_EXIT,
@@ -367,6 +369,10 @@ class JianghuYingxiongbangTask(YmGameTask):
 
     def click_result_panel_exit(self) -> None:
         """Click the exit button inside the post-battle result panel."""
+        if not self.BTN_JHYXB_RESULT_EXIT:
+            self._log("结果面板退出按钮模板尚未配置，跳过模板点击")
+            return
+
         if not self.wait_find_image_in_roi(
             self.BTN_JHYXB_RESULT_EXIT,
             self.ROI_RESULT_EXIT_BUTTON,

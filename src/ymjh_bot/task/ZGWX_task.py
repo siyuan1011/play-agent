@@ -15,18 +15,12 @@ class ZGWXTask(YmGameTask):
     task_description = "坐观万象自动前往并等待修炼完成"
     auto_recover_health = False
 
-    BTN_ACTIVITY_FORWARD = str(YmGameTask.TEMPLATES_DIR / "btn_bangpai_task_forward.png")
-    TEXT_MEDITATING = str(YmGameTask.TEMPLATES_DIR / "text_zgwx_meditating.png")
+    BTN_ACTIVITY_FORWARD = str(YmGameTask.TEMPLATES_DIR / "btn_activity_forward.png")
+    ICON_MEDITATING = str(YmGameTask.TEMPLATES_DIR / "icon_zgwx_meditating.png")
 
     ROI_ZGWX_FORWARD = (120, 250, 220, 120)
 
     FORWARD_THRESHOLD = 0.85
-    MEDITATING_THRESHOLD = 0.9
-
-    MEDITATION_START_TIMEOUT_MS = 600000
-    MEDITATION_COMPLETE_TIMEOUT_MS = 900000
-    MEDITATION_MISSING_THRESHOLD = 20
-    MEDITATION_MISSING_INTERVAL_MS = 5000
 
     def on_start(self) -> None:
         """任务开始前准备。"""
@@ -68,10 +62,9 @@ class ZGWXTask(YmGameTask):
     def wait_meditation_start(self) -> None:
         """等待自动寻路结束并进入坐观万象修炼倒计时。"""
         if not self.wait_image_appear(
-            self.TEXT_MEDITATING,
-            timeout_ms=self.MEDITATION_START_TIMEOUT_MS,
-            threshold=self.MEDITATING_THRESHOLD,
-            interval_ms=1500
+            self.ICON_MEDITATING,
+            timeout_ms=180000,
+            threshold=0.9,
         ):
             raise RuntimeError("坐观万象修炼开始等待超时")
         self._log("检测到修炼中倒计时，坐观万象开始修炼")
@@ -80,11 +73,11 @@ class ZGWXTask(YmGameTask):
     def wait_meditation_complete(self) -> None:
         """等待修炼中倒计时消失。"""
         if not self.wait_image_missing(
-            self.TEXT_MEDITATING,
-            timeout_ms=self.MEDITATION_COMPLETE_TIMEOUT_MS,
-            threshold=self.MEDITATING_THRESHOLD,
-            missing_threshold=self.MEDITATION_MISSING_THRESHOLD,
-            interval_ms=self.MEDITATION_MISSING_INTERVAL_MS,
+            self.ICON_MEDITATING,
+            timeout_ms=900000,
+            threshold=0.9,
+            missing_threshold=10,
+            interval_ms=2000,
         ):
             raise RuntimeError("坐观万象修炼完成等待超时")
         self._log("检测到修炼中倒计时消失，坐观万象修炼结束")

@@ -20,8 +20,8 @@ class JYPYTask(YmGameTask):
     task_description = "聚义平冤便捷组队并跟随完成任务"
     auto_recover_health = False
 
-    BTN_ACTIVITY_FORWARD = str(YmGameTask.TEMPLATES_DIR / "btn_bangpai_task_forward.png")
-    BTN_DIALOG_NEXT = str(YmGameTask.TEMPLATES_DIR / "btn_kyrw_dialog_next.png")
+    BTN_ACTIVITY_FORWARD = str(YmGameTask.TEMPLATES_DIR / "btn_activity_forward.png")
+    BTN_DIALOG_NEXT = str(YmGameTask.TEMPLATES_DIR / "btn_dialog_next.png")
     TEXT_JYPY_SIDEBAR = str(YmGameTask.TEMPLATES_DIR / "text_jypy_sidebar_chapter.png")
 
     POINT_NPC_ACTION = (980, 465)

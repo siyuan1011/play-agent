@@ -9,11 +9,11 @@ class BanquetAcquireMixin:
     """Reusable item-acquisition flow for banquet tasks."""
 
     ROUTE_MENKE_WAREHOUSE_RECOMMENDED = str(YmGameTask.TEMPLATES_DIR / "route_menke_warehouse_recommended.png")
-    ROUTE_MENKE_MALL = str(YmGameTask.TEMPLATES_DIR / "route_menke_mall.png")
-    ROUTE_MENKE_STALL = str(YmGameTask.TEMPLATES_DIR / "route_menke_stall.png")
-    BTN_MENKE_WAREHOUSE_SUBMIT = str(YmGameTask.TEMPLATES_DIR / "btn_menke_warehouse_submit.png")
-    BTN_MENKE_VIEW_ALL_SERVER = str(YmGameTask.TEMPLATES_DIR / "btn_menke_view_all_server.png")
-    BTN_MENKE_MALL_BUY_AREA = str(YmGameTask.TEMPLATES_DIR / "btn_menke_mall_buy_area.png")
+    ROUTE_MENKE_MALL = str(YmGameTask.TEMPLATES_DIR / "route_mall.png")
+    ROUTE_MENKE_STALL = str(YmGameTask.TEMPLATES_DIR / "route_stall.png")
+    BTN_MENKE_WAREHOUSE_SUBMIT = str(YmGameTask.TEMPLATES_DIR / "btn_warehouse_submit.png")
+    BTN_MENKE_VIEW_ALL_SERVER = str(YmGameTask.TEMPLATES_DIR / "btn_view_all_server.png")
+    BTN_MENKE_MALL_BUY_AREA = str(YmGameTask.TEMPLATES_DIR / "btn_mall_buy_area.png")
     BTN_BUY = str(YmGameTask.TEMPLATES_DIR / "btn_buy.png")
 
     ROI_ROUTE_PANEL = (560, 70, 660, 480)

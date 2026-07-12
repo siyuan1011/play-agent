@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
-from pathlib import Path
 
 import cv2
 import numpy as np
@@ -22,8 +21,7 @@ class RichangFubenTask(YmGameTask):
     task_description = "匹配江湖纪事日常副本，跟随队伍完成后自动退队"
     auto_recover_health = False
 
-    BTN_DIALOG_NEXT = str(YmGameTask.TEMPLATES_DIR / "btn_kyrw_dialog_next.png")
-    TEXT_DAILY_RAID_SIDEBAR = str(YmGameTask.TEMPLATES_DIR / "text_daily_raid_sidebar.png")
+    BTN_DIALOG_NEXT = str(YmGameTask.TEMPLATES_DIR / "btn_dialog_next.png")
 
     POINT_TEAM_AUTO_MATCH = (990, 669)
     POINT_QUICK_CATEGORY_JIANGHU = (180, 210)
@@ -250,18 +248,7 @@ class RichangFubenTask(YmGameTask):
         return False
 
     def find_dungeon_task_candidate(self) -> bool:
-        """Detect a dungeon tracker using templates first, then a visual text-block fallback."""
-        templates = self.existing_template_paths([self.TEXT_DAILY_RAID_SIDEBAR])
-        if templates and self.wait_find_image_in_roi(
-            templates,
-            self.ROI_TASK_LIST,
-            timeout_ms=1000,
-            description="任务栏副本任务追踪",
-            threshold=self.DUNGEON_TASK_THRESHOLD,
-            interval_ms=300,
-        ):
-            return True
-
+        """Detect a dungeon tracker using the visual text-block fallback."""
         return self.find_sidebar_text_block_candidate()
 
     def find_sidebar_text_block_candidate(self) -> bool:
@@ -301,10 +288,6 @@ class RichangFubenTask(YmGameTask):
         self._last_match_center = None
         self._last_match_score = 0.0
         return False
-
-    def existing_template_paths(self, templates: list[str]) -> list[str]:
-        """Return template paths that exist on disk."""
-        return [template for template in templates if Path(template).exists()]
 
     def scroll_task_list_down(self) -> None:
         """Scroll the task list down to reveal lower tracker entries."""

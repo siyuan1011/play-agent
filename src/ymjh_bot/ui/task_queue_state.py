@@ -284,7 +284,30 @@ def normalize_progress(progress: Any) -> dict[str, int] | None:
     }
 
 
-def is_pid_alive(pid: int) -> bool:
+def _windows_process_created_at(handle: int) -> float | None:
+    """Return the Windows process creation timestamp for an open process handle."""
+    filetime_fields = [("dwLowDateTime", ctypes.c_ulong), ("dwHighDateTime", ctypes.c_ulong)]
+
+    class FILETIME(ctypes.Structure):
+        _fields_ = filetime_fields
+
+    creation = FILETIME()
+    exit_time = FILETIME()
+    kernel_time = FILETIME()
+    user_time = FILETIME()
+    if not ctypes.windll.kernel32.GetProcessTimes(
+        handle,
+        ctypes.byref(creation),
+        ctypes.byref(exit_time),
+        ctypes.byref(kernel_time),
+        ctypes.byref(user_time),
+    ):
+        return None
+    value = (creation.dwHighDateTime << 32) + creation.dwLowDateTime
+    return (value - 116444736000000000) / 10000000
+
+
+def is_pid_alive(pid: int, *, since: float | None = None) -> bool:
     """Return whether a process id appears to still be running."""
     if pid <= 0:
         return False
@@ -293,8 +316,14 @@ def is_pid_alive(pid: int) -> bool:
         handle = kernel32.OpenProcess(0x1000, False, pid)
         if not handle:
             return False
-        kernel32.CloseHandle(handle)
-        return True
+        try:
+            if since is not None:
+                created_at = _windows_process_created_at(handle)
+                if created_at is not None and created_at > since + 1:
+                    return False
+            return True
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except OSError as exc:
@@ -353,7 +382,12 @@ class SerialRunLock:
             pid = int(data.get("pid", 0))
         except (TypeError, ValueError):
             return True
-        return not is_pid_alive(pid)
+        created_at = data.get("created_at")
+        try:
+            since = float(created_at) if created_at is not None else None
+        except (TypeError, ValueError):
+            since = None
+        return not is_pid_alive(pid, since=since)
 
     def _remove_stale(self) -> None:
         try:

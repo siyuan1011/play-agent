@@ -176,9 +176,9 @@ def test_wait_meditation_start_waits_for_countdown_template():
 
     assert task.image_calls == [
         (
-            task.TEXT_MEDITATING,
-            task.MEDITATION_START_TIMEOUT_MS,
-            task.MEDITATING_THRESHOLD,
+            task.ICON_MEDITATING,
+            180000,
+            0.9,
             500,
         )
     ]
@@ -199,11 +199,11 @@ def test_wait_meditation_complete_uses_stable_missing_threshold():
 
     assert task.missing_calls == [
         (
-            task.TEXT_MEDITATING,
-            task.MEDITATION_COMPLETE_TIMEOUT_MS,
-            task.MEDITATING_THRESHOLD,
-            60,
-            500,
+            task.ICON_MEDITATING,
+            900000,
+            0.9,
+            10,
+            2000,
         )
     ]
     assert "检测到修炼中倒计时消失，坐观万象修炼结束" in task.logs

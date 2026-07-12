@@ -16,6 +16,7 @@ class FakeBPRWTask(BPRWTask):
         confirm_results: list[bool] | None = None,
         completion_dialog_results: list[bool] | None = None,
         deadline_expired_results: list[bool] | None = None,
+        find_image_results: list[bool] | None = None,
     ):
         super().__init__()
         self.roi_results = roi_results or []
@@ -26,6 +27,7 @@ class FakeBPRWTask(BPRWTask):
         self.confirm_results = confirm_results or []
         self.completion_dialog_results = completion_dialog_results or []
         self.deadline_expired_results = deadline_expired_results
+        self.find_image_results = find_image_results or []
         self.ensure_sidebar_calls = 0
         self.switch_panel_calls = []
         self.roi_calls = []
@@ -35,6 +37,7 @@ class FakeBPRWTask(BPRWTask):
         self.open_activity_calls = []
         self.close_transient_calls = 0
         self.click_template_calls = []
+        self.find_image_calls = []
         self.route_panel_calls = 0
         self.confirm_calls = 0
         self.auto_path_waits = []
@@ -84,8 +87,14 @@ class FakeBPRWTask(BPRWTask):
     def scroll_task_list_down(self) -> None:
         self.scroll_calls += 1
 
-    def close_all_panels(self, templates=None, *, timeout_ms=5000, wait_after_click_ms=500):
-        self.close_panel_calls.append((templates, timeout_ms, wait_after_click_ms))
+    def close_all_panels(self, templates=None, *, timeout_ms=5000, wait_after_click_ms=500, max_attempts=None):
+        self.close_panel_calls.append((templates, timeout_ms, wait_after_click_ms, max_attempts))
+
+    def find_image(self, template, *, threshold=0.8, roi=None):
+        self.find_image_calls.append((template, threshold, roi))
+        if self.find_image_results:
+            return self.find_image_results.pop(0)
+        return False
 
     def open_activity_panel(
         self,
@@ -179,8 +188,8 @@ def test_close_all_wakes_only_when_power_saving_mode_is_visible():
         (task.POINT_RIGHT_JOYSTICK_CENTER[0], task.POINT_RIGHT_JOYSTICK_CENTER[1], 0)
     ]
     assert task.close_panel_calls == [
-        (None, 5000, 500),
-        (None, 5000, 500),
+        (None, 5000, 500, task.CLOSE_ALL_MAX_ATTEMPTS),
+        (None, 5000, 500, task.CLOSE_ALL_MAX_ATTEMPTS),
     ]
     assert task.completion_dialog_calls == 2
     assert "检测到省电模式，点击右下角摇杆中心唤醒" in task.logs
@@ -192,7 +201,7 @@ def test_close_all_does_not_wake_when_power_saving_mode_is_missing():
     task.close_all()
 
     assert task.clicked_points == []
-    assert task.close_panel_calls == [(None, 5000, 500)]
+    assert task.close_panel_calls == [(None, 5000, 500, task.CLOSE_ALL_MAX_ATTEMPTS)]
     assert task.completion_dialog_calls == 1
 
 
@@ -206,6 +215,27 @@ def test_close_all_closes_completion_dialog_without_power_wake():
 
     assert task.clicked_points == [(task.POINT_DIALOG_NEXT[0], task.POINT_DIALOG_NEXT[1], 0)]
     assert "检测到帮派任务完成对话，点击继续" in task.logs
+
+
+def test_close_all_closes_leftover_purchase_dialog_before_generic_panels():
+    task = FakeBPRWTask(
+        find_image_results=[True],
+        power_saving_results=[False],
+    )
+
+    task.close_all()
+
+    assert task.find_image_calls == [
+        (
+            [task.BTN_CLOSE, task.BTN_PANE_CLOSE],
+            0.85,
+            task.scale_roi(task.ROI_PURCHASE_DIALOG_CLOSE),
+        )
+    ]
+    assert task.click_count == 1
+    assert task.wait_calls == [1000]
+    assert task.close_panel_calls == [(None, 5000, 500, task.CLOSE_ALL_MAX_ATTEMPTS)]
+    assert "关闭额外挑战次数购买弹窗" in task.logs
 
 
 def test_find_bangpai_task_in_sidebar_scrolls_until_found():
@@ -274,6 +304,23 @@ def test_resume_existing_task_continues_when_sidebar_task_missing():
     assert task.click_count == 0
     assert task.scroll_calls == 5
     assert "未发现已接取帮派任务，关闭任务面板并继续接取流程" in task.logs
+
+
+def test_accept_task_skips_when_account_is_not_in_bangpai():
+    task = FakeBPRWTask(find_image_results=[True])
+
+    with pytest.raises(StepJumpException) as exc_info:
+        task.accept_task()
+
+    assert exc_info.value.target == StepJumpException.JUMP_TO_END
+    assert task.find_image_calls == [
+        (
+            task.TITLE_BANGPAI_LIST,
+            0.85,
+            task.scale_roi(task.ROI_BANGPAI_LIST_TITLE),
+        )
+    ]
+    assert "检测到当前未加入帮派，跳过帮派任务" in task.logs
 
 
 def test_task_item_flow_submits_from_warehouse_before_stall():

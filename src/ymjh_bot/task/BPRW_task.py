@@ -13,31 +13,35 @@ class BPRWTask(YmGameTask):
     task_description = "帮派任务自动执行"
 
     BTN_BANGPAI_TASK_ENTRY = str(YmGameTask.TEMPLATES_DIR / "btn_bangpai_task_entry.png")
-    BTN_BANGPAI_TASK_FORWARD = str(YmGameTask.TEMPLATES_DIR / "btn_bangpai_task_forward.png")
+    BTN_BANGPAI_TASK_FORWARD = str(YmGameTask.TEMPLATES_DIR / "btn_activity_forward.png")
     BTN_BANGPAI_TASK_ACCEPT = str(YmGameTask.TEMPLATES_DIR / "btn_bangpai_task_accept.png")
+    TITLE_BANGPAI_LIST = str(YmGameTask.TEMPLATES_DIR / "text_BPRW_bangpai_list_title.png")
     TEXT_BANGPAI = str(YmGameTask.TEMPLATES_DIR / "text_bangpai.png")
     TEXT_BANGPAI_DAILY = str(YmGameTask.TEMPLATES_DIR / "text_bangpai_daily.png")
     SIDEBAR_BANGPAI_TASK_TEMPLATES = [TEXT_BANGPAI, TEXT_BANGPAI_DAILY]
     ROUTE_WAREHOUSE = str(YmGameTask.TEMPLATES_DIR / "route_bangpai_warehouse.png")
-    ROUTE_STALL = str(YmGameTask.TEMPLATES_DIR / "route_bangpai_stall.png")
-    BTN_WAREHOUSE_SUBMIT = str(YmGameTask.TEMPLATES_DIR / "btn_menke_warehouse_submit.png")
-    BTN_VIEW_ALL_SERVER = str(YmGameTask.TEMPLATES_DIR / "btn_menke_view_all_server.png")
+    ROUTE_STALL = str(YmGameTask.TEMPLATES_DIR / "route_stall.png")
+    BTN_WAREHOUSE_SUBMIT = str(YmGameTask.TEMPLATES_DIR / "btn_warehouse_submit.png")
+    BTN_VIEW_ALL_SERVER = str(YmGameTask.TEMPLATES_DIR / "btn_view_all_server.png")
     BTN_ONE_KEY_SUBMIT = str(YmGameTask.TEMPLATES_DIR / "btn_bangpai_one_key_submit.png")
     BTN_BUY = str(YmGameTask.TEMPLATES_DIR / "btn_buy.png")
     TEXT_TASK_COMPLETE = str(YmGameTask.TEMPLATES_DIR / "text_bangpai_task_complete.png")
 
     # 固定坐标点 (设计分辨率 1280x720 下)
     ROI_BANGPAI_TASK_CARD = (130, 230, 240, 140)
+    ROI_BANGPAI_LIST_TITLE = (95, 110, 230, 90)
     ROI_TASK_LIST = (40, 135, 330, 430)
     ROI_ROUTE_PANEL = (720, 120, 480, 500)
     ROI_WAREHOUSE_SUBMIT = (760, 530, 230, 115)
     ROI_TRADE_ACTION = (520, 440, 330, 120)
     ROI_ONE_KEY_SUBMIT = (900, 330, 340, 160)
     ROI_TASK_COMPLETE = (40, 570, 650, 90)
+    ROI_PURCHASE_DIALOG_CLOSE = (850, 130, 170, 110)
     POINT_TASK_LIST_SCROLL_START = (190, 520)
     POINT_TASK_LIST_SCROLL_END = (190, 220)
     POINT_DIALOG_NEXT = (1230, 690)
 
+    CLOSE_ALL_MAX_ATTEMPTS = 8
     TASK_FLOW_TIMEOUT_MS = 900000
     TASK_FLOW_RETRY_WAIT_MS = 3000
     TASK_IDLE_CLICK_LIMIT = 3
@@ -61,11 +65,27 @@ class BPRWTask(YmGameTask):
     @step(retry=1, timeout_ms=30000)
     def close_all(self) -> None:
         """关闭所有弹窗，回到游戏主界面。"""
-        self.close_all_panels()
+        self.close_purchase_dialog_if_needed()
+        self.close_all_panels(max_attempts=self.CLOSE_ALL_MAX_ATTEMPTS)
         self.close_completion_dialog_if_visible()
         if self.wake_from_power_saving_if_needed():
-            self.close_all_panels()
+            self.close_purchase_dialog_if_needed()
+            self.close_all_panels(max_attempts=self.CLOSE_ALL_MAX_ATTEMPTS)
             self.close_completion_dialog_if_visible()
+
+    def close_purchase_dialog_if_needed(self) -> bool:
+        """Close a leftover PvP extra-challenge purchase dialog before generic panel closing."""
+        if not self.find_image(
+            [self.BTN_CLOSE, self.BTN_PANE_CLOSE],
+            threshold=0.85,
+            roi=self.scale_roi(self.ROI_PURCHASE_DIALOG_CLOSE),
+        ):
+            return False
+
+        self._log("关闭额外挑战次数购买弹窗")
+        self.click(offset=0)
+        self.wait(1000)
+        return True
 
     @step(retry=1, timeout_ms=60000)
     def resume_existing_task(self) -> None:
@@ -114,13 +134,31 @@ class BPRWTask(YmGameTask):
     @step(retry=3, timeout_ms=180000)
     def accept_task(self) -> None:
         """接取帮派任务。"""
-        self.require_image(self.BTN_BANGPAI_TASK_ACCEPT, timeout_ms=120000, description="NPC 帮派任务按钮")
+        if self.is_bangpai_list_visible():
+            self._log("检测到当前未加入帮派，跳过帮派任务")
+            self.jump_to_end()
+
+        try:
+            self.require_image(self.BTN_BANGPAI_TASK_ACCEPT, timeout_ms=120000, description="NPC 帮派任务按钮")
+        except RuntimeError:
+            if self.is_bangpai_list_visible():
+                self._log("检测到当前未加入帮派，跳过帮派任务")
+                self.jump_to_end()
+            raise
         self.click()
         self.wait(1500)
 
         self.require_image(self.BTN_OK, timeout_ms=10000, description="帮派任务确认按钮")
         self.click()
         self.wait(1500)
+
+    def is_bangpai_list_visible(self) -> bool:
+        """Return whether the account is on the guild-join list instead of a guild task dialog."""
+        return self.find_image(
+            self.TITLE_BANGPAI_LIST,
+            threshold=0.85,
+            roi=self.scale_roi(self.ROI_BANGPAI_LIST_TITLE),
+        )
 
     @step(retry=3, timeout_ms=60000)
     def start_accepted_task(self) -> None:

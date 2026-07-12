@@ -15,12 +15,14 @@ class FakeJhyxbTask(JianghuYingxiongbangTask):
         image_results: list[bool] | None = None,
         find_once_results: list[bool] | None = None,
         power_saving_results: list[bool] | None = None,
+        safe_zone_error: Exception | None = None,
     ):
         super().__init__()
         self.roi_results = roi_results or []
         self.image_results = image_results or []
         self.find_once_results = find_once_results or []
         self.power_saving_results = power_saving_results or []
+        self.safe_zone_error = safe_zone_error
         self.roi_calls = []
         self.image_calls = []
         self.find_once_calls = []
@@ -103,6 +105,8 @@ class FakeJhyxbTask(JianghuYingxiongbangTask):
 
     def return_to_safe_zone(self) -> None:
         self.safe_zone_calls.append(())
+        if self.safe_zone_error:
+            raise self.safe_zone_error
 
     def _log(self, message: str) -> None:
         self.logs.append(message)
@@ -328,6 +332,17 @@ def test_close_all_returns_to_safe_zone_after_cleanup():
     assert task.safe_zone_calls == [()]
 
 
+def test_close_all_continues_when_safe_zone_return_fails():
+    task = FakeJhyxbTask(safe_zone_error=RuntimeError("未找到地图世界按钮"))
+
+    task.close_all()
+
+    assert task.close_panel_calls == [(None, 5000, 500, None, False)]
+    assert task.wait_calls == [1000]
+    assert task.safe_zone_calls == [()]
+    assert "返回鸡鸣寺安全区未完成，继续从当前界面打开江湖英雄榜：未找到地图世界按钮" in task.logs
+
+
 def test_open_fenzheng_activity_uses_fenzheng_tab_point():
     task = FakeJhyxbTask()
 
@@ -430,7 +445,7 @@ def test_jhyxb_ready_wait_times_out_with_debug_screenshot():
     assert task.debug_prefixes == ["jhyxb_match_3_ready_timeout"]
 
 
-def test_run_match_battle_clicks_ready_walks_battles_and_exits_result_panel():
+def test_run_match_battle_skips_result_exit_when_exit_template_is_not_configured():
     task = BattleFlowJhyxbTask(result_visible_results=[False, True], panel_visible_results=[False])
 
     task.run_match_battle(1)
@@ -445,14 +460,6 @@ def test_run_match_battle_clicks_ready_walks_battles_and_exits_result_panel():
             task.MATCH_WAIT_POLL_INTERVAL_MS,
         ),
         (
-            task.BTN_JHYXB_RESULT_EXIT,
-            task.ROI_RESULT_EXIT_BUTTON,
-            10000,
-            "江湖英雄榜结果面板退出按钮",
-            0.85,
-            500,
-        ),
-        (
             task.TITLE_JHYXB,
             task.ROI_PANEL_TITLE,
             30000,
@@ -461,10 +468,11 @@ def test_run_match_battle_clicks_ready_walks_battles_and_exits_result_panel():
             500,
         ),
     ]
-    assert task.click_offsets == [0, 0]
+    assert task.click_offsets == [0]
     assert task.swipe_calls == [(105, 455, 105, 385, task.BATTLE_FORWARD_MS)]
     assert task.auto_battle_calls == [task.AUTO_BATTLE_INTERVAL_MS]
-    assert task.wait_calls == [1000, 3000]
+    assert task.wait_calls == [1000]
+    assert "结果面板退出按钮模板尚未配置，跳过模板点击" in task.logs
 
 
 def test_run_match_battle_stops_auto_battle_when_panel_has_returned():

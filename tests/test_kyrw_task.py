@@ -31,6 +31,7 @@ class FakeKyrwTask(KyrwTask):
         self.find_once_calls = []
         self.find_image_calls = []
         self.course_click_calls = []
+        self.wait_roi_calls = []
         self.close_panel_calls = []
         self.open_activity_calls = []
         self.clicked_points = []
@@ -100,6 +101,7 @@ class FakeKyrwTask(KyrwTask):
         threshold=0.8,
         interval_ms=500,
     ):
+        self.wait_roi_calls.append((template, roi, timeout_ms, description, threshold, interval_ms))
         return self.wait_roi_results.pop(0) if self.wait_roi_results else False
 
     def is_acquire_route_panel_visible(self) -> bool:
@@ -181,6 +183,97 @@ def test_refresh_confirm_is_cancelled():
 
     assert task.click_count == 1
     assert "检测到课业刷新消耗确认，点击取消" in task.logs
+
+
+def test_accept_or_open_course_panel_keeps_legacy_npc_button_flow():
+    task = FakeKyrwTask(wait_roi_results=[True], find_once_results=[False, True, True])
+
+    with pytest.raises(StepJumpException) as exc_info:
+        task.accept_or_open_course_panel()
+
+    assert exc_info.value.target == "run_course_flow"
+    assert task.wait_roi_calls[0] == (
+        task.BTN_NPC_ACTION_TEMPLATES,
+        task.ROI_NPC_ACTION,
+        6000,
+        "NPC 课业动作按钮",
+        0.85,
+        500,
+    )
+    assert task.click_count == 1
+    assert task.clicked_points == [
+        (task.POINT_NPC_ACTION[0], task.POINT_NPC_ACTION[1], 0),
+        (task.POINT_COURSE_CARD_DEFAULT[0], task.POINT_COURSE_CARD_DEFAULT[1], 0),
+    ]
+    assert "点击NPC课业动作按钮" in task.logs
+
+
+def test_accept_or_open_course_panel_falls_back_to_course_action_point():
+    task = FakeKyrwTask(wait_roi_results=[False], find_once_results=[False, True, True])
+
+    with pytest.raises(StepJumpException) as exc_info:
+        task.accept_or_open_course_panel()
+
+    assert exc_info.value.target == "run_course_flow"
+    assert task.click_count == 0
+    assert task.clicked_points == [
+        (task.POINT_NPC_ACTION[0], task.POINT_NPC_ACTION[1], 0),
+        (task.POINT_COURSE_CARD_DEFAULT[0], task.POINT_COURSE_CARD_DEFAULT[1], 0),
+    ]
+    assert "未识别到NPC悟禅按钮，使用固定坐标点击课业动作" in task.logs
+
+
+def test_accept_or_open_course_panel_clicks_talk_before_retrying_action():
+    task = FakeKyrwTask(wait_roi_results=[False], course_click_results=[True])
+
+    with pytest.raises(StepJumpException) as exc_info:
+        task.accept_or_open_course_panel()
+
+    assert exc_info.value.target == "run_course_flow"
+    assert task.clicked_points == [
+        (task.POINT_NPC_ACTION[0], task.POINT_NPC_ACTION[1], 0),
+        (task.POINT_NPC_TALK[0], task.POINT_NPC_TALK[1], 0),
+        (task.POINT_NPC_ACTION[0], task.POINT_NPC_ACTION[1], 0),
+    ]
+    assert "未进入课业面板，尝试先点击NPC对话按钮" in task.logs
+
+
+def test_accept_or_open_course_panel_reopens_activity_when_npc_state_is_stale():
+    task = FakeKyrwTask(wait_roi_results=[False])
+
+    with pytest.raises(StepJumpException) as exc_info:
+        task.accept_or_open_course_panel()
+
+    assert exc_info.value.target == "open_wuchan_activity"
+    assert task._npc_accept_recoveries == 1
+    assert "进入课业面板失败，重新从悟禅活动入口接取" in task.logs
+
+
+def test_accept_or_open_course_panel_stops_after_recovery_limit():
+    task = FakeKyrwTask(wait_roi_results=[False])
+    task._npc_accept_recoveries = task.MAX_NPC_ACCEPT_RECOVERY
+
+    with pytest.raises(RuntimeError, match="进入课业面板后未找到可执行课业"):
+        task.accept_or_open_course_panel()
+
+
+def test_click_npc_course_action_uses_wuchan_or_course_button_template():
+    task = FakeKyrwTask(wait_roi_results=[True])
+
+    assert task.click_npc_course_action_if_visible(timeout_ms=600)
+
+    assert task.wait_roi_calls == [
+        (
+            task.BTN_NPC_ACTION_TEMPLATES,
+            task.ROI_NPC_ACTION,
+            600,
+            "NPC 课业动作按钮",
+            0.85,
+            500,
+        )
+    ]
+    assert task.click_count == 1
+    assert "点击NPC课业动作按钮" in task.logs
 
 
 def test_mall_purchase_uses_default_quantity_without_plus_clicks():

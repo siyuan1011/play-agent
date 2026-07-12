@@ -13,7 +13,7 @@ class PozhenSheyanTask(BanquetAcquireMixin, YmGameTask):
     task_name = "破阵设宴"
     task_description = "破阵设宴自动邀约"
 
-    BTN_ACTIVITY_FORWARD = str(YmGameTask.TEMPLATES_DIR / "btn_bangpai_task_forward.png")
+    BTN_ACTIVITY_FORWARD = str(YmGameTask.TEMPLATES_DIR / "btn_activity_forward.png")
     BTN_POZHEN_SHEYAN_ENTRY = str(YmGameTask.TEMPLATES_DIR / "btn_pozhen_sheyan_entry.png")
     BTN_POZHEN_GET_ITEM = str(YmGameTask.TEMPLATES_DIR / "btn_pozhen_get_item.png")
     BTN_POZHEN_ONE_KEY_SUBMIT = str(YmGameTask.TEMPLATES_DIR / "btn_pozhen_one_key_submit.png")

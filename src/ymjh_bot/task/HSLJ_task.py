@@ -24,7 +24,7 @@ class HSLJTask(YmGameTask):
 
     BTN_HSLJ_ACTIVITY_1V1 = str(YmGameTask.TEMPLATES_DIR / "btn_hslj_activity_1v1.png")
     BTN_HSLJ_ACTIVITY_OPEN = str(YmGameTask.TEMPLATES_DIR / "btn_open.png")
-    TITLE_HSLJ = str(YmGameTask.TEMPLATES_DIR / "title_hslj.png")
+    TITLE_HSLJ = str(YmGameTask.TEMPLATES_DIR / "text_HSLJ_title.png")
     TAB_HSLJ_1V1_ACTIVE = str(YmGameTask.TEMPLATES_DIR / "tab_hslj_1v1_active.png")
     TAB_HSLJ_3V3_ACTIVE = str(YmGameTask.TEMPLATES_DIR / "tab_hslj_3v3_active.png")
     BTN_HSLJ_MATCH = str(YmGameTask.TEMPLATES_DIR / "btn_hslj_match.png")
@@ -37,8 +37,8 @@ class HSLJTask(YmGameTask):
     ICON_HSLJ_FIRST_WIN = str(YmGameTask.TEMPLATES_DIR / "icon_hslj_first_win.png")
     ICON_HSLJ_FIRST_WIN_READY = str(YmGameTask.TEMPLATES_DIR / "icon_hslj_first_win_ready.png")
     ICON_HSLJ_FIRST_WIN_CHEST = str(YmGameTask.TEMPLATES_DIR / "icon_hslj_first_win_chest.png")
-    TEXT_HSLJ_1V1_COMPLETE = str(YmGameTask.TEMPLATES_DIR / "text_hslj_1v1_complete.png")
-    TEXT_HSLJ_3V3_COMPLETE = str(YmGameTask.TEMPLATES_DIR / "text_hslj_3v3_complete.png")
+    TEXT_HSLJ_1V1_COMPLETE = str(YmGameTask.TEMPLATES_DIR / "text_HSLJ_complete.png")
+    TEXT_HSLJ_3V3_COMPLETE = str(YmGameTask.TEMPLATES_DIR / "text_HSLJ_complete.png")
     TEXT_HSLJ_EXIT = str(YmGameTask.TEMPLATES_DIR / "text_exit.png")
     TEXT_HSLJ_MATCH_SUCCESS = str(YmGameTask.TEMPLATES_DIR / "text_hslj_match_success.png")
 
@@ -85,7 +85,7 @@ class HSLJTask(YmGameTask):
     READY_TIMEOUT_MS = 120000
     RESULT_TIMEOUT_MS = 420000
     MATCH_SETTLE_WAIT_MS = 2500
-    MATCH_READY_TIMEOUT_MS = SINGLE_MATCH_TIMEOUT_MS
+    MATCH_READY_TIMEOUT_MS = READY_TIMEOUT_MS
     MATCH_WAIT_POLL_INTERVAL_MS = 1000
     MATCH_WAIT_HEARTBEAT_MS = 10000
     BATTLE_FORWARD_MS = 5000
@@ -226,7 +226,10 @@ class HSLJTask(YmGameTask):
         if self.wake_from_power_saving_if_needed():
             self.close_all_panels_for_hslj()
         self.wait(1000)
-        self.return_to_safe_zone()
+        try:
+            self.return_to_safe_zone()
+        except RuntimeError as exc:
+            self._log(f"返回鸡鸣寺安全区未完成，继续从当前界面打开华山论剑：{exc}")
 
     @step(retry=3, timeout_ms=30000)
     def open_fenzheng_activity(self) -> None:
@@ -261,8 +264,9 @@ class HSLJTask(YmGameTask):
             self._log(f"检测到华山论剑 {mode} 首胜奖励已领取，跳过匹配")
             return
 
+        max_attempts = self.mode_count(mode)
         match_index = 1
-        while not self.is_stopped():
+        while not self.is_stopped() and match_index <= max_attempts:
             self._log(f"开始第 {match_index}/首胜 场华山论剑 {mode} 匹配")
             self.click_match_button()
             self.run_match_battle(mode, match_index)
@@ -270,6 +274,10 @@ class HSLJTask(YmGameTask):
                 self._log(f"检测到华山论剑 {mode} 首胜奖励已领取")
                 return
             match_index += 1
+
+        if match_index > max_attempts:
+            self._log(f"华山论剑 {mode} 首胜尝试达到上限 {max_attempts} 场，继续后续流程")
+            return
 
         self._log(f"华山论剑 {mode} 首胜匹配已停止")
 
@@ -609,7 +617,35 @@ class HSLJTask(YmGameTask):
             self.wait(self.MATCH_WAIT_POLL_INTERVAL_MS)
 
         debug_path = self.save_debug_screenshot(f"hslj_{mode}_{match_index}_match_ready_timeout")
-        raise RuntimeError(f"华山论剑 {mode} 第 {match_index} 场匹配/准备等待超时，已保存截图：{debug_path}")
+        self._log(f"华山论剑 {mode} 第 {match_index} 场匹配/准备等待超时，已保存截图：{debug_path}")
+        if self.cancel_current_match(mode, match_index):
+            return self.BATTLE_FINISH_RETURNED_PANEL
+        raise RuntimeError(f"华山论剑 {mode} 第 {match_index} 场匹配/准备等待超时，且取消匹配失败，已保存截图：{debug_path}")
+
+    def cancel_current_match(self, mode: str, match_index: int) -> bool:
+        """Cancel a long-running Huashan match queue and stay on the panel."""
+        if not self.wait_find_image_in_roi(
+            self.BTN_HSLJ_MATCH_EXIT_TEMPLATES,
+            self.ROI_MATCH_BUTTON,
+            timeout_ms=3000,
+            description="华山论剑取消匹配按钮",
+            threshold=0.85,
+            interval_ms=300,
+        ):
+            self._log(f"华山论剑 {mode} 第 {match_index} 场超时后未找到取消匹配按钮")
+            return False
+
+        self._log(f"华山论剑 {mode} 第 {match_index} 场超时，点击取消匹配")
+        self.click(offset=0)
+        self.wait(self.MATCH_SETTLE_WAIT_MS)
+        self.confirm_match_leave_team_dialog_if_needed("华山论剑")
+
+        if self.ensure_hslj_panel_visible(timeout_ms=5000):
+            self._log(f"华山论剑 {mode} 第 {match_index} 场已取消匹配并回到面板")
+            return True
+
+        self._log(f"华山论剑 {mode} 第 {match_index} 场取消匹配后未确认回到面板")
+        return False
 
     def is_ready_button_visible(self) -> bool:
         """Return whether the battle ready button is visible without noisy miss logs."""

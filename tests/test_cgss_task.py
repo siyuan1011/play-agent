@@ -123,12 +123,13 @@ def test_chaguan_task_disables_health_recovery_guard():
 
 def test_chaguan_answer_point_uses_right_answer_option_area():
     assert ChaguanTask.POINT_ANSWER == (1232, 540)
+    assert ChaguanTask.POINT_ANSWER in ChaguanTask.ANSWER_POINTS
 
 
-def test_chaguan_answer_step_has_no_timeout():
+def test_chaguan_answer_step_has_timeout_guard():
     steps = {name: meta for name, _, meta in ChaguanTask.get_steps()}
 
-    assert steps["click_answer"]["timeout_ms"] is None
+    assert steps["click_answer"]["timeout_ms"] == ChaguanTask.ANSWER_MAX_DURATION_MS + 30000
 
 
 def test_open_huodong_clicks_chaguan_entry_from_activity_card():
@@ -185,6 +186,9 @@ def test_enter_chaguan_clicks_entry_button_until_missing():
 
     assert task.missing_calls == [(task.BTN_JRCG, 30000, 0.8, 3)]
     assert task.click_count == 1
+    assert task.clicked_points == [(task.POINT_SEAT[0], task.POINT_SEAT[1], 3)]
+    assert task.wait_calls == [1000, 1000]
+    assert "已尝试点击茶馆入座" in task.logs
 
 
 def test_enter_chaguan_raises_when_entry_button_stays_visible():
@@ -202,8 +206,9 @@ def test_click_answer_clicks_until_exit_button_appears():
     task.click_answer()
 
     assert task.clicked_points == [
-        (task.POINT_ANSWER[0], task.POINT_ANSWER[1], 3)
-    ] * 2
+        (task.ANSWER_POINTS[0][0], task.ANSWER_POINTS[0][1], 3),
+        (task.ANSWER_POINTS[1][0], task.ANSWER_POINTS[1][1], 3),
+    ]
     assert task.wait_calls == [task.ANSWER_CLICK_INTERVAL_MS] * 2
     assert task.find_calls == [
         (task.BTN_TCCG, 0.8, None),
@@ -211,6 +216,21 @@ def test_click_answer_clicks_until_exit_button_appears():
         (task.BTN_TCCG, 0.8, None),
     ]
     assert "检测到退出茶馆按钮，停止答题" in task.logs
+
+
+def test_click_answer_raises_after_polling_limit_without_exit_button():
+    task = FakeChaguanTask(find_results=[False, False, False, False])
+    task.ANSWER_MAX_CLICKS = 3
+
+    with pytest.raises(RuntimeError, match="茶馆答题超时"):
+        task.click_answer()
+
+    assert task.clicked_points == [
+        (task.ANSWER_POINTS[0][0], task.ANSWER_POINTS[0][1], 3),
+        (task.ANSWER_POINTS[1][0], task.ANSWER_POINTS[1][1], 3),
+        (task.ANSWER_POINTS[2][0], task.ANSWER_POINTS[2][1], 3),
+    ]
+    assert task.wait_calls == [task.ANSWER_CLICK_INTERVAL_MS] * 3
 
 
 def test_click_answer_returns_immediately_when_exit_button_is_already_visible():

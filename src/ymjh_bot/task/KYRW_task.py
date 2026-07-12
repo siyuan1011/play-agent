@@ -15,21 +15,26 @@ class KyrwTask(YmGameTask):
     BTN_WUCHAN_ACTIVITY_FORWARD = str(YmGameTask.TEMPLATES_DIR / "btn_kyrw_activity_wuchan_forward.png")
     BTN_WUCHAN_COURSE_FORWARD = str(YmGameTask.TEMPLATES_DIR / "btn_kyrw_panel_course_forward.png")
     BTN_NPC_WUCHAN = str(YmGameTask.TEMPLATES_DIR / "btn_kyrw_npc_wuchan.png")
-    BTN_DIALOG_NEXT = str(YmGameTask.TEMPLATES_DIR / "btn_kyrw_dialog_next.png")
+    BTN_NPC_COURSE = str(YmGameTask.TEMPLATES_DIR / "btn_kyrw_npc_course.png")
+    BTN_NPC_ACTION_TEMPLATES = [BTN_NPC_WUCHAN, BTN_NPC_COURSE]
+    BTN_DIALOG_NEXT = str(YmGameTask.TEMPLATES_DIR / "btn_dialog_next.png")
     TEXT_COURSE_SIDEBAR = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_course_sidebar.png")
+    TEXT_COURSE_SHIMEN_SIDEBAR = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_shimen_sidebar.png")
+    COURSE_SIDEBAR_TEMPLATES = [TEXT_COURSE_SIDEBAR, TEXT_COURSE_SHIMEN_SIDEBAR]
     TEXT_EXISTING_COURSE_TOAST = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_existing_course_toast.png")
     TEXT_COURSE_COMPLETE = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_complete.png")
-    ROUTE_MALL = str(YmGameTask.TEMPLATES_DIR / "route_kyrw_mall.png")
-    ROUTE_STALL = str(YmGameTask.TEMPLATES_DIR / "route_bangpai_stall.png")
+    ROUTE_MALL = str(YmGameTask.TEMPLATES_DIR / "route_mall.png")
+    ROUTE_STALL = str(YmGameTask.TEMPLATES_DIR / "route_stall.png")
     BTN_ONE_KEY_SUBMIT = str(YmGameTask.TEMPLATES_DIR / "btn_kyrw_one_key_submit.png")
-    BTN_VIEW_ALL_SERVER = str(YmGameTask.TEMPLATES_DIR / "btn_menke_view_all_server.png")
-    BTN_MALL_BUY_AREA = str(YmGameTask.TEMPLATES_DIR / "btn_menke_mall_buy_area.png")
+    BTN_VIEW_ALL_SERVER = str(YmGameTask.TEMPLATES_DIR / "btn_view_all_server.png")
+    BTN_MALL_BUY_AREA = str(YmGameTask.TEMPLATES_DIR / "btn_mall_buy_area.png")
     BTN_BUY = str(YmGameTask.TEMPLATES_DIR / "btn_buy.png")
     BTN_MODAL_CANCEL = str(YmGameTask.TEMPLATES_DIR / "btn_modal_cancel.png")
 
     # 固定坐标点 (设计分辨率 1280x720 下)
     POINT_WUCHAN_ACTIVITY_FORWARD = (215, 276)
     POINT_WUCHAN_COURSE_FORWARD = (276, 498)
+    POINT_NPC_TALK = (1005, 465)
     POINT_NPC_ACTION = (1100, 465)
     POINT_COURSE_CARD_DEFAULT = (354, 265)
     POINT_TASK_LIST_SCROLL_START = (190, 520)
@@ -55,16 +60,19 @@ class KyrwTask(YmGameTask):
     MAX_ITEM_ACQUIRE_ROUNDS = 60
     MAX_STALL_BUY_RETRIES = 2
     MAX_ALL_SERVER_BUY_RETRIES = 2
+    MAX_NPC_ACCEPT_RECOVERY = 2
     TRADE_BUY_THRESHOLD = 0.7
     IDLE_ACTION_LIMIT = 4
 
     def __init__(self, default_interval_ms: int | None = None):
         super().__init__(default_interval_ms=default_interval_ms)
         self._item_acquire_rounds = 0
+        self._npc_accept_recoveries = 0
 
     def on_start(self) -> None:
         """任务开始前准备。"""
         self._item_acquire_rounds = 0
+        self._npc_accept_recoveries = 0
         self._log("=" * 40)
         self._log("课业任务开始")
         self._log("=" * 40)
@@ -134,24 +142,66 @@ class KyrwTask(YmGameTask):
     @step(retry=3, timeout_ms=180000)
     def accept_or_open_course_panel(self) -> None:
         """在普照对话中进入课业面板，并处理已布置课业提示。"""
-        self.require_image(self.BTN_NPC_WUCHAN, timeout_ms=120000, description="NPC 悟禅按钮", threshold=0.85)
-        self.click(offset=0)
-        self.wait(1200)
+        if not self.click_npc_course_action_if_visible(timeout_ms=6000, wait_after_click_ms=1200):
+            self._log("未识别到NPC悟禅按钮，使用固定坐标点击课业动作")
 
         self.click_point(self.POINT_NPC_ACTION[0], self.POINT_NPC_ACTION[1], offset=0)
         self.wait(2000)
 
+        if self.try_continue_after_course_panel_opened():
+            return
+
+        self._log("未进入课业面板，尝试先点击NPC对话按钮")
+        self.click_point(self.POINT_NPC_TALK[0], self.POINT_NPC_TALK[1], offset=0)
+        self.wait(1500)
+        self.click_point(self.POINT_NPC_ACTION[0], self.POINT_NPC_ACTION[1], offset=0)
+        self.wait(2000)
+
+        if self.try_continue_after_course_panel_opened():
+            return
+
+        self.close_all_panels(timeout_ms=3000)
+        if self.click_course_task_from_sidebar(max_scrolls=5, required=False):
+            self.jump_to("run_course_flow")
+
+        if self._npc_accept_recoveries < self.MAX_NPC_ACCEPT_RECOVERY:
+            self._npc_accept_recoveries += 1
+            self._log("进入课业面板失败，重新从悟禅活动入口接取")
+            self.close_all_panels(timeout_ms=3000)
+            self.jump_to("open_wuchan_activity")
+
+        raise RuntimeError("进入课业面板后未找到可执行课业")
+
+    def try_continue_after_course_panel_opened(self) -> bool:
+        """Continue once the course panel may have opened."""
         if self.cancel_refresh_confirm_if_visible():
             self.jump_to("resume_existing_course")
 
         if self.try_select_default_course_card():
             self.jump_to("run_course_flow")
 
-        self.close_all_panels(timeout_ms=3000)
-        if self.click_course_task_from_sidebar(max_scrolls=5, required=False):
-            self.jump_to("run_course_flow")
+        return False
 
-        raise RuntimeError("进入课业面板后未找到可执行课业")
+    def click_npc_course_action_if_visible(
+        self,
+        *,
+        timeout_ms: int,
+        wait_after_click_ms: int = 1500,
+    ) -> bool:
+        """Click the NPC course action button when it is visible."""
+        if not self.wait_find_image_in_roi(
+            self.BTN_NPC_ACTION_TEMPLATES,
+            self.ROI_NPC_ACTION,
+            timeout_ms=timeout_ms,
+            description="NPC 课业动作按钮",
+            threshold=0.85,
+        ):
+            return False
+
+        self._log("点击NPC课业动作按钮")
+        self.click(offset=0)
+        self.wait(wait_after_click_ms)
+        return True
 
     @step(retry=1, timeout_ms=TASK_FLOW_TIMEOUT_MS)
     def run_course_flow(self) -> None:
@@ -179,6 +229,10 @@ class KyrwTask(YmGameTask):
                 idle_actions = 0
                 continue
 
+            if self.click_npc_course_action_if_visible(timeout_ms=600):
+                idle_actions = 0
+                continue
+
             if self.click_dialog_next_if_visible():
                 idle_actions = 0
                 continue
@@ -197,6 +251,10 @@ class KyrwTask(YmGameTask):
                 continue
 
             if self.handle_trade_panel_if_visible():
+                idle_actions = 0
+                continue
+
+            if self.click_npc_course_action_if_visible(timeout_ms=600):
                 idle_actions = 0
                 continue
 
@@ -269,7 +327,7 @@ class KyrwTask(YmGameTask):
 
             for attempt in range(max_scrolls + 1):
                 if self.wait_find_image_in_roi(
-                    self.TEXT_COURSE_SIDEBAR,
+                    self.COURSE_SIDEBAR_TEMPLATES,
                     self.ROI_TASK_LIST,
                     timeout_ms=1000,
                     description="任务栏课业任务",
