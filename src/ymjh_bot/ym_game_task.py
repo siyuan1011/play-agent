@@ -77,6 +77,7 @@ class YmGameTask(GameTask):
     MAP_WORLD_JINLING = str(TEMPLATES_DIR / "map_world_jinling.png")
     MAP_JINLING_JIMING_TEMPLE = str(TEMPLATES_DIR / "map_jinling_jiming_temple.png")
     ICON_SAFE_POINT = str(TEMPLATES_DIR / "icon_safe_point.png")
+    ICON_SAFE_POINT_CURRENT = str(TEMPLATES_DIR / "icon_safe_point_current.png")
     BTN_TEAM_QUICK = str(TEMPLATES_DIR / "btn_team_quick.png")
     BTN_TEAM_LEAVE = str(TEMPLATES_DIR / "btn_team_leave.png")
     BTN_TEAM_AUTO_MATCH = str(TEMPLATES_DIR / "btn_team_auto_match.png")
@@ -102,7 +103,7 @@ class YmGameTask(GameTask):
     POINT_MAIN_TEAM = (22, 276)
     POINT_MAIN_TEAM_WHEN_TASK_PANEL_OPEN = (22, 420)
     POINT_MINIMAP = (1260, 90)
-    POINT_SAFE_POINT_FALLBACK = (482, 32)
+    POINT_SAFE_POINT_FALLBACK = (535, 35)
     POINT_TEAM_CREATE = (826, 663)
     POINT_TEAM_CREATE_RAID = (968, 663)
     POINT_TEAM_QUICK_BOTTOM = (1106, 663)
@@ -155,7 +156,7 @@ class YmGameTask(GameTask):
     ROI_MAP_REGION_BUTTON = (1160, 610, 120, 110)
     ROI_MAP_WORLD_JINLING = (850, 120, 120, 170)
     ROI_MAP_JINLING_JIMING_TEMPLE = (460, 60, 130, 140)
-    ROI_MAP_SAFE_POINT = (440, 0, 100, 80)
+    ROI_MAP_SAFE_POINT = (440, 0, 130, 80)
     ROI_MAP_CLOSE = (1180, 0, 100, 95)
     ROI_TEAM_PANEL_BOTTOM_RIGHT = (1010, 600, 220, 115)
     ROI_TEAM_PANEL_BOTTOM = (720, 600, 470, 115)
@@ -198,6 +199,7 @@ class YmGameTask(GameTask):
     AUTO_PATH_START_TIMEOUT_MS = 5000
     SAFE_ZONE_RETURN_MAX_ATTEMPTS = 3
     MAP_CLOSE_TEMPLATES = [BTN_CLOSE, BTN_WELCOME_CLOSE, BTN_PANE_CLOSE]
+    ICON_SAFE_POINT_TEMPLATES = [ICON_SAFE_POINT, ICON_SAFE_POINT_CURRENT]
 
     TEAM_TARGET_JIANGHU_XINGSHANG = "行当玩法-江湖行商"
     TEAM_TARGET_JUYI_PINGYUAN = "行当玩法-聚义平冤"
@@ -883,7 +885,6 @@ class YmGameTask(GameTask):
                 debug_path = self.save_debug_screenshot("safe_zone_auto_path_not_started")
                 raise RuntimeError(f"点击鸡鸣寺安全点后未开始自动寻路，已保存截图：{debug_path}")
 
-        self.close_map_if_open(wait_after_click_ms=wait_after_click_ms)
         self.wait_auto_pathfinding(timeout_ms=path_timeout_ms)
         self._log("已回到鸡鸣寺安全区")
 
@@ -951,28 +952,31 @@ class YmGameTask(GameTask):
 
     def click_safe_point_and_verify_auto_path(self, *, wait_after_click_ms: int) -> bool:
         """Click the Jiming Temple safe point and verify auto-pathfinding starts."""
-        if self.click_template_if_available(
-            self.ICON_SAFE_POINT,
+        if not self.click_template_if_available(
+            self.ICON_SAFE_POINT_TEMPLATES,
             timeout_ms=5000,
             description="鸡鸣寺安全点",
             threshold=self.MAP_TEMPLATE_THRESHOLD,
             roi=self.ROI_MAP_SAFE_POINT,
             wait_after_click_ms=wait_after_click_ms,
         ):
-            return self.wait_auto_pathfinding_started()
+            self._log("未找到鸡鸣寺安全点模板，使用固定坐标兜底点击")
+            self.click_point(self.POINT_SAFE_POINT_FALLBACK[0], self.POINT_SAFE_POINT_FALLBACK[1], offset=0)
+            self.wait(wait_after_click_ms)
 
-        self._log("未找到鸡鸣寺安全点模板，使用固定坐标兜底点击")
-        self.click_point(self.POINT_SAFE_POINT_FALLBACK[0], self.POINT_SAFE_POINT_FALLBACK[1], offset=0)
-        self.wait(wait_after_click_ms)
+        self.close_map_if_open(wait_after_click_ms=wait_after_click_ms)
         return self.wait_auto_pathfinding_started()
 
     def wait_auto_pathfinding_started(self, timeout_ms: int | None = None) -> bool:
         """Wait until the auto-pathfinding indicator appears."""
-        return self.wait_image_appear(
+        found = self.wait_image_appear(
             self.TEXT_AUTO_PATH,
             timeout_ms=timeout_ms or self.AUTO_PATH_START_TIMEOUT_MS,
             threshold=0.8,
         )
+        if not found:
+            self._log(f"未检测到自动寻路标志，最高得分 {self._last_match_score:.3f}")
+        return found
 
     def close_map_if_open(self, *, wait_after_click_ms: int) -> None:
         """Close the map when it remains open after choosing a destination."""

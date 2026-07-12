@@ -45,6 +45,7 @@ def test_safe_zone_map_templates_match_reference_screenshots():
     root = Path(__file__).resolve().parents[1]
     local_map = root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_211024.png"
     world_map = root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_211854.png"
+    current_safe_point_roi = root / "screenshots/safe_point_current_roi_20260713.png"
     cases = [
         (
             local_map,
@@ -69,7 +70,12 @@ def test_safe_zone_map_templates_match_reference_screenshots():
         (
             local_map,
             root / "src/ymjh_bot/templates/icon_safe_point.png",
-            (440, 0, 100, 80),
+            (440, 0, 130, 80),
+        ),
+        (
+            current_safe_point_roi,
+            root / "src/ymjh_bot/templates/icon_safe_point_current.png",
+            None,
         ),
     ]
 
@@ -83,11 +89,32 @@ def test_safe_zone_map_templates_match_reference_screenshots():
 
     safe_point_on_world = engine.match_template(
         load_image(world_map),
-        str(root / "src/ymjh_bot/templates/icon_safe_point.png"),
+        [
+            str(root / "src/ymjh_bot/templates/icon_safe_point.png"),
+            str(root / "src/ymjh_bot/templates/icon_safe_point_current.png"),
+        ],
         threshold=0.8,
-        roi=(440, 0, 100, 80),
+        roi=(440, 0, 130, 80),
     )
     assert safe_point_on_world.found is False
+
+    safe_point_templates = [
+        str(root / "src/ymjh_bot/templates/icon_safe_point.png"),
+        str(root / "src/ymjh_bot/templates/icon_safe_point_current.png"),
+    ]
+    old_result = engine.match_template(
+        load_image(local_map),
+        safe_point_templates,
+        threshold=0.95,
+        roi=(440, 0, 130, 80),
+    )
+    current_result = engine.match_template(
+        load_image(current_safe_point_roi),
+        safe_point_templates,
+        threshold=0.95,
+    )
+    assert old_result.found is True
+    assert current_result.found is True
 
 
 def test_health_bar_anchor_template_matches_reference_screenshots():

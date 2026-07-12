@@ -394,6 +394,7 @@ class FakeSafeZoneTask(YmGameTask):
         self.main_ready_calls = []
         self.auto_path_calls = []
         self.debug_prefixes = []
+        self.events = []
         self.logs = []
 
     def is_chat_open(self) -> bool:
@@ -401,6 +402,7 @@ class FakeSafeZoneTask(YmGameTask):
 
     def wait_image_appear(self, template, timeout_ms=10000, threshold=0.8, callback=None, interval_ms=500):
         self.image_calls.append((template, timeout_ms, threshold, interval_ms))
+        self.events.append(("image", template, timeout_ms, threshold, interval_ms))
         return self.image_results.pop(0) if self.image_results else False
 
     def wait_find_image_in_roi(
@@ -414,27 +416,34 @@ class FakeSafeZoneTask(YmGameTask):
         interval_ms=500,
     ):
         self.roi_calls.append((template, roi, timeout_ms, description, threshold, interval_ms))
+        self.events.append(("roi", template, roi, timeout_ms, description, threshold, interval_ms))
         return self.roi_results.pop(0) if self.roi_results else False
 
     def find_image_once(self, template, *, threshold=0.8, roi=None, log_found=False, log_missing=False):
         self.find_once_calls.append((template, threshold, roi, log_found, log_missing))
+        self.events.append(("find_once", template, threshold, roi, log_found, log_missing))
         return self.find_once_results.pop(0) if self.find_once_results else False
 
     def click(self, offset: int = 3) -> None:
         self.click_offsets.append(offset)
+        self.events.append(("click", offset))
 
     def click_point(self, x: int, y: int, offset: int = 3) -> None:
         self.clicked_points.append((x, y, offset))
+        self.events.append(("point", x, y, offset))
 
     def is_game_main_ready(self, *, timeout_ms: int = 2000, threshold: float = 0.8) -> bool:
         self.main_ready_calls.append((timeout_ms, threshold))
+        self.events.append(("main_ready", timeout_ms, threshold))
         return self.main_ready
 
     def wait_auto_pathfinding(self, **kwargs) -> None:
         self.auto_path_calls.append(kwargs)
+        self.events.append(("wait_auto_pathfinding", kwargs))
 
     def wait(self, ms):
         self.wait_calls.append(ms)
+        self.events.append(("wait", ms))
 
     def save_debug_screenshot(self, prefix: str) -> str:
         self.debug_prefixes.append(prefix)
@@ -952,7 +961,7 @@ def test_close_all_panels_returns_to_safe_zone_when_requested():
             500,
         ),
         (
-            task.ICON_SAFE_POINT,
+            task.ICON_SAFE_POINT_TEMPLATES,
             task.ROI_MAP_SAFE_POINT,
             5000,
             "鸡鸣寺安全点",
@@ -974,6 +983,23 @@ def test_close_all_panels_returns_to_safe_zone_when_requested():
         ([task.BTN_CLOSE, task.BTN_PANE_CLOSE, task.BTN_WELCOME_CLOSE], 5000, 0.8, 500),
         (task.TEXT_AUTO_PATH, task.AUTO_PATH_START_TIMEOUT_MS, 0.8, 500),
     ]
+    map_close_event = (
+        "roi",
+        task.MAP_CLOSE_TEMPLATES,
+        task.ROI_MAP_CLOSE,
+        1500,
+        "地图关闭按钮",
+        task.MAP_TEMPLATE_THRESHOLD,
+        500,
+    )
+    auto_path_start_event = (
+        "image",
+        task.TEXT_AUTO_PATH,
+        task.AUTO_PATH_START_TIMEOUT_MS,
+        0.8,
+        500,
+    )
+    assert task.events.index(map_close_event) < task.events.index(auto_path_start_event)
     assert task.wait_calls == [1000, 1000, 1000, 1000, 1000]
     assert task.main_ready_calls == [(2000, 0.8)]
     assert task.auto_path_calls == [{"timeout_ms": 90000}]
@@ -1101,9 +1127,9 @@ def test_return_to_safe_zone_clicks_fallback_point_when_safe_point_template_is_m
         (task.POINT_MINIMAP[0], task.POINT_MINIMAP[1], 0),
         (task.POINT_SAFE_POINT_FALLBACK[0], task.POINT_SAFE_POINT_FALLBACK[1], 0),
     ]
-    assert task.POINT_SAFE_POINT_FALLBACK == (482, 32)
+    assert task.POINT_SAFE_POINT_FALLBACK == (535, 35)
     assert task.roi_calls[-2] == (
-        task.ICON_SAFE_POINT,
+        task.ICON_SAFE_POINT_TEMPLATES,
         task.ROI_MAP_SAFE_POINT,
         5000,
         "鸡鸣寺安全点",
@@ -1117,7 +1143,7 @@ def test_return_to_safe_zone_clicks_fallback_point_when_safe_point_template_is_m
 def test_return_to_safe_zone_retries_from_start_when_auto_path_does_not_start_then_succeeds():
     task = RetrySafeZoneTask(
         image_results=[False, True],
-        roi_results=[True, True, True, True, True, True, True],
+        roi_results=[True, True, True, True, True, True, True, True],
         find_once_results=[
             False,
             False,
@@ -1141,15 +1167,15 @@ def test_return_to_safe_zone_retries_from_start_when_auto_path_does_not_start_th
     task.return_to_safe_zone()
 
     assert task.roi_calls[2] == (
-        task.ICON_SAFE_POINT,
+        task.ICON_SAFE_POINT_TEMPLATES,
         task.ROI_MAP_SAFE_POINT,
         5000,
         "鸡鸣寺安全点",
         task.MAP_TEMPLATE_THRESHOLD,
         500,
     )
-    assert task.roi_calls[5] == (
-        task.ICON_SAFE_POINT,
+    assert task.roi_calls[6] == (
+        task.ICON_SAFE_POINT_TEMPLATES,
         task.ROI_MAP_SAFE_POINT,
         5000,
         "鸡鸣寺安全点",
@@ -1167,7 +1193,7 @@ def test_return_to_safe_zone_retries_from_start_when_auto_path_does_not_start_th
 def test_return_to_safe_zone_raises_after_three_auto_path_start_failures():
     task = RetrySafeZoneTask(
         image_results=[False, False, False],
-        roi_results=[True, True, True, True, True, True, True, True, True],
+        roi_results=[True, True, True, True, True, True, True, True, True, True, True, True],
         find_once_results=[
             False,
             False,
