@@ -57,6 +57,11 @@ def test_safe_zone_map_templates_match_reference_screenshots():
             (850, 120, 120, 170),
         ),
         (
+            world_map,
+            root / "src/ymjh_bot/templates/map_btn_region.png",
+            (1160, 610, 120, 110),
+        ),
+        (
             local_map,
             root / "src/ymjh_bot/templates/map_jinling_jiming_temple.png",
             (460, 60, 130, 140),
@@ -382,8 +387,26 @@ def test_hslj_templates_match_reference_screenshots():
             0.95,
         ),
         (
+            root / "screenshots" / "hslj_match_button_missing_20260712_182450_739672.png",
+            root / "src/ymjh_bot/templates/btn_hslj_ready_battle.png",
+            (520, 35, 240, 120),
+            0.95,
+        ),
+        (
             root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260708_235916.png",
             root / "src/ymjh_bot/templates/icon_hslj_first_win.png",
+            (900, 450, 130, 100),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_010126.png",
+            root / "src/ymjh_bot/templates/icon_hslj_first_win_ready.png",
+            (900, 450, 130, 100),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260708_234230.png",
+            root / "src/ymjh_bot/templates/icon_hslj_first_win_chest.png",
             (900, 450, 130, 100),
             0.95,
         ),
@@ -395,6 +418,31 @@ def test_hslj_templates_match_reference_screenshots():
 
         assert result.found is True
         assert result.score >= threshold
+
+
+def test_hslj_mode_tab_templates_are_mutually_exclusive():
+    root = Path(__file__).resolve().parents[1]
+    engine = VisionEngine()
+    cases = [
+        (
+            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260708_234230.png",
+            root / "src/ymjh_bot/templates/tab_hslj_1v1_active.png",
+            root / "src/ymjh_bot/templates/tab_hslj_3v3_active.png",
+        ),
+        (
+            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_112937.png",
+            root / "src/ymjh_bot/templates/tab_hslj_3v3_active.png",
+            root / "src/ymjh_bot/templates/tab_hslj_1v1_active.png",
+        ),
+    ]
+
+    for screenshot_path, active_template, inactive_template in cases:
+        screen = load_image(screenshot_path)
+        active = engine.match_template(screen, str(active_template), threshold=0.85, roi=(1035, 115, 165, 285))
+        inactive = engine.match_template(screen, str(inactive_template), threshold=0.85, roi=(1035, 115, 165, 285))
+
+        assert active.found is True
+        assert inactive.found is False
 
 
 def test_team_templates_match_reference_screenshots():
@@ -725,24 +773,6 @@ def test_common_route_templates_match_task_screenshots():
     engine = VisionEngine()
     for screenshot_path, template_path, roi in cases:
         result = engine.match_template(load_image(screenshot_path), str(template_path), threshold=0.95, roi=roi)
-
-        assert result.found is True
-        assert result.score >= 0.95
-
-
-def test_hslj_complete_template_matches_reference_screenshots():
-    root = Path(__file__).resolve().parents[1]
-    engine = VisionEngine()
-    for screenshot_name in [
-        "ymjh_queue_127.0.0.1_16416_20260708_234230.png",
-        "ymjh_queue_127.0.0.1_16416_20260709_010126.png",
-    ]:
-        result = engine.match_template(
-            load_image(root / "screenshots" / screenshot_name),
-            str(root / "src/ymjh_bot/templates/text_HSLJ_complete.png"),
-            threshold=0.95,
-            roi=(730, 455, 230, 85),
-        )
 
         assert result.found is True
         assert result.score >= 0.95

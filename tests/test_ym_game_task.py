@@ -369,18 +369,31 @@ class FakeSafeZoneTask(YmGameTask):
         main_ready: bool = True,
         image_results: list[bool] | None = None,
         roi_results: list[bool] | None = None,
+        find_once_results: list[bool] | None = None,
     ):
         super().__init__()
         self.main_ready = main_ready
         self.image_results = image_results or []
         self.roi_results = roi_results if roi_results is not None else [True, True, True, True]
+        self.find_once_results = find_once_results if find_once_results is not None else [
+            False,
+            False,
+            True,
+            False,
+            True,
+            False,
+            False,
+            True,
+        ]
         self.image_calls = []
         self.roi_calls = []
+        self.find_once_calls = []
         self.clicked_points = []
         self.click_offsets = []
         self.wait_calls = []
         self.main_ready_calls = []
         self.auto_path_calls = []
+        self.debug_prefixes = []
         self.logs = []
 
     def is_chat_open(self) -> bool:
@@ -403,6 +416,10 @@ class FakeSafeZoneTask(YmGameTask):
         self.roi_calls.append((template, roi, timeout_ms, description, threshold, interval_ms))
         return self.roi_results.pop(0) if self.roi_results else False
 
+    def find_image_once(self, template, *, threshold=0.8, roi=None, log_found=False, log_missing=False):
+        self.find_once_calls.append((template, threshold, roi, log_found, log_missing))
+        return self.find_once_results.pop(0) if self.find_once_results else False
+
     def click(self, offset: int = 3) -> None:
         self.click_offsets.append(offset)
 
@@ -418,6 +435,10 @@ class FakeSafeZoneTask(YmGameTask):
 
     def wait(self, ms):
         self.wait_calls.append(ms)
+
+    def save_debug_screenshot(self, prefix: str) -> str:
+        self.debug_prefixes.append(prefix)
+        return f"screenshots/{prefix}.png"
 
     def _log(self, message: str) -> None:
         self.logs.append(message)
@@ -837,7 +858,65 @@ def test_close_all_panels_returns_to_safe_zone_when_requested():
     assert task.clicked_points == [
         (task.POINT_MINIMAP[0], task.POINT_MINIMAP[1], 0),
     ]
-    assert task.POINT_MINIMAP == (1198, 100)
+    assert task.POINT_MINIMAP == (1260, 90)
+    assert task.find_once_calls == [
+        (
+            task.MAP_BTN_WORLD,
+            task.MAP_TEMPLATE_THRESHOLD,
+            task.scale_roi(task.ROI_MAP_WORLD_BUTTON),
+            False,
+            False,
+        ),
+        (
+            task.MAP_JINLING_JIMING_TEMPLE,
+            task.MAP_TEMPLATE_THRESHOLD,
+            task.scale_roi(task.ROI_MAP_JINLING_JIMING_TEMPLE),
+            False,
+            False,
+        ),
+        (
+            task.MAP_BTN_WORLD,
+            task.MAP_TEMPLATE_THRESHOLD,
+            task.scale_roi(task.ROI_MAP_WORLD_BUTTON),
+            False,
+            False,
+        ),
+        (
+            task.MAP_BTN_REGION,
+            task.MAP_TEMPLATE_THRESHOLD,
+            task.scale_roi(task.ROI_MAP_REGION_BUTTON),
+            False,
+            False,
+        ),
+        (
+            task.MAP_BTN_REGION,
+            task.MAP_TEMPLATE_THRESHOLD,
+            task.scale_roi(task.ROI_MAP_REGION_BUTTON),
+            False,
+            False,
+        ),
+        (
+            task.MAP_BTN_WORLD,
+            task.MAP_TEMPLATE_THRESHOLD,
+            task.scale_roi(task.ROI_MAP_WORLD_BUTTON),
+            False,
+            False,
+        ),
+        (
+            task.MAP_JINLING_JIMING_TEMPLE,
+            task.MAP_TEMPLATE_THRESHOLD,
+            task.scale_roi(task.ROI_MAP_JINLING_JIMING_TEMPLE),
+            False,
+            False,
+        ),
+        (
+            task.MAP_BTN_WORLD,
+            task.MAP_TEMPLATE_THRESHOLD,
+            task.scale_roi(task.ROI_MAP_WORLD_BUTTON),
+            False,
+            False,
+        ),
+    ]
     assert task.roi_calls == [
         (
             task.MAP_BTN_WORLD,
@@ -880,6 +959,22 @@ def test_close_all_panels_returns_to_safe_zone_when_requested():
     assert "已回到鸡鸣寺安全区" in task.logs
 
 
+def test_return_to_safe_zone_world_map_visible_uses_region_button_template():
+    task = FakeSafeZoneTask(find_once_results=[True])
+
+    assert task.is_world_map_visible_quiet()
+
+    assert task.find_once_calls == [
+        (
+            task.MAP_BTN_REGION,
+            task.MAP_TEMPLATE_THRESHOLD,
+            task.scale_roi(task.ROI_MAP_REGION_BUTTON),
+            False,
+            False,
+        )
+    ]
+
+
 def test_return_to_safe_zone_rejects_non_main_scene_without_clicking_map():
     task = FakeSafeZoneTask(main_ready=False)
 
@@ -895,24 +990,98 @@ def test_return_to_safe_zone_rejects_non_main_scene_without_clicking_map():
     assert task.auto_path_calls == []
 
 
-def test_return_to_safe_zone_raises_when_map_template_is_missing():
-    cases = [
-        ([False], "未找到地图世界按钮"),
-        ([True, False], "未找到世界地图金陵"),
-        ([True, True, False], "未找到金陵地图鸡鸣寺"),
-        ([True, True, True, False], "未找到地图关闭按钮"),
+def test_return_to_safe_zone_saves_debug_when_local_map_does_not_open():
+    task = FakeSafeZoneTask(find_once_results=[False, False, False, False])
+    task.MAP_OPEN_TIMEOUT_MS = 0
+
+    try:
+        task.return_to_safe_zone()
+    except RuntimeError as exc:
+        assert "未打开大地图/区域地图，已保存截图：screenshots/safe_zone_open_local_map_failed.png" == str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError")
+
+    assert task.clicked_points == [(task.POINT_MINIMAP[0], task.POINT_MINIMAP[1], 0)]
+    assert task.roi_calls == []
+    assert task.click_offsets == []
+    assert task.debug_prefixes == ["safe_zone_open_local_map_failed"]
+    assert task.auto_path_calls == []
+
+
+def test_return_to_safe_zone_saves_debug_when_world_map_does_not_open():
+    task = FakeSafeZoneTask(find_once_results=[False, False, True, False, False], roi_results=[True])
+    task.MAP_SWITCH_TIMEOUT_MS = 0
+
+    try:
+        task.return_to_safe_zone()
+    except RuntimeError as exc:
+        assert "未进入世界地图，已保存截图：screenshots/safe_zone_open_world_map_failed.png" == str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError")
+
+    assert task.roi_calls == [
+        (
+            task.MAP_BTN_WORLD,
+            task.ROI_MAP_WORLD_BUTTON,
+            5000,
+            "地图世界按钮",
+            task.MAP_TEMPLATE_THRESHOLD,
+            500,
+        )
     ]
+    assert task.click_offsets == [0]
+    assert task.debug_prefixes == ["safe_zone_open_world_map_failed"]
+    assert task.auto_path_calls == []
 
-    for roi_results, message in cases:
-        task = FakeSafeZoneTask(roi_results=roi_results)
-        try:
-            task.return_to_safe_zone()
-        except RuntimeError as exc:
-            assert str(exc) == message
-        else:
-            raise AssertionError("Expected RuntimeError")
 
-        assert task.auto_path_calls == []
+def test_return_to_safe_zone_saves_debug_when_jinling_region_map_does_not_open():
+    task = FakeSafeZoneTask(
+        find_once_results=[False, False, True, False, True, False, False, False, False],
+        roi_results=[True, True],
+    )
+    task.MAP_SWITCH_TIMEOUT_MS = 0
+
+    try:
+        task.return_to_safe_zone()
+    except RuntimeError as exc:
+        assert "未进入金陵区域地图，已保存截图：screenshots/safe_zone_open_jinling_map_failed.png" == str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError")
+
+    assert task.roi_calls == [
+        (
+            task.MAP_BTN_WORLD,
+            task.ROI_MAP_WORLD_BUTTON,
+            5000,
+            "地图世界按钮",
+            task.MAP_TEMPLATE_THRESHOLD,
+            500,
+        ),
+        (
+            task.MAP_WORLD_JINLING,
+            task.ROI_MAP_WORLD_JINLING,
+            5000,
+            "世界地图金陵",
+            task.MAP_TEMPLATE_THRESHOLD,
+            500,
+        ),
+    ]
+    assert task.click_offsets == [0, 0]
+    assert task.debug_prefixes == ["safe_zone_open_jinling_map_failed"]
+    assert task.auto_path_calls == []
+
+
+def test_return_to_safe_zone_raises_when_final_map_template_is_missing():
+    task = FakeSafeZoneTask(roi_results=[True, True, False])
+
+    try:
+        task.return_to_safe_zone()
+    except RuntimeError as exc:
+        assert str(exc) == "未找到金陵地图鸡鸣寺"
+    else:
+        raise AssertionError("Expected RuntimeError")
+
+    assert task.auto_path_calls == []
 
 
 def test_recover_health_if_needed_meditates_until_full():

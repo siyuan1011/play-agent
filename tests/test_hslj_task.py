@@ -151,15 +151,11 @@ class OneVOneFlowTask(HSLJTask):
         self,
         *,
         complete: bool | None = None,
-        complete_results: list[bool] | None = None,
         claim_results: list[bool] | None = None,
         hslj_settings: dict | None = None,
         stop_after_matches: int | None = None,
     ):
         super().__init__(hslj_settings=hslj_settings)
-        if complete_results is None and complete is not None:
-            complete_results = [complete]
-        self.complete_results = complete_results or []
         if claim_results is None and complete is not None:
             claim_results = [complete]
         self.claim_results = claim_results or []
@@ -176,9 +172,6 @@ class OneVOneFlowTask(HSLJTask):
 
     def select_hslj_mode(self, mode: str) -> None:
         self.selected_modes.append(mode)
-
-    def is_1v1_complete(self) -> bool:
-        return self.complete_results.pop(0) if self.complete_results else False
 
     def claim_first_win_reward(self, mode: str) -> bool:
         self.claim_calls.append(mode)
@@ -203,7 +196,6 @@ class ThreeVThreeLoopTask(HSLJTask):
         lunjian_count: int = HSLJTask.DEFAULT_LUNJIAN_COUNT,
         lunjian_infinite: bool = False,
         hslj_settings: dict | None = None,
-        complete_results: list[bool] | None = None,
         claim_results: list[bool] | None = None,
         stop_after_matches: int | None = None,
     ):
@@ -212,7 +204,6 @@ class ThreeVThreeLoopTask(HSLJTask):
             lunjian_infinite=lunjian_infinite,
             hslj_settings=hslj_settings,
         )
-        self.complete_results = complete_results or []
         self.claim_results = claim_results or []
         self.stop_after_matches = stop_after_matches
         self.ready_calls = []
@@ -228,9 +219,6 @@ class ThreeVThreeLoopTask(HSLJTask):
     def select_hslj_mode(self, mode: str) -> None:
         self.selected_modes.append(mode)
 
-    def is_3v3_complete(self) -> bool:
-        return self.complete_results.pop(0) if self.complete_results else False
-
     def claim_first_win_reward(self, mode: str) -> bool:
         self.claim_calls.append(mode)
         return self.claim_results.pop(0) if self.claim_results else False
@@ -242,6 +230,150 @@ class ThreeVThreeLoopTask(HSLJTask):
         self.battle_calls.append((mode, match_index))
         if self.stop_after_matches and match_index >= self.stop_after_matches:
             self.stop()
+
+    def _log(self, message: str) -> None:
+        self.logs.append(message)
+
+
+class ClaimFirstWinHsljTask(HSLJTask):
+    def __init__(
+        self,
+        *,
+        reward_state: str = "unknown",
+        panel_visible: bool = True,
+        mode_selected: bool = True,
+        ready_visible: bool = False,
+        result_visible: bool = False,
+        match_success_visible: bool = False,
+        verify_claimed: bool = True,
+    ):
+        super().__init__()
+        self.reward_state = reward_state
+        self.panel_visible = panel_visible
+        self.mode_selected = mode_selected
+        self.ready_visible = ready_visible
+        self.result_visible = result_visible
+        self.match_success_visible = match_success_visible
+        self.verify_claimed = verify_claimed
+        self.click_offsets = []
+        self.clicked_points = []
+        self.wait_calls = []
+        self.close_reward_calls = []
+        self.roi_calls = []
+        self.logs = []
+
+    def is_ready_button_visible(self) -> bool:
+        return self.ready_visible
+
+    def is_result_panel_visible_quiet(self) -> bool:
+        return self.result_visible
+
+    def is_match_success_visible_quiet(self) -> bool:
+        return self.match_success_visible
+
+    def is_hslj_panel_visible_quiet(self) -> bool:
+        return self.panel_visible
+
+    def is_hslj_mode_selected_quiet(self, mode: str) -> bool:
+        return self.mode_selected
+
+    def is_first_win_reward_claimed(self) -> bool:
+        self._last_match_score = 1.0 if self.reward_state == "claimed" else 0.2
+        return self.reward_state == "claimed"
+
+    def is_first_win_reward_ready(self) -> bool:
+        self._last_match_score = 1.0 if self.reward_state == "ready" else 0.2
+        return self.reward_state == "ready"
+
+    def is_first_win_reward_initial(self) -> bool:
+        self._last_match_score = 1.0 if self.reward_state == "initial" else 0.2
+        return self.reward_state == "initial"
+
+    def wait_find_image_in_roi(
+        self,
+        template,
+        roi,
+        *,
+        timeout_ms,
+        description,
+        threshold=0.8,
+        interval_ms=500,
+    ):
+        self.roi_calls.append((template, roi, timeout_ms, description, threshold, interval_ms))
+        return self.verify_claimed
+
+    def close_reward_dialogs(self, max_attempts: int = 4, *, include_close_buttons: bool = True) -> bool:
+        self.close_reward_calls.append((max_attempts, include_close_buttons))
+        return True
+
+    def click(self, offset: int = 3) -> None:
+        self.click_offsets.append(offset)
+
+    def click_point(self, x: int, y: int, offset: int = 3) -> None:
+        self.clicked_points.append((x, y, offset))
+
+    def wait(self, ms):
+        self.wait_calls.append(ms)
+
+    def _log(self, message: str) -> None:
+        self.logs.append(message)
+
+
+class ModeSwitchHsljTask(HSLJTask):
+    def __init__(self, *, selected_results: list[bool]):
+        super().__init__()
+        self.selected_results = selected_results
+        self.clicked_points = []
+        self.wait_calls = []
+        self.debug_prefixes = []
+        self.logs = []
+
+    def ensure_hslj_mode_selected(self, mode: str, *, timeout_ms: int) -> bool:
+        return self.selected_results.pop(0) if self.selected_results else False
+
+    def click_point(self, x: int, y: int, offset: int = 3) -> None:
+        self.clicked_points.append((x, y, offset))
+
+    def wait(self, ms):
+        self.wait_calls.append(ms)
+
+    def save_debug_screenshot(self, prefix: str) -> str:
+        self.debug_prefixes.append(prefix)
+        return f"screenshots/{prefix}.png"
+
+    def _log(self, message: str) -> None:
+        self.logs.append(message)
+
+
+class ResidualSwitchHsljTask(HSLJTask):
+    def __init__(self):
+        super().__init__()
+        self.ready_calls = []
+        self.cancel_calls = []
+        self.selected_modes = []
+        self.logs = []
+
+    def ensure_hslj_panel_ready(self, *, mode: str, timeout_ms: int) -> None:
+        self.ready_calls.append((mode, timeout_ms))
+
+    def resolve_hslj_transient_state(self, mode: str) -> bool:
+        return False
+
+    def is_hslj_panel_visible_quiet(self) -> bool:
+        return True
+
+    def is_hslj_mode_selected_quiet(self, mode: str) -> bool:
+        return False
+
+    def is_match_cancel_button_visible_quiet(self) -> bool:
+        return True
+
+    def cancel_current_match(self, mode: str, match_index: int) -> bool:
+        self.cancel_calls.append((mode, match_index))
+        return True
+
+    def select_hslj_mode(self, mode: str) -> None:
+        self.selected_modes.append(mode)
 
     def _log(self, message: str) -> None:
         self.logs.append(message)
@@ -266,7 +398,7 @@ class BattleFlowHsljTask(FakeHsljTask):
         if state == self.MATCH_READY_STATE_READY:
             self.roi_calls.append(
                 (
-                    self.BTN_HSLJ_READY,
+                    self.BTN_HSLJ_READY_TEMPLATES,
                     self.ROI_READY_BUTTON,
                     self.MATCH_READY_TIMEOUT_MS,
                     "华山论剑准备按钮",
@@ -299,9 +431,8 @@ class ReadyWaitHsljTask(HSLJTask):
         result_results: list[bool] | None = None,
         match_success_results: list[bool] | None = None,
         panel_results: list[bool] | None = None,
-        complete_1v1_results: list[bool] | None = None,
-        complete_3v3_results: list[bool] | None = None,
         match_button_results: list[bool] | None = None,
+        mode_selected_results: list[bool] | None = None,
         cancel_results: list[bool] | None = None,
     ):
         super().__init__()
@@ -310,9 +441,8 @@ class ReadyWaitHsljTask(HSLJTask):
         self.result_results = result_results or []
         self.match_success_results = match_success_results or []
         self.panel_results = panel_results or []
-        self.complete_1v1_results = complete_1v1_results or []
-        self.complete_3v3_results = complete_3v3_results or []
         self.match_button_results = match_button_results or []
+        self.mode_selected_results = mode_selected_results or []
         self.cancel_results = cancel_results or []
         self.wait_calls = []
         self.click_offsets = []
@@ -335,14 +465,11 @@ class ReadyWaitHsljTask(HSLJTask):
     def is_hslj_panel_visible_quiet(self) -> bool:
         return self.panel_results.pop(0) if self.panel_results else False
 
-    def is_1v1_complete_quiet(self) -> bool:
-        return self.complete_1v1_results.pop(0) if self.complete_1v1_results else False
-
-    def is_3v3_complete_quiet(self) -> bool:
-        return self.complete_3v3_results.pop(0) if self.complete_3v3_results else False
-
     def is_match_button_visible_quiet(self) -> bool:
         return self.match_button_results.pop(0) if self.match_button_results else False
+
+    def is_hslj_mode_selected_quiet(self, mode: str) -> bool:
+        return self.mode_selected_results.pop(0) if self.mode_selected_results else True
 
     def cancel_current_match(self, mode: str, match_index: int) -> bool:
         self.cancel_calls.append((mode, match_index))
@@ -493,41 +620,48 @@ def test_open_panel_clicks_activity_icon_open_button_and_verifies_panel():
 
 
 def test_switch_to_3v3_clicks_panel_tab_and_verifies_panel():
-    task = FakeHsljTask(roi_results=[True, False, True])
+    task = FakeHsljTask(roi_results=[True], find_once_results=[False, False, False, True, True, False])
 
     task.switch_to_3v3()
 
     assert task.roi_calls == [
-        (
-            task.TITLE_HSLJ,
-            task.ROI_PANEL_TITLE,
-            10000,
-            "华山论剑面板",
-            0.85,
-            500,
-        ),
-        (
-            task.TAB_HSLJ_3V3_ACTIVE,
-            task.ROI_SIDE_TABS,
-            800,
-            "3v3已选中页签",
-            0.85,
-            300,
-        ),
-        (
-            task.TITLE_HSLJ,
-            task.ROI_PANEL_TITLE,
-            5000,
-            "华山论剑面板",
-            0.85,
-            500,
-        ),
+        (task.TITLE_HSLJ, task.ROI_PANEL_TITLE, 10000, "华山论剑面板", 0.85, 500),
     ]
     assert task.clicked_points == [(task.POINT_TAB_3V3[0], task.POINT_TAB_3V3[1], 0)]
     assert task.wait_calls == [1500]
+    assert task.find_once_calls == [
+        (task.TEXT_HSLJ_EXIT, 0.85, task.scale_roi(task.ROI_RESULT_EXIT_TEXT), False, False),
+        (task.BTN_HSLJ_READY_TEMPLATES, 0.85, task.scale_roi(task.ROI_READY_BUTTON), False, False),
+        (task.TITLE_HSLJ, 0.85, task.scale_roi(task.ROI_PANEL_TITLE), False, False),
+        (task.TITLE_HSLJ, 0.85, task.scale_roi(task.ROI_PANEL_TITLE), False, False),
+        (task.TAB_HSLJ_3V3_ACTIVE, 0.85, task.scale_roi(task.ROI_SIDE_TABS), False, False),
+        (task.TAB_HSLJ_1V1_ACTIVE, 0.85, task.scale_roi(task.ROI_SIDE_TABS), False, False),
+    ]
 
 
-def test_complete_1v1_skips_matching_when_already_complete():
+def test_select_hslj_mode_retries_and_raises_when_active_tab_missing():
+    task = ModeSwitchHsljTask(selected_results=[False, False, False])
+
+    with pytest.raises(RuntimeError, match="未确认真实页签"):
+        task.select_hslj_mode("3v3")
+
+    assert task.clicked_points == [(task.POINT_TAB_3V3[0], task.POINT_TAB_3V3[1], 0)] * 3
+    assert task.wait_calls == [1500, 1500, 1500]
+    assert task.debug_prefixes == ["hslj_switch_3v3_failed"]
+
+
+def test_switch_to_3v3_cancels_residual_non_3v3_match_before_switching():
+    task = ResidualSwitchHsljTask()
+
+    task.switch_to_3v3()
+
+    assert task.ready_calls == [("3v3", 10000)]
+    assert task.cancel_calls == [("1v1", 0)]
+    assert task.selected_modes == ["3v3"]
+    assert "切换 3v3 前检测到非 3v3 残留匹配中状态，先取消匹配" in task.logs
+
+
+def test_complete_1v1_skips_matching_when_reward_already_claimed():
     task = OneVOneFlowTask(complete=True)
 
     task.complete_1v1()
@@ -540,7 +674,7 @@ def test_complete_1v1_skips_matching_when_already_complete():
     assert "检测到华山论剑 1v1 首胜奖励已领取，跳过匹配" in task.logs
 
 
-def test_complete_1v1_matches_once_when_not_complete():
+def test_complete_1v1_stops_when_reward_claimed_after_match():
     task = OneVOneFlowTask(claim_results=[False, True])
 
     task.complete_1v1()
@@ -552,13 +686,14 @@ def test_complete_1v1_matches_once_when_not_complete():
     assert task.claim_calls == ["1v1", "1v1"]
 
 
-def test_complete_1v1_first_win_stops_after_configured_attempt_limit():
+def test_complete_1v1_first_win_continues_until_stopped_when_reward_unclaimed():
     task = OneVOneFlowTask(
         hslj_settings={
-            "1v1": {"strategy": "first_win", "count": 2},
+            "1v1": {"strategy": "first_win", "count": 1},
             "3v3": {"strategy": "fixed_count", "count": 5},
         },
         claim_results=[False, False, False],
+        stop_after_matches=2,
     )
 
     task.complete_1v1()
@@ -566,7 +701,24 @@ def test_complete_1v1_first_win_stops_after_configured_attempt_limit():
     assert task.match_clicks == 2
     assert task.battle_calls == [("1v1", 1), ("1v1", 2)]
     assert task.claim_calls == ["1v1", "1v1", "1v1"]
-    assert "华山论剑 1v1 首胜尝试达到上限 2 场，继续后续流程" in task.logs
+    assert "华山论剑 1v1 首胜匹配已停止" in task.logs
+
+
+def test_complete_1v1_first_win_ignores_configured_attempt_limit_until_reward_claimed():
+    task = OneVOneFlowTask(
+        hslj_settings={
+            "1v1": {"strategy": "first_win", "count": 1},
+            "3v3": {"strategy": "fixed_count", "count": 5},
+        },
+        claim_results=[False, False, True],
+    )
+
+    task.complete_1v1()
+
+    assert task.match_clicks == 2
+    assert task.battle_calls == [("1v1", 1), ("1v1", 2)]
+    assert task.claim_calls == ["1v1", "1v1", "1v1"]
+    assert "检测到华山论剑 1v1 首胜奖励已领取" in task.logs
 
 
 def test_complete_1v1_fixed_count_runs_configured_matches():
@@ -601,7 +753,7 @@ def test_complete_1v1_infinite_runs_until_stopped():
 
 
 def test_hslj_click_match_confirms_leave_team_dialog():
-    task = FakeHsljTask(roi_results=[True], find_once_results=[True])
+    task = FakeHsljTask(roi_results=[True], find_once_results=[False, False, False, True])
 
     task.click_match_button()
 
@@ -618,6 +770,27 @@ def test_hslj_click_match_confirms_leave_team_dialog():
     assert task.clicked_points == []
     assert task.find_once_calls == [
         (
+            task.BTN_HSLJ_READY_TEMPLATES,
+            0.85,
+            task.scale_roi(task.ROI_READY_BUTTON),
+            False,
+            False,
+        ),
+        (
+            task.TEXT_HSLJ_EXIT,
+            0.85,
+            task.scale_roi(task.ROI_RESULT_EXIT_TEXT),
+            False,
+            False,
+        ),
+        (
+            task.TEXT_HSLJ_MATCH_SUCCESS,
+            0.85,
+            task.scale_roi(task.ROI_MATCH_SUCCESS),
+            False,
+            False,
+        ),
+        (
             task.BTN_MODAL_OK,
             0.85,
             task.scale_roi(task.ROI_CENTER_MODAL_OK),
@@ -631,7 +804,7 @@ def test_hslj_click_match_confirms_leave_team_dialog():
 
 
 def test_hslj_click_match_continues_when_already_matching():
-    task = FakeHsljTask(roi_results=[False, True], find_once_results=[False])
+    task = FakeHsljTask(roi_results=[False, True], find_once_results=[False, False, False, False])
 
     task.click_match_button()
 
@@ -657,6 +830,27 @@ def test_hslj_click_match_continues_when_already_matching():
     assert task.clicked_points == []
     assert task.find_once_calls == [
         (
+            task.BTN_HSLJ_READY_TEMPLATES,
+            0.85,
+            task.scale_roi(task.ROI_READY_BUTTON),
+            False,
+            False,
+        ),
+        (
+            task.TEXT_HSLJ_EXIT,
+            0.85,
+            task.scale_roi(task.ROI_RESULT_EXIT_TEXT),
+            False,
+            False,
+        ),
+        (
+            task.TEXT_HSLJ_MATCH_SUCCESS,
+            0.85,
+            task.scale_roi(task.ROI_MATCH_SUCCESS),
+            False,
+            False,
+        ),
+        (
             task.BTN_MODAL_OK,
             0.85,
             task.scale_roi(task.ROI_CENTER_MODAL_OK),
@@ -665,6 +859,17 @@ def test_hslj_click_match_continues_when_already_matching():
         )
     ]
     assert "检测到华山论剑已在匹配中，继续等待准备" in task.logs
+
+
+def test_hslj_click_match_returns_when_already_ready():
+    task = FakeHsljTask(find_once_results=[True])
+
+    task.click_match_button()
+
+    assert task.roi_calls == []
+    assert task.debug_prefixes == []
+    assert task.click_offsets == []
+    assert "检测到华山论剑已进入准备态，跳过匹配按钮点击" in task.logs
 
 
 def test_hslj_click_match_raises_when_state_button_missing():
@@ -733,10 +938,11 @@ def test_hslj_cancel_current_match_clicks_exit_and_confirms_panel():
     assert "华山论剑 3v3 第 2 场已取消匹配并回到面板" in task.logs
 
 
-def test_hslj_ready_wait_returns_when_1v1_completed_on_panel():
+def test_hslj_ready_wait_returns_when_match_button_visible_on_panel():
     task = ReadyWaitHsljTask(
         panel_results=[True],
-        complete_1v1_results=[True],
+        mode_selected_results=[True],
+        match_button_results=[True],
     )
 
     state = task.click_ready_button("1v1", 1)
@@ -744,7 +950,7 @@ def test_hslj_ready_wait_returns_when_1v1_completed_on_panel():
     assert state == task.BATTLE_FINISH_RETURNED_PANEL
     assert task.click_offsets == []
     assert task.wait_calls == []
-    assert "华山论剑 1v1 第 1 场已完成并返回面板" in task.logs
+    assert "华山论剑 1v1 第 1 场已回到可匹配面板" in task.logs
 
 
 def test_hslj_ready_wait_continues_on_match_success_transition():
@@ -759,6 +965,20 @@ def test_hslj_ready_wait_continues_on_match_success_transition():
     assert task.click_offsets == [0]
     assert task.wait_calls == [task.MATCH_WAIT_POLL_INTERVAL_MS, 1000]
     assert "华山论剑 3v3 第 1 场匹配成功，等待准备/入场" in task.logs
+
+
+def test_hslj_ready_wait_does_not_return_panel_when_mode_mismatches():
+    task = ReadyWaitHsljTask(
+        panel_results=[True, True],
+        mode_selected_results=[False, True],
+        match_button_results=[True],
+    )
+
+    state = task.click_ready_button("3v3", 1)
+
+    assert state == task.BATTLE_FINISH_RETURNED_PANEL
+    assert task.wait_calls == [task.MATCH_WAIT_POLL_INTERVAL_MS]
+    assert "华山论剑 3v3 第 1 场回到面板但当前页签不一致，继续等待" in task.logs
 
 
 def test_hslj_ready_wait_times_out_cancels_match_and_returns_panel():
@@ -784,44 +1004,19 @@ def test_hslj_ready_wait_raises_when_timeout_cancel_fails():
 
 
 def test_claim_first_win_returns_true_when_chest_already_claimed():
-    task = FakeHsljTask(find_once_results=[True])
+    task = ClaimFirstWinHsljTask(reward_state="claimed")
 
     assert task.claim_first_win_reward("1v1")
 
-    assert task.find_once_calls == [
-        (
-            task.ICON_HSLJ_FIRST_WIN_CHEST,
-            0.85,
-            task.scale_roi(task.ROI_FIRST_WIN_CHEST),
-            False,
-            False,
-        )
-    ]
     assert task.click_offsets == []
     assert task.clicked_points == []
 
 
 def test_claim_first_win_clicks_ready_chest_and_verifies_claimed():
-    task = FakeHsljTask(find_once_results=[False, True], roi_results=[True])
+    task = ClaimFirstWinHsljTask(reward_state="ready")
 
     assert task.claim_first_win_reward("1v1")
 
-    assert task.find_once_calls[:2] == [
-        (
-            task.ICON_HSLJ_FIRST_WIN_CHEST,
-            0.85,
-            task.scale_roi(task.ROI_FIRST_WIN_CHEST),
-            False,
-            False,
-        ),
-        (
-            task.ICON_HSLJ_FIRST_WIN_READY,
-            0.85,
-            task.scale_roi(task.ROI_FIRST_WIN_CHEST),
-            False,
-            False,
-        ),
-    ]
     assert task.roi_calls == [
         (
             task.ICON_HSLJ_FIRST_WIN_CHEST,
@@ -835,25 +1030,21 @@ def test_claim_first_win_clicks_ready_chest_and_verifies_claimed():
     assert task.click_offsets == [0]
     assert task.clicked_points == []
     assert task.wait_calls == [1500]
+    assert task.close_reward_calls == [(3, True)]
 
 
 def test_claim_first_win_initial_chest_does_not_click():
-    task = FakeHsljTask(find_once_results=[False, False, True])
+    task = ClaimFirstWinHsljTask(reward_state="initial")
 
     assert not task.claim_first_win_reward("3v3")
 
-    assert [call[0] for call in task.find_once_calls] == [
-        task.ICON_HSLJ_FIRST_WIN_CHEST,
-        task.ICON_HSLJ_FIRST_WIN_READY,
-        task.ICON_HSLJ_FIRST_WIN,
-    ]
     assert task.click_offsets == []
     assert task.clicked_points == []
     assert "华山论剑 3v3 首胜宝箱尚未可领取" in task.logs
 
 
 def test_claim_first_win_falls_back_to_fixed_point_when_state_unknown():
-    task = FakeHsljTask(find_once_results=[False, False, False], roi_results=[True])
+    task = ClaimFirstWinHsljTask(reward_state="unknown")
 
     assert task.claim_first_win_reward("3v3")
 
@@ -870,6 +1061,17 @@ def test_claim_first_win_falls_back_to_fixed_point_when_state_unknown():
             500,
         )
     ]
+    assert any("initial=0.200" in log for log in task.logs)
+
+
+def test_claim_first_win_unknown_state_does_not_click_when_panel_unstable():
+    task = ClaimFirstWinHsljTask(reward_state="unknown", panel_visible=False)
+
+    assert not task.claim_first_win_reward("3v3")
+
+    assert task.clicked_points == []
+    assert task.click_offsets == []
+    assert "当前不在可领取华山论剑 3v3 首胜奖励的稳定面板，跳过领取" in task.logs
 
 
 def test_3v3_loop_runs_default_five_matches():
@@ -904,7 +1106,7 @@ def test_3v3_loop_infinite_runs_until_stopped():
     assert task.claim_calls == ["3v3", "3v3", "3v3"]
 
 
-def test_3v3_first_win_runs_until_completion_marker():
+def test_3v3_first_win_runs_until_reward_claimed():
     task = ThreeVThreeLoopTask(
         hslj_settings={
             "1v1": {"strategy": "first_win", "count": 5},
@@ -928,7 +1130,7 @@ def test_run_match_battle_clicks_ready_battles_and_exits_result_panel():
 
     assert task.roi_calls == [
         (
-            task.BTN_HSLJ_READY,
+            task.BTN_HSLJ_READY_TEMPLATES,
             task.ROI_READY_BUTTON,
             task.MATCH_READY_TIMEOUT_MS,
             "华山论剑准备按钮",
@@ -965,7 +1167,7 @@ def test_run_match_battle_stops_before_auto_battle_when_exit_is_visible():
 
     assert task.roi_calls == [
         (
-            task.BTN_HSLJ_READY,
+            task.BTN_HSLJ_READY_TEMPLATES,
             task.ROI_READY_BUTTON,
             task.MATCH_READY_TIMEOUT_MS,
             "华山论剑准备按钮",
@@ -1001,7 +1203,7 @@ def test_run_match_battle_stops_auto_battle_when_panel_has_returned():
 
     assert task.roi_calls == [
         (
-            task.BTN_HSLJ_READY,
+            task.BTN_HSLJ_READY_TEMPLATES,
             task.ROI_READY_BUTTON,
             task.MATCH_READY_TIMEOUT_MS,
             "华山论剑准备按钮",

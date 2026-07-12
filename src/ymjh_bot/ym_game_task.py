@@ -5,9 +5,11 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 
 from botCore import GameTask, VisionEngine
@@ -71,6 +73,7 @@ class YmGameTask(GameTask):
     ACTIVITY_TAB_YOULI_ACTIVE = str(TEMPLATES_DIR / "activity_tab_youli_active.png")
     ACTIVITY_TAB_SHEJIAO_ACTIVE = str(TEMPLATES_DIR / "activity_tab_shejiao_active.png")
     MAP_BTN_WORLD = str(TEMPLATES_DIR / "map_btn_world.png")
+    MAP_BTN_REGION = str(TEMPLATES_DIR / "map_btn_region.png")
     MAP_WORLD_JINLING = str(TEMPLATES_DIR / "map_world_jinling.png")
     MAP_JINLING_JIMING_TEMPLE = str(TEMPLATES_DIR / "map_jinling_jiming_temple.png")
     BTN_TEAM_QUICK = str(TEMPLATES_DIR / "btn_team_quick.png")
@@ -97,7 +100,7 @@ class YmGameTask(GameTask):
     POINT_MAIN_TASK = (22, 160)
     POINT_MAIN_TEAM = (22, 276)
     POINT_MAIN_TEAM_WHEN_TASK_PANEL_OPEN = (22, 420)
-    POINT_MINIMAP = (1198, 100)
+    POINT_MINIMAP = (1260, 90)
     POINT_TEAM_CREATE = (826, 663)
     POINT_TEAM_CREATE_RAID = (968, 663)
     POINT_TEAM_QUICK_BOTTOM = (1106, 663)
@@ -147,6 +150,7 @@ class YmGameTask(GameTask):
     ROI_POWER_SAVING = (480, 470, 340, 140)
     ROI_CENTER_MODAL_OK = (730, 440, 250, 120)
     ROI_MAP_WORLD_BUTTON = (1160, 610, 120, 110)
+    ROI_MAP_REGION_BUTTON = (1160, 610, 120, 110)
     ROI_MAP_WORLD_JINLING = (850, 120, 120, 170)
     ROI_MAP_JINLING_JIMING_TEMPLE = (460, 60, 130, 140)
     ROI_MAP_CLOSE = (1180, 0, 100, 95)
@@ -185,6 +189,9 @@ class YmGameTask(GameTask):
     ACTIVITY_CATEGORY_VERIFY_TIMEOUT_MS = 1500
     ACTIVITY_CATEGORY_VERIFY_THRESHOLD = 0.85
     MAP_TEMPLATE_THRESHOLD = 0.9
+    MAP_OPEN_TIMEOUT_MS = 2500
+    MAP_SWITCH_TIMEOUT_MS = 5000
+    MAP_STATE_POLL_INTERVAL_MS = 300
     MAP_CLOSE_TEMPLATES = [BTN_CLOSE, BTN_WELCOME_CLOSE, BTN_PANE_CLOSE]
 
     TEAM_TARGET_JIANGHU_XINGSHANG = "行当玩法-江湖行商"
@@ -858,20 +865,9 @@ class YmGameTask(GameTask):
             raise RuntimeError("当前不是干净主界面，无法返回鸡鸣寺安全区")
 
         self._log("开始返回鸡鸣寺安全区")
-        self.click_point(self.POINT_MINIMAP[0], self.POINT_MINIMAP[1], offset=0)
-        self.wait(wait_after_click_ms)
-        self._click_map_target(
-            self.MAP_BTN_WORLD,
-            self.ROI_MAP_WORLD_BUTTON,
-            "地图世界按钮",
-            wait_after_click_ms=wait_after_click_ms,
-        )
-        self._click_map_target(
-            self.MAP_WORLD_JINLING,
-            self.ROI_MAP_WORLD_JINLING,
-            "世界地图金陵",
-            wait_after_click_ms=wait_after_click_ms,
-        )
+        self.ensure_local_map_open(wait_after_click_ms=wait_after_click_ms)
+        self.ensure_world_map_open(wait_after_click_ms=wait_after_click_ms)
+        self.ensure_jinling_region_map_open(wait_after_click_ms=wait_after_click_ms)
         self._click_map_target(
             self.MAP_JINLING_JIMING_TEMPLE,
             self.ROI_MAP_JINLING_JIMING_TEMPLE,
@@ -887,6 +883,103 @@ class YmGameTask(GameTask):
 
         self.wait_auto_pathfinding(timeout_ms=path_timeout_ms)
         self._log("已回到鸡鸣寺安全区")
+
+    def ensure_local_map_open(self, *, wait_after_click_ms: int) -> None:
+        """Open and verify the local/region map."""
+        if self.is_local_map_visible_quiet():
+            return
+
+        self._log("点击小地图打开区域地图")
+        self.click_point(self.POINT_MINIMAP[0], self.POINT_MINIMAP[1], offset=0)
+        self.wait(wait_after_click_ms)
+        if self.wait_until_map_state(
+            self.is_local_map_visible_quiet,
+            timeout_ms=self.MAP_OPEN_TIMEOUT_MS,
+        ):
+            return
+
+        self._raise_map_state_error("safe_zone_open_local_map_failed", "未打开大地图/区域地图")
+
+    def ensure_world_map_open(self, *, wait_after_click_ms: int) -> None:
+        """Switch from the local map to the world map and verify it."""
+        if self.is_world_map_visible_quiet():
+            return
+
+        try:
+            self._click_map_target(
+                self.MAP_BTN_WORLD,
+                self.ROI_MAP_WORLD_BUTTON,
+                "地图世界按钮",
+                wait_after_click_ms=wait_after_click_ms,
+            )
+        except RuntimeError as exc:
+            self._raise_map_state_error("safe_zone_open_world_map_failed", str(exc))
+
+        if self.wait_until_map_state(
+            self.is_world_map_visible_quiet,
+            timeout_ms=self.MAP_SWITCH_TIMEOUT_MS,
+        ):
+            return
+
+        self._raise_map_state_error("safe_zone_open_world_map_failed", "未进入世界地图")
+
+    def ensure_jinling_region_map_open(self, *, wait_after_click_ms: int) -> None:
+        """Switch from the world map to Jinling's region map and verify it."""
+        if self.is_local_map_visible_quiet() and not self.is_world_map_visible_quiet():
+            return
+
+        try:
+            self._click_map_target(
+                self.MAP_WORLD_JINLING,
+                self.ROI_MAP_WORLD_JINLING,
+                "世界地图金陵",
+                wait_after_click_ms=wait_after_click_ms,
+            )
+        except RuntimeError as exc:
+            self._raise_map_state_error("safe_zone_open_jinling_map_failed", str(exc))
+
+        if self.wait_until_map_state(
+            self.is_local_map_visible_quiet,
+            timeout_ms=self.MAP_SWITCH_TIMEOUT_MS,
+        ):
+            return
+
+        self._raise_map_state_error("safe_zone_open_jinling_map_failed", "未进入金陵区域地图")
+
+    def is_local_map_visible_quiet(self) -> bool:
+        """Return whether a local/region map is visible."""
+        if self.find_image_once(
+            self.MAP_BTN_WORLD,
+            threshold=self.MAP_TEMPLATE_THRESHOLD,
+            roi=self.scale_roi(self.ROI_MAP_WORLD_BUTTON),
+        ):
+            return True
+        return self.find_image_once(
+            self.MAP_JINLING_JIMING_TEMPLE,
+            threshold=self.MAP_TEMPLATE_THRESHOLD,
+            roi=self.scale_roi(self.ROI_MAP_JINLING_JIMING_TEMPLE),
+        )
+
+    def is_world_map_visible_quiet(self) -> bool:
+        """Return whether the world map is visible."""
+        return self.find_image_once(
+            self.MAP_BTN_REGION,
+            threshold=self.MAP_TEMPLATE_THRESHOLD,
+            roi=self.scale_roi(self.ROI_MAP_REGION_BUTTON),
+        )
+
+    def wait_until_map_state(self, predicate, *, timeout_ms: int) -> bool:
+        """Wait until a map-state predicate succeeds."""
+        deadline = self._make_deadline(timeout_ms)
+        while not self._is_deadline_expired(deadline):
+            if predicate():
+                return True
+            self.wait(self.MAP_STATE_POLL_INTERVAL_MS)
+        return predicate()
+
+    def _raise_map_state_error(self, prefix: str, message: str) -> None:
+        debug_path = self.save_debug_screenshot(prefix)
+        raise RuntimeError(f"{message}，已保存截图：{debug_path}")
 
     def _click_map_target(
         self,
@@ -906,6 +999,14 @@ class YmGameTask(GameTask):
             raise RuntimeError(f"未找到{description}")
         self.click(offset=0)
         self.wait(wait_after_click_ms)
+
+    def save_debug_screenshot(self, prefix: str) -> str:
+        """Save the current screen for debugging."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        path = self.TEMPLATES_DIR.parents[2] / "screenshots" / f"{prefix}_{timestamp}.png"
+        cv2.imwrite(str(path), self.screenshot())
+        self._log(f"已保存调试截图：{path}")
+        return str(path)
 
     def find_image_once(
         self,
