@@ -66,6 +66,11 @@ def test_safe_zone_map_templates_match_reference_screenshots():
             root / "src/ymjh_bot/templates/map_jinling_jiming_temple.png",
             (460, 60, 130, 140),
         ),
+        (
+            local_map,
+            root / "src/ymjh_bot/templates/icon_safe_point.png",
+            (440, 0, 100, 80),
+        ),
     ]
 
     engine = VisionEngine()
@@ -75,6 +80,14 @@ def test_safe_zone_map_templates_match_reference_screenshots():
 
         assert result.found is True
         assert result.score >= 0.95
+
+    safe_point_on_world = engine.match_template(
+        load_image(world_map),
+        str(root / "src/ymjh_bot/templates/icon_safe_point.png"),
+        threshold=0.8,
+        roi=(440, 0, 100, 80),
+    )
+    assert safe_point_on_world.found is False
 
 
 def test_health_bar_anchor_template_matches_reference_screenshots():

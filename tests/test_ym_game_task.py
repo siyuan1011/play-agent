@@ -373,7 +373,7 @@ class FakeSafeZoneTask(YmGameTask):
     ):
         super().__init__()
         self.main_ready = main_ready
-        self.image_results = image_results or []
+        self.image_results = image_results if image_results is not None else [False, True]
         self.roi_results = roi_results if roi_results is not None else [True, True, True, True]
         self.find_once_results = find_once_results if find_once_results is not None else [
             False,
@@ -400,7 +400,7 @@ class FakeSafeZoneTask(YmGameTask):
         return False
 
     def wait_image_appear(self, template, timeout_ms=10000, threshold=0.8, callback=None, interval_ms=500):
-        self.image_calls.append((template, timeout_ms, threshold))
+        self.image_calls.append((template, timeout_ms, threshold, interval_ms))
         return self.image_results.pop(0) if self.image_results else False
 
     def wait_find_image_in_roi(
@@ -442,6 +442,23 @@ class FakeSafeZoneTask(YmGameTask):
 
     def _log(self, message: str) -> None:
         self.logs.append(message)
+
+
+class RetrySafeZoneTask(FakeSafeZoneTask):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.close_all_calls = []
+
+    def close_all_panels(
+        self,
+        templates=None,
+        *,
+        timeout_ms=5000,
+        wait_after_click_ms=500,
+        max_attempts=None,
+        back_safe=False,
+    ) -> None:
+        self.close_all_calls.append((templates, timeout_ms, wait_after_click_ms, max_attempts, back_safe))
 
 
 class FakeTeamTask(YmGameTask):
@@ -846,7 +863,7 @@ def test_close_all_panels_does_not_return_to_safe_zone_by_default():
     assert task.main_ready_calls == []
     assert task.auto_path_calls == []
     assert task.image_calls == [
-        ([task.BTN_CLOSE, task.BTN_PANE_CLOSE, task.BTN_WELCOME_CLOSE], 5000, 0.8)
+        ([task.BTN_CLOSE, task.BTN_PANE_CLOSE, task.BTN_WELCOME_CLOSE], 5000, 0.8, 500)
     ]
 
 
@@ -935,17 +952,17 @@ def test_close_all_panels_returns_to_safe_zone_when_requested():
             500,
         ),
         (
-            task.MAP_JINLING_JIMING_TEMPLE,
-            task.ROI_MAP_JINLING_JIMING_TEMPLE,
+            task.ICON_SAFE_POINT,
+            task.ROI_MAP_SAFE_POINT,
             5000,
-            "金陵地图鸡鸣寺",
+            "鸡鸣寺安全点",
             task.MAP_TEMPLATE_THRESHOLD,
             500,
         ),
         (
             task.MAP_CLOSE_TEMPLATES,
             task.ROI_MAP_CLOSE,
-            5000,
+            1500,
             "地图关闭按钮",
             task.MAP_TEMPLATE_THRESHOLD,
             500,
@@ -953,6 +970,10 @@ def test_close_all_panels_returns_to_safe_zone_when_requested():
     ]
     assert task.MAP_CLOSE_TEMPLATES == [task.BTN_CLOSE, task.BTN_WELCOME_CLOSE, task.BTN_PANE_CLOSE]
     assert task.click_offsets == [0, 0, 0, 0]
+    assert task.image_calls == [
+        ([task.BTN_CLOSE, task.BTN_PANE_CLOSE, task.BTN_WELCOME_CLOSE], 5000, 0.8, 500),
+        (task.TEXT_AUTO_PATH, task.AUTO_PATH_START_TIMEOUT_MS, 0.8, 500),
+    ]
     assert task.wait_calls == [1000, 1000, 1000, 1000, 1000]
     assert task.main_ready_calls == [(2000, 0.8)]
     assert task.auto_path_calls == [{"timeout_ms": 90000}]
@@ -1071,17 +1092,137 @@ def test_return_to_safe_zone_saves_debug_when_jinling_region_map_does_not_open()
     assert task.auto_path_calls == []
 
 
-def test_return_to_safe_zone_raises_when_final_map_template_is_missing():
-    task = FakeSafeZoneTask(roi_results=[True, True, False])
+def test_return_to_safe_zone_clicks_fallback_point_when_safe_point_template_is_missing():
+    task = FakeSafeZoneTask(image_results=[True], roi_results=[True, True, False, True])
+
+    task.return_to_safe_zone()
+
+    assert task.clicked_points == [
+        (task.POINT_MINIMAP[0], task.POINT_MINIMAP[1], 0),
+        (task.POINT_SAFE_POINT_FALLBACK[0], task.POINT_SAFE_POINT_FALLBACK[1], 0),
+    ]
+    assert task.POINT_SAFE_POINT_FALLBACK == (482, 32)
+    assert task.roi_calls[-2] == (
+        task.ICON_SAFE_POINT,
+        task.ROI_MAP_SAFE_POINT,
+        5000,
+        "鸡鸣寺安全点",
+        task.MAP_TEMPLATE_THRESHOLD,
+        500,
+    )
+    assert task.auto_path_calls == [{"timeout_ms": 90000}]
+    assert "未找到鸡鸣寺安全点模板，使用固定坐标兜底点击" in task.logs
+
+
+def test_return_to_safe_zone_retries_from_start_when_auto_path_does_not_start_then_succeeds():
+    task = RetrySafeZoneTask(
+        image_results=[False, True],
+        roi_results=[True, True, True, True, True, True, True],
+        find_once_results=[
+            False,
+            False,
+            True,
+            False,
+            True,
+            False,
+            False,
+            True,
+            False,
+            False,
+            True,
+            False,
+            True,
+            False,
+            False,
+            True,
+        ],
+    )
+
+    task.return_to_safe_zone()
+
+    assert task.roi_calls[2] == (
+        task.ICON_SAFE_POINT,
+        task.ROI_MAP_SAFE_POINT,
+        5000,
+        "鸡鸣寺安全点",
+        task.MAP_TEMPLATE_THRESHOLD,
+        500,
+    )
+    assert task.roi_calls[5] == (
+        task.ICON_SAFE_POINT,
+        task.ROI_MAP_SAFE_POINT,
+        5000,
+        "鸡鸣寺安全点",
+        task.MAP_TEMPLATE_THRESHOLD,
+        500,
+    )
+    assert task.image_calls == [
+        (task.TEXT_AUTO_PATH, task.AUTO_PATH_START_TIMEOUT_MS, 0.8, 500),
+        (task.TEXT_AUTO_PATH, task.AUTO_PATH_START_TIMEOUT_MS, 0.8, 500),
+    ]
+    assert task.close_all_calls == [(None, 5000, 500, None, False)]
+    assert task.auto_path_calls == [{"timeout_ms": 90000}]
+
+
+def test_return_to_safe_zone_raises_after_three_auto_path_start_failures():
+    task = RetrySafeZoneTask(
+        image_results=[False, False, False],
+        roi_results=[True, True, True, True, True, True, True, True, True],
+        find_once_results=[
+            False,
+            False,
+            True,
+            False,
+            True,
+            False,
+            False,
+            True,
+            False,
+            False,
+            True,
+            False,
+            True,
+            False,
+            False,
+            True,
+            False,
+            False,
+            True,
+            False,
+            True,
+            False,
+            False,
+            True,
+        ],
+    )
 
     try:
         task.return_to_safe_zone()
     except RuntimeError as exc:
-        assert str(exc) == "未找到金陵地图鸡鸣寺"
+        assert "点击鸡鸣寺安全点后未开始自动寻路，已保存截图：screenshots/safe_zone_auto_path_not_started.png" == str(exc)
     else:
         raise AssertionError("Expected RuntimeError")
 
+    assert task.close_all_calls == [(None, 5000, 500, None, False)] * 3
+    assert task.debug_prefixes == ["safe_zone_auto_path_not_started"]
     assert task.auto_path_calls == []
+
+
+def test_return_to_safe_zone_continues_when_map_close_button_missing_after_auto_path_starts():
+    task = FakeSafeZoneTask(image_results=[True], roi_results=[True, True, True, False])
+
+    task.return_to_safe_zone()
+
+    assert task.roi_calls[-1] == (
+        task.MAP_CLOSE_TEMPLATES,
+        task.ROI_MAP_CLOSE,
+        1500,
+        "地图关闭按钮",
+        task.MAP_TEMPLATE_THRESHOLD,
+        500,
+    )
+    assert task.auto_path_calls == [{"timeout_ms": 90000}]
+    assert "未检测到地图关闭按钮，可能已自动关闭地图，继续等待自动寻路完成" in task.logs
 
 
 def test_recover_health_if_needed_meditates_until_full():

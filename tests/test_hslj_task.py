@@ -560,6 +560,18 @@ def test_hslj_close_all_continues_when_safe_zone_return_fails():
     assert "返回鸡鸣寺安全区未完成，继续从当前界面打开华山论剑：未找到地图世界按钮" in task.logs
 
 
+def test_hslj_close_all_continues_when_safe_zone_retries_are_exhausted():
+    error = RuntimeError("点击鸡鸣寺安全点后未开始自动寻路，已保存截图：screenshots/safe_zone_auto_path_not_started.png")
+    task = FakeHsljTask(safe_zone_error=error)
+
+    task.close_all()
+
+    assert task.safe_close_panel_calls == [(5000, 500, None)]
+    assert task.wait_calls == [1000]
+    assert task.safe_zone_calls == [()]
+    assert "返回鸡鸣寺安全区未完成，继续从当前界面打开华山论剑：点击鸡鸣寺安全点后未开始自动寻路" in task.logs[0]
+
+
 def test_hslj_safe_close_panels_collapses_chat_before_and_after():
     task = SafeCloseHsljTask(image_results=[False])
 
