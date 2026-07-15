@@ -17,6 +17,7 @@ class FakeBPRWTask(BPRWTask):
         completion_dialog_results: list[bool] | None = None,
         deadline_expired_results: list[bool] | None = None,
         find_image_results: list[bool] | None = None,
+        switch_panel_error: RuntimeError | None = None,
     ):
         super().__init__()
         self.roi_results = roi_results or []
@@ -28,10 +29,11 @@ class FakeBPRWTask(BPRWTask):
         self.completion_dialog_results = completion_dialog_results or []
         self.deadline_expired_results = deadline_expired_results
         self.find_image_results = find_image_results or []
-        self.ensure_sidebar_calls = 0
+        self.switch_panel_error = switch_panel_error
         self.switch_panel_calls = []
         self.roi_calls = []
         self.scroll_calls = 0
+        self.swipe_calls = []
         self.completion_dialog_calls = 0
         self.close_panel_calls = []
         self.open_activity_calls = []
@@ -46,9 +48,6 @@ class FakeBPRWTask(BPRWTask):
         self.wait_calls = []
         self.logs = []
 
-    def ensure_left_task_sidebar_visible(self) -> None:
-        self.ensure_sidebar_calls += 1
-
     def switch_task_panel(
         self,
         panel: str,
@@ -58,6 +57,8 @@ class FakeBPRWTask(BPRWTask):
         wait_after_click_ms: int = 500,
     ) -> None:
         self.switch_panel_calls.append((panel, timeout_ms, threshold, wait_after_click_ms))
+        if self.switch_panel_error is not None:
+            raise self.switch_panel_error
 
     def _make_deadline(self, timeout_ms):
         if self.deadline_expired_results is None:
@@ -86,6 +87,10 @@ class FakeBPRWTask(BPRWTask):
 
     def scroll_task_list_down(self) -> None:
         self.scroll_calls += 1
+        super().scroll_task_list_down()
+
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 400) -> None:
+        self.swipe_calls.append((x1, y1, x2, y2, duration_ms))
 
     def close_all_panels(self, templates=None, *, timeout_ms=5000, wait_after_click_ms=500, max_attempts=None):
         self.close_panel_calls.append((templates, timeout_ms, wait_after_click_ms, max_attempts))
@@ -179,51 +184,51 @@ class FakeBPRWTask(BPRWTask):
         self.logs.append(message)
 
 
-def test_close_all_wakes_only_when_power_saving_mode_is_visible():
+def test_on_start_wakes_only_when_power_saving_mode_is_visible():
     task = FakeBPRWTask(power_saving_results=[True])
 
-    task.close_all()
+    task.on_start()
 
     assert task.clicked_points == [
         (task.POINT_RIGHT_JOYSTICK_CENTER[0], task.POINT_RIGHT_JOYSTICK_CENTER[1], 0)
     ]
     assert task.close_panel_calls == [
-        (None, 5000, 500, task.CLOSE_ALL_MAX_ATTEMPTS),
-        (None, 5000, 500, task.CLOSE_ALL_MAX_ATTEMPTS),
+        (None, 5000, 500, None),
+        (None, 5000, 500, None),
     ]
     assert task.completion_dialog_calls == 2
     assert "检测到省电模式，点击右下角摇杆中心唤醒" in task.logs
 
 
-def test_close_all_does_not_wake_when_power_saving_mode_is_missing():
+def test_on_start_does_not_wake_when_power_saving_mode_is_missing():
     task = FakeBPRWTask(power_saving_results=[False])
 
-    task.close_all()
+    task.on_start()
 
     assert task.clicked_points == []
-    assert task.close_panel_calls == [(None, 5000, 500, task.CLOSE_ALL_MAX_ATTEMPTS)]
+    assert task.close_panel_calls == [(None, 5000, 500, None)]
     assert task.completion_dialog_calls == 1
 
 
-def test_close_all_closes_completion_dialog_without_power_wake():
+def test_on_start_closes_completion_dialog_without_power_wake():
     task = FakeBPRWTask(
         completion_dialog_results=[True],
         power_saving_results=[False],
     )
 
-    task.close_all()
+    task.on_start()
 
     assert task.clicked_points == [(task.POINT_DIALOG_NEXT[0], task.POINT_DIALOG_NEXT[1], 0)]
     assert "检测到帮派任务完成对话，点击继续" in task.logs
 
 
-def test_close_all_closes_leftover_purchase_dialog_before_generic_panels():
+def test_purchase_dialog_hook_closes_leftover_purchase_dialog():
     task = FakeBPRWTask(
         find_image_results=[True],
         power_saving_results=[False],
     )
 
-    task.close_all()
+    assert task.close_purchase_dialog_if_needed()
 
     assert task.find_image_calls == [
         (
@@ -234,7 +239,7 @@ def test_close_all_closes_leftover_purchase_dialog_before_generic_panels():
     ]
     assert task.click_count == 1
     assert task.wait_calls == [1000]
-    assert task.close_panel_calls == [(None, 5000, 500, task.CLOSE_ALL_MAX_ATTEMPTS)]
+    assert task.close_panel_calls == []
     assert "关闭额外挑战次数购买弹窗" in task.logs
 
 
@@ -247,6 +252,15 @@ def test_find_bangpai_task_in_sidebar_scrolls_until_found():
     assert task.roi_calls[0][0] == task.SIDEBAR_BANGPAI_TASK_TEMPLATES
     assert task.scroll_calls == 2
     assert len(task.roi_calls) == 3
+
+
+def test_bangpai_task_list_scroll_uses_sidebar_coordinates():
+    task = FakeBPRWTask()
+
+    task.scroll_task_list_down()
+
+    assert task.swipe_calls == [(190, 360, 190, 170, 350)]
+    assert task.wait_calls == [800]
 
 
 def test_find_bangpai_task_in_sidebar_matches_daily_keyword_template():
@@ -266,6 +280,19 @@ def test_find_bangpai_task_in_sidebar_matches_daily_keyword_template():
     ]
 
 
+def test_find_bangpai_task_in_sidebar_stops_when_jianghu_panel_cannot_be_confirmed():
+    task = FakeBPRWTask(switch_panel_error=RuntimeError("未能打开任务侧栏"))
+
+    with pytest.raises(RuntimeError, match="未能打开任务侧栏"):
+        task.find_bangpai_task_in_sidebar(max_scrolls=0)
+
+    assert task.switch_panel_calls == [("江湖", 3000, 0.8, 500)]
+    assert task.clicked_points == []
+    assert task.roi_calls == []
+    assert task.scroll_calls == 0
+    assert task.click_count == 0
+
+
 def test_click_bangpai_task_from_sidebar_switches_to_jianghu_before_click():
     task = FakeBPRWTask(roi_results=[True])
 
@@ -283,6 +310,16 @@ def test_click_bangpai_task_from_sidebar_confirms_popup_when_visible():
     assert task.click_template_calls == [
         (task.BTN_MODAL_OK, 2000, "任务栏帮派任务弹框确定按钮", 0.85, 1000, None),
     ]
+
+
+def test_start_accepted_task_skips_when_no_bangpai_tracker_is_visible():
+    task = FakeBPRWTask(roi_results=[False] * 6)
+
+    with pytest.raises(StepJumpException) as exc_info:
+        task.start_accepted_task()
+
+    assert exc_info.value.target == StepJumpException.JUMP_TO_END
+    assert "接取后未检测到帮派任务追踪，按当前不可执行或已完成处理" in task.logs
 
 
 def test_resume_existing_task_clicks_and_jumps_to_run_flow():

@@ -19,11 +19,17 @@ class JianghuYingxiongbangTask(YmGameTask):
     task_name = "江湖英雄榜"
     task_description = "江湖英雄榜匹配并领取首战宝箱"
     auto_recover_health = False
+    RETURN_TO_SAFE_ZONE_ON_START = True
+    DEFER_FOREGROUND_WAKE_TO_ON_START = True
+    STARTUP_CLOSE_SETTLE_WAIT_MS = 1000
+    SAFE_ZONE_RETURN_FAILURE_LOG = "返回鸡鸣寺安全区未完成，继续从当前界面打开江湖英雄榜：{error}"
 
     BTN_JHYXB_ACTIVITY_OPEN = str(YmGameTask.TEMPLATES_DIR / "btn_jhyxb_activity_open.png")
     BTN_JHYXB_MATCH = str(YmGameTask.TEMPLATES_DIR / "btn_jhyxb_match.png")
     TITLE_JHYXB = str(YmGameTask.TEMPLATES_DIR / "text_JHYXB_title.png")
-    ICON_JHYXB_FIRST_CHEST = str(YmGameTask.TEMPLATES_DIR / "icon_jhyxb_first_chest.png")
+    ICON_JHYXB_FIRST_WIN = str(YmGameTask.TEMPLATES_DIR / "icon_jhyxb_first_win.png")
+    ICON_JHYXB_FIRST_WIN_READY = str(YmGameTask.TEMPLATES_DIR / "icon_jhyxb_first_win_ready.png")
+    ICON_JHYXB_FIRST_WIN_CHEST = str(YmGameTask.TEMPLATES_DIR / "icon_jhyxb_first_win_chest.png")
     TEXT_JHYXB_CHALLENGE_ZERO = str(YmGameTask.TEMPLATES_DIR / "text_jhyxb_challenge_zero.png")
     BTN_JHYXB_READY = str(YmGameTask.TEMPLATES_DIR / "btn_jhyxb_ready.png")
     BTN_JHYXB_RESULT_EXIT: str | None = None
@@ -31,13 +37,14 @@ class JianghuYingxiongbangTask(YmGameTask):
     # 固定坐标点 (设计分辨率 1280x720 下)
     POINT_JHYXB_MATCH = (1076, 584)
     POINT_FIRST_BATTLE_CHEST = (433, 585)
+    POINT_FIRST_BATTLE_REWARD_DIALOG_DISMISS = (1190, 690)
     POINT_JHYXB_READY = (640, 97)
     POINT_DIRECTION_JOYSTICK_FORWARD = (105, 385)
 
     ROI_ACTIVITY_JHYXB = (720, 500, 240, 120)
     ROI_PANEL_TITLE = (170, 45, 260, 75)
     ROI_MATCH_BUTTON = (950, 520, 230, 120)
-    ROI_FIRST_BATTLE_CHEST = (385, 545, 95, 75)
+    ROI_FIRST_BATTLE_CHEST = (385, 535, 105, 90)
     ROI_CHALLENGE_ZERO = (880, 560, 60, 55)
     ROI_READY_BUTTON = (520, 40, 240, 120)
     ROI_RESULT_EXIT_BUTTON = (380, 420, 520, 240)
@@ -45,12 +52,10 @@ class JianghuYingxiongbangTask(YmGameTask):
 
     DEFAULT_CHALLENGE_COUNT = 5
     CLOSE_ALL_MAX_ATTEMPTS = 12
-    SINGLE_MATCH_TIMEOUT_MS = 480000
     READY_TIMEOUT_MS = 120000
-    RESULT_TIMEOUT_MS = 420000
     MATCH_POLL_INTERVAL_MS = 3000
-    MATCH_SETTLE_WAIT_MS = 2500
-    MATCH_READY_TIMEOUT_MS = SINGLE_MATCH_TIMEOUT_MS
+    MATCH_READY_TIMEOUT_MS = 60000
+    RESULT_TIMEOUT_MS = 360000
     MATCH_WAIT_POLL_INTERVAL_MS = 1000
     MATCH_WAIT_HEARTBEAT_MS = 10000
     BATTLE_FORWARD_MS = 3000
@@ -58,33 +63,10 @@ class JianghuYingxiongbangTask(YmGameTask):
     MATCH_READY_STATE_READY = "ready"
     BATTLE_FINISH_RESULT_PANEL = "result_panel"
     BATTLE_FINISH_RETURNED_PANEL = "jhyxb_panel"
-
-    def before_start(self) -> None:
-        """Let close_all wake foreground power-saving mode before normal task steps."""
-        if not self.auto_ensure_game_started:
-            return
-        if self.is_game_foreground():
-            self._log("检测到游戏已在前台，省电唤醒交给 close_all")
-            return
-        self.ensure_game_started()
-
-    def on_start(self) -> None:
-        """任务开始前准备。"""
-        self._log("=" * 40)
-        self._log("江湖英雄榜任务开始")
-        self._log("=" * 40)
-
-    @step(retry=1, timeout_ms=120000)
-    def close_all(self) -> None:
-        """关闭所有弹窗，回到游戏主界面。"""
-        self.close_all_panels()
-        if self.wake_from_power_saving_if_needed():
-            self.close_all_panels()
-        self.wait(1000)
-        try:
-            self.return_to_safe_zone()
-        except RuntimeError as exc:
-            self._log(f"返回鸡鸣寺安全区未完成，继续从当前界面打开江湖英雄榜：{exc}")
+    FIRST_BATTLE_REWARD_STATE_CLAIMED = "claimed"
+    FIRST_BATTLE_REWARD_STATE_READY = "ready"
+    FIRST_BATTLE_REWARD_STATE_INITIAL = "initial"
+    FIRST_BATTLE_REWARD_STATE_UNKNOWN = "unknown"
 
     @step(retry=3, timeout_ms=30000)
     def open_fenzheng_activity(self) -> None:
@@ -96,7 +78,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         """点击江湖英雄榜入口，打开英雄榜面板。"""
         self.open_jhyxb_from_activity()
 
-    @step(retry=0, timeout_ms=DEFAULT_CHALLENGE_COUNT * SINGLE_MATCH_TIMEOUT_MS + 60000)
+    @step(retry=0, timeout_ms=None)
     def use_all_challenges(self) -> None:
         """点击匹配按钮，默认消耗 5 次挑战次数。"""
         for index in range(1, self.DEFAULT_CHALLENGE_COUNT + 1):
@@ -105,29 +87,48 @@ class JianghuYingxiongbangTask(YmGameTask):
             if self.is_challenge_count_zero():
                 self._log("检测到江湖英雄榜挑战次数已用完，停止匹配循环")
                 return
-            self.click_match_button()
-            self.run_match_battle(index)
+            match_deadline = self.click_match_button()
+            self.run_match_battle(index, match_deadline=match_deadline)
 
     @step(retry=1, timeout_ms=60000)
-    def claim_first_battle_chest(self) -> None:
-        """领取每日首战宝箱奖励。"""
+    def claim_first_battle_chest(self) -> bool:
+        """领取每日首战宝箱奖励，并确认宝箱已变为领取状态。"""
         self.ensure_jhyxb_panel_ready(timeout_ms=10000)
+        reward_state, scores = self.detect_first_battle_reward_state()
 
-        if self.wait_find_image_in_roi(
-            self.ICON_JHYXB_FIRST_CHEST,
-            self.ROI_FIRST_BATTLE_CHEST,
-            timeout_ms=3000,
-            description="每日首战宝箱",
-            threshold=0.85,
-        ):
-            self._log("点击每日首战宝箱")
+        if reward_state == self.FIRST_BATTLE_REWARD_STATE_CLAIMED:
+            self._log("江湖英雄榜首战宝箱已领取")
+            return True
+
+        if reward_state == self.FIRST_BATTLE_REWARD_STATE_INITIAL:
+            self._log("江湖英雄榜首战宝箱尚未达成，跳过领取")
+            return False
+
+        if reward_state == self.FIRST_BATTLE_REWARD_STATE_READY:
+            self._log("点击江湖英雄榜可领取首战宝箱")
             self.click(offset=0)
         else:
-            self._log("未识别到每日首战宝箱模板，使用固定坐标点击")
+            debug_path = self.save_debug_screenshot("jhyxb_first_battle_reward_unknown")
+            self._log(
+                "未识别到江湖英雄榜首战宝箱状态："
+                f"initial={scores['initial']:.3f}，"
+                f"ready={scores['ready']:.3f}，"
+                f"claimed={scores['claimed']:.3f}，"
+                f"调试截图：{debug_path}"
+            )
+            if not self.is_first_battle_reward_claim_context_safe():
+                self._log("首战宝箱状态未知且江湖英雄榜面板不稳定，跳过保底领取")
+                return False
+
+            self._log("首战宝箱状态未知，使用保底坐标尝试领取")
             self.click_point(self.POINT_FIRST_BATTLE_CHEST[0], self.POINT_FIRST_BATTLE_CHEST[1], offset=0)
 
-        self.wait(1500)
-        self.close_reward_dialogs(max_attempts=1, include_close_buttons=False)
+        if self.confirm_first_battle_reward_claimed():
+            self._log("江湖英雄榜首战宝箱领取完成")
+            return True
+
+        debug_path = self.save_debug_screenshot("jhyxb_first_battle_reward_claim_failed")
+        raise RuntimeError(f"江湖英雄榜首战宝箱领取后未确认已领取状态，已保存截图：{debug_path}")
 
     def open_fenzheng_activity_panel(self) -> None:
         """Open the activity panel and switch to the Fen Zheng tab."""
@@ -198,8 +199,8 @@ class JianghuYingxiongbangTask(YmGameTask):
             roi=self.scale_roi(self.ROI_PANEL_TITLE),
         )
 
-    def click_match_button(self) -> None:
-        """Click the panel match button."""
+    def click_match_button(self) -> float:
+        """Click the panel match button and start the five-minute match deadline."""
         if self.wait_find_image_in_roi(
             self.BTN_JHYXB_MATCH,
             self.ROI_MATCH_BUTTON,
@@ -213,8 +214,7 @@ class JianghuYingxiongbangTask(YmGameTask):
             self._log("未识别到匹配按钮模板，使用固定坐标点击")
             self.click_point(self.POINT_JHYXB_MATCH[0], self.POINT_JHYXB_MATCH[1], offset=0)
 
-        self.wait(self.MATCH_SETTLE_WAIT_MS)
-        self.confirm_match_leave_team_dialog_if_needed("江湖英雄榜")
+        return self._make_deadline(self.MATCH_READY_TIMEOUT_MS)
 
     def is_challenge_count_zero(self) -> bool:
         """Return whether the remaining challenge count is visibly zero."""
@@ -224,12 +224,86 @@ class JianghuYingxiongbangTask(YmGameTask):
             roi=self.scale_roi(self.ROI_CHALLENGE_ZERO),
         )
 
-    def run_match_battle(self, match_index: int) -> None:
+    def detect_first_battle_reward_state(self) -> tuple[str, dict[str, float]]:
+        """Detect the first-battle chest state and retain scores for diagnostics."""
+        scores = {"claimed": 0.0, "ready": 0.0, "initial": 0.0}
+        if self.is_first_battle_reward_claimed():
+            scores["claimed"] = getattr(self, "_last_match_score", 0.0)
+            return self.FIRST_BATTLE_REWARD_STATE_CLAIMED, scores
+        scores["claimed"] = getattr(self, "_last_match_score", 0.0)
+
+        if self.is_first_battle_reward_ready():
+            scores["ready"] = getattr(self, "_last_match_score", 0.0)
+            return self.FIRST_BATTLE_REWARD_STATE_READY, scores
+        scores["ready"] = getattr(self, "_last_match_score", 0.0)
+
+        if self.is_first_battle_reward_initial():
+            scores["initial"] = getattr(self, "_last_match_score", 0.0)
+            return self.FIRST_BATTLE_REWARD_STATE_INITIAL, scores
+        scores["initial"] = getattr(self, "_last_match_score", 0.0)
+        return self.FIRST_BATTLE_REWARD_STATE_UNKNOWN, scores
+
+    def is_first_battle_reward_claimed(self) -> bool:
+        """Return whether the first-battle chest has already been claimed."""
+        return self.find_image_once(
+            self.ICON_JHYXB_FIRST_WIN_CHEST,
+            threshold=0.85,
+            roi=self.scale_roi(self.ROI_FIRST_BATTLE_CHEST),
+        )
+
+    def is_first_battle_reward_ready(self) -> bool:
+        """Return whether the first-battle chest can be claimed."""
+        return self.find_image_once(
+            self.ICON_JHYXB_FIRST_WIN_READY,
+            threshold=0.85,
+            roi=self.scale_roi(self.ROI_FIRST_BATTLE_CHEST),
+        )
+
+    def is_first_battle_reward_initial(self) -> bool:
+        """Return whether the first-battle chest is still unavailable."""
+        return self.find_image_once(
+            self.ICON_JHYXB_FIRST_WIN,
+            threshold=0.85,
+            roi=self.scale_roi(self.ROI_FIRST_BATTLE_CHEST),
+        )
+
+    def is_first_battle_reward_claim_context_safe(self) -> bool:
+        """Return whether the panel is stable enough for a coordinate fallback click."""
+        return self.is_jhyxb_panel_visible_quiet()
+
+    def confirm_first_battle_reward_claimed(self) -> bool:
+        """Dismiss the reward overlay and verify the claimed chest state."""
+        self.wait(1500)
+        self.close_reward_dialogs(max_attempts=3, include_close_buttons=False)
+        self._log("关闭江湖英雄榜首战奖励面板")
+        self.click_point(
+            self.POINT_FIRST_BATTLE_REWARD_DIALOG_DISMISS[0],
+            self.POINT_FIRST_BATTLE_REWARD_DIALOG_DISMISS[1],
+            offset=0,
+        )
+        self.wait(1000)
+
+        if not self.ensure_jhyxb_panel_visible(timeout_ms=10000):
+            return False
+
+        return self.wait_find_image_in_roi(
+            self.ICON_JHYXB_FIRST_WIN_CHEST,
+            self.ROI_FIRST_BATTLE_CHEST,
+            timeout_ms=2500,
+            description="江湖英雄榜已领取首战宝箱",
+            threshold=0.85,
+        )
+
+    def run_match_battle(self, match_index: int, *, match_deadline: float | None = None) -> None:
         """Run one matched Jianghu Yingxiongbang battle and return to the ranking panel."""
-        ready_state = self.click_ready_button(match_index)
+        self._battle_result_deadline: float | None = None
+        ready_state = self.click_ready_button(match_index, deadline=match_deadline)
         if ready_state == self.MATCH_READY_STATE_READY:
             self.walk_forward_for_battle(self.BATTLE_FORWARD_MS)
-            finish_state = self.wait_until_battle_complete(match_index)
+            finish_state = self.wait_until_battle_complete(
+                match_index,
+                deadline=self._battle_result_deadline,
+            )
         else:
             finish_state = ready_state
 
@@ -241,9 +315,10 @@ class JianghuYingxiongbangTask(YmGameTask):
         if not self.ensure_jhyxb_panel_visible(timeout_ms=30000):
             raise RuntimeError("战斗退出后未回到江湖英雄榜面板")
 
-    def click_ready_button(self, match_index: int) -> str:
+    def click_ready_button(self, match_index: int, *, deadline: float | None = None) -> str:
         """Wait for ready, matching completion, or a returned panel."""
-        deadline = self._make_deadline(self.MATCH_READY_TIMEOUT_MS)
+        if deadline is None:
+            deadline = self._make_deadline(self.MATCH_READY_TIMEOUT_MS)
         last_heartbeat_at = 0.0
 
         while not self._is_deadline_expired(deadline):
@@ -254,6 +329,7 @@ class JianghuYingxiongbangTask(YmGameTask):
             if self.is_ready_button_visible():
                 self._log("点击江湖英雄榜准备按钮")
                 self.click(offset=0)
+                self._battle_result_deadline = self._make_deadline(self.RESULT_TIMEOUT_MS)
                 self.wait(1000)
                 return self.MATCH_READY_STATE_READY
 
@@ -327,9 +403,10 @@ class JianghuYingxiongbangTask(YmGameTask):
         self._log(f"江湖英雄榜战斗中向前走 {duration_ms}ms")
         self.swipe(start[0], start[1], end[0], end[1], duration_ms=duration_ms)
 
-    def wait_until_battle_complete(self, match_index: int) -> str:
+    def wait_until_battle_complete(self, match_index: int, *, deadline: float | None = None) -> str:
         """Auto-battle until the result panel appears or the ranking panel returns."""
-        deadline = self._make_deadline(self.RESULT_TIMEOUT_MS)
+        if deadline is None:
+            deadline = self._make_deadline(self.RESULT_TIMEOUT_MS)
         missing_template_logged = False
         while not self._is_deadline_expired(deadline):
             if self.is_result_panel_visible():

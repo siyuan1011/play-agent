@@ -37,8 +37,8 @@ class KyrwTask(YmGameTask):
     POINT_NPC_TALK = (1005, 465)
     POINT_NPC_ACTION = (1100, 465)
     POINT_COURSE_CARD_DEFAULT = (354, 265)
-    POINT_TASK_LIST_SCROLL_START = (190, 520)
-    POINT_TASK_LIST_SCROLL_END = (190, 220)
+    POINT_TASK_LIST_SCROLL_START = (190, 360)
+    POINT_TASK_LIST_SCROLL_END = (190, 170)
     POINT_DIALOG_NEXT = (1230, 690)
     POINT_MALL_BUY = (949, 663)
     POINT_COMPLETE_OK = (854, 508)
@@ -69,22 +69,14 @@ class KyrwTask(YmGameTask):
         self._item_acquire_rounds = 0
         self._npc_accept_recoveries = 0
 
-    def on_start(self) -> None:
-        """任务开始前准备。"""
+    def reset_startup_state(self) -> None:
+        """Reset per-run counters before the shared startup cleanup."""
         self._item_acquire_rounds = 0
         self._npc_accept_recoveries = 0
-        self._log("=" * 40)
-        self._log("课业任务开始")
-        self._log("=" * 40)
 
-    @step(retry=1, timeout_ms=30000)
-    def close_all(self) -> None:
-        """关闭所有弹窗，回到游戏主界面。"""
-        self.close_all_panels()
+    def after_startup_panel_close(self) -> None:
+        """Close the course completion dialog after each startup cleanup pass."""
         self.close_completion_dialog_if_visible()
-        if self.wake_from_power_saving_if_needed():
-            self.close_all_panels()
-            self.close_completion_dialog_if_visible()
 
     @step(retry=1, timeout_ms=60000)
     def resume_existing_course(self) -> None:
@@ -170,7 +162,8 @@ class KyrwTask(YmGameTask):
             self.close_all_panels(timeout_ms=3000)
             self.jump_to("open_wuchan_activity")
 
-        raise RuntimeError("进入课业面板后未找到可执行课业")
+        self._log("进入课业面板后未检测到可执行课业，按当前不可接取或已完成处理")
+        self.jump_to_end()
 
     def try_continue_after_course_panel_opened(self) -> bool:
         """Continue once the course panel may have opened."""

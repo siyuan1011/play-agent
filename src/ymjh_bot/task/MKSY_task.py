@@ -12,6 +12,7 @@ class MenkeSheyanTask(BanquetAcquireMixin, YmGameTask):
     task_key = "MKSY"
     task_name = "门客设宴"
     task_description = "门客设宴自动邀约"
+    STARTUP_CLOSE_SETTLE_WAIT_MS = 1000
 
     BTN_ACTIVITY_FORWARD = str(YmGameTask.TEMPLATES_DIR / "btn_activity_forward.png")
     BTN_MENKE_SHEYAN_ENTRY = str(YmGameTask.TEMPLATES_DIR / "btn_menke_sheyan_entry.png")
@@ -59,18 +60,9 @@ class MenkeSheyanTask(BanquetAcquireMixin, YmGameTask):
         super().__init__(default_interval_ms=default_interval_ms)
         self._started_banquet = False
 
-    def on_start(self) -> None:
-        """任务开始前准备。"""
+    def reset_startup_state(self) -> None:
+        """Reset banquet state before the shared startup cleanup."""
         self._started_banquet = False
-        self._log("=" * 40)
-        self._log("门客设宴任务开始")
-        self._log("=" * 40)
-
-    @step(retry=1, timeout_ms=30000)
-    def close_all(self) -> None:
-        """关闭所有弹窗，回到游戏主界面。"""
-        self.close_all_panels()
-        self.wait(1000)
 
     @step(retry=3, timeout_ms=30000)
     def open_bangpai_activity(self) -> None:

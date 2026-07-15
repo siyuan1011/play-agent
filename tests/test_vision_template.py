@@ -355,8 +355,20 @@ def test_jhyxb_templates_match_reference_screenshots():
         ),
         (
             root / "screenshots" / f"{jhyxb}.png",
-            root / "src/ymjh_bot/templates/icon_jhyxb_first_chest.png",
-            (385, 545, 95, 75),
+            root / "src/ymjh_bot/templates/icon_jhyxb_first_win.png",
+            (385, 535, 105, 90),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260713_145140.png",
+            root / "src/ymjh_bot/templates/icon_jhyxb_first_win_ready.png",
+            (385, 535, 105, 90),
+            0.95,
+        ),
+        (
+            root / "screenshots" / f"{jhyxb}-首战已领取.png",
+            root / "src/ymjh_bot/templates/icon_jhyxb_first_win_chest.png",
+            (385, 535, 105, 90),
             0.95,
         ),
         (
@@ -460,6 +472,50 @@ def test_hslj_templates_match_reference_screenshots():
         assert result.score >= threshold
 
 
+def test_hslj_temp_dialog_close_templates_match_only_scoped_reward_dialog_roi():
+    root = Path(__file__).resolve().parents[1]
+    engine = VisionEngine()
+    templates = [
+        str(root / "src/ymjh_bot/templates/btn_close.png"),
+        str(root / "src/ymjh_bot/templates/btn_pane_close.png"),
+    ]
+    roi = (1080, 210, 115, 100)
+    threshold = 0.70
+
+    reward_dialog = engine.match_template(
+        load_image(root / "screenshots/hslj_3v3_2_match_ready_timeout_20260712_033145_932075.png"),
+        templates,
+        threshold=threshold,
+        roi=roi,
+    )
+    assert reward_dialog.found is True
+    assert reward_dialog.score >= threshold
+    assert reward_dialog.center == (1153, 250)
+
+    current_reward_dialog = engine.match_template(
+        load_image(root / "screenshots/hslj_switch_3v3_failed_20260713_222424_793139.png"),
+        templates,
+        threshold=threshold,
+        roi=roi,
+    )
+    assert current_reward_dialog.found is True
+    assert current_reward_dialog.score >= threshold
+    assert current_reward_dialog.center == (1153, 250)
+
+    for screenshot_name in [
+        "hslj_debug_current_1v1.png",
+        "hslj_debug_after_ready_wait.png",
+        "ymjh_queue_127.0.0.1_16416_20260708_234230.png",
+    ]:
+        result = engine.match_template(
+            load_image(root / "screenshots" / screenshot_name),
+            templates,
+            threshold=threshold,
+            roi=roi,
+        )
+        assert result.found is False
+
+
 def test_hslj_mode_tab_templates_are_mutually_exclusive():
     root = Path(__file__).resolve().parents[1]
     engine = VisionEngine()
@@ -490,6 +546,24 @@ def test_team_templates_match_reference_screenshots():
     cases = [
         (
             root / "screenshots" / "ymjh_queue_127.0.0.1_16384_20260710_192949.png",
+            root / "src/ymjh_bot/templates/text_team_panel_title.png",
+            (35, 0, 170, 65),
+            0.9,
+        ),
+        (
+            root / "screenshots" / "team_report_02_created_jhxsh.png",
+            root / "src/ymjh_bot/templates/text_team_panel_title.png",
+            (35, 0, 170, 65),
+            0.9,
+        ),
+        (
+            root / "screenshots" / "team_debug_quick_jianghu_expanded_16416.png",
+            root / "src/ymjh_bot/templates/text_team_panel_title.png",
+            (35, 0, 170, 65),
+            0.9,
+        ),
+        (
+            root / "screenshots" / "ymjh_queue_127.0.0.1_16384_20260710_192949.png",
             root / "src/ymjh_bot/templates/btn_team_quick.png",
             (1010, 600, 220, 115),
             0.95,
@@ -504,6 +578,30 @@ def test_team_templates_match_reference_screenshots():
             root / "screenshots" / "team_debug_quick_after_user_note_16416.png",
             root / "src/ymjh_bot/templates/btn_team_auto_match.png",
             (880, 620, 370, 90),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "team_debug_quick_jianghu_expanded_16416.png",
+            root / "src/ymjh_bot/templates/btn_team_create_10_raid.png",
+            (320, 620, 190, 90),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "team_report_02_created_jhxsh.png",
+            root / "src/ymjh_bot/templates/btn_team_cancel_match.png",
+            (230, 620, 140, 90),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "team_report_02_created_jhxsh.png",
+            root / "src/ymjh_bot/templates/icon_team_shout.png",
+            (580, 85, 80, 65),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "team_report_02_created_jhxsh.png",
+            root / "src/ymjh_bot/templates/icon_team_empty_slot.png",
+            (465, 250, 70, 80),
             0.95,
         ),
         (
@@ -537,6 +635,12 @@ def test_team_templates_match_reference_screenshots():
             0.95,
         ),
         (
+            root / "screenshots" / "team_report_refactor_17_daily_category_current.png",
+            root / "src/ymjh_bot/templates/text_team_target_daily.png",
+            (40, 90, 280, 560),
+            0.95,
+        ),
+        (
             root / "screenshots" / "activity_tasks_20260708/jypy_20_after_click_tracker_linchong.png",
             root / "src/ymjh_bot/templates/text_jypy_sidebar_chapter.png",
             (40, 135, 330, 430),
@@ -550,6 +654,30 @@ def test_team_templates_match_reference_screenshots():
 
         assert result.found is True
         assert result.score >= threshold
+
+
+def test_team_state_templates_do_not_match_other_team_states():
+    root = Path(__file__).resolve().parents[1]
+    engine = VisionEngine()
+
+    unteamed = load_image(root / "screenshots/ymjh_queue_127.0.0.1_16384_20260710_192949.png")
+    matching = load_image(root / "screenshots/team_report_02_created_jhxsh.png")
+
+    cancel_on_unteamed = engine.match_template(
+        unteamed,
+        str(root / "src/ymjh_bot/templates/btn_team_cancel_match.png"),
+        threshold=0.9,
+        roi=(230, 620, 140, 90),
+    )
+    quick_on_matching = engine.match_template(
+        matching,
+        str(root / "src/ymjh_bot/templates/btn_team_quick.png"),
+        threshold=0.9,
+        roi=(1010, 600, 220, 115),
+    )
+
+    assert cancel_on_unteamed.found is False
+    assert quick_on_matching.found is False
 
 
 def test_bangpai_templates_match_reference_screenshots():
@@ -611,6 +739,24 @@ def test_bangpai_templates_match_reference_screenshots():
             0.95,
         ),
         (
+            root / "screenshots" / "bprw_sidebar_failure_20260713_013453.png",
+            root / "src/ymjh_bot/templates/text_task_panel_title.png",
+            (190, 35, 180, 100),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "bprw_task_panel_available_20260713_013453.png",
+            root / "src/ymjh_bot/templates/text_task_panel_title.png",
+            (190, 35, 180, 100),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "bprw_task_panel_scrolled_20260713_013453.png",
+            root / "src/ymjh_bot/templates/text_task_panel_title.png",
+            (190, 35, 180, 100),
+            0.95,
+        ),
+        (
             root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_180549.png",
             root / "src/ymjh_bot/templates/text_bangpai_daily.png",
             (40, 135, 330, 430),
@@ -644,6 +790,20 @@ def test_bangpai_templates_match_reference_screenshots():
         roi=(40, 135, 330, 430),
     )
     assert daily_result.found is False
+
+    task_panel_title_false_cases = [
+        root / "screenshots" / f"{menke_prefix}13.png",
+        root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_180549.png",
+        root / "screenshots" / "bangpai_debug_after_sidebar_click.png",
+    ]
+    for screenshot_path in task_panel_title_false_cases:
+        result = engine.match_template(
+            load_image(screenshot_path),
+            str(root / "src/ymjh_bot/templates/text_task_panel_title.png"),
+            threshold=0.9,
+            roi=(190, 35, 180, 100),
+        )
+        assert result.found is False
 
 
 def test_kyrw_templates_match_reference_screenshots():

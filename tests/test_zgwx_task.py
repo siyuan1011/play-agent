@@ -104,7 +104,6 @@ def test_zgwx_task_loads_with_expected_metadata():
 
 def test_zgwx_task_steps_follow_planned_order():
     assert [name for name, _, _ in ZGWXTask.get_steps()] == [
-        "close_all",
         "open_youli_activity",
         "wait_meditation_start",
         "wait_meditation_complete",
@@ -116,10 +115,10 @@ def test_zgwx_task_disables_health_recovery_guard():
     assert ZGWXTask.auto_recover_health is False
 
 
-def test_close_all_wakes_power_saving_and_cleans_again():
+def test_on_start_wakes_power_saving_and_cleans_again():
     task = FakeZGWXTask(power_saving_results=[True])
 
-    task.close_all()
+    task.on_start()
 
     assert task.panel_calls == [
         ("close_all_panels", None, 5000, 500),
@@ -179,7 +178,7 @@ def test_wait_meditation_start_waits_for_countdown_template():
             task.ICON_MEDITATING,
             180000,
             0.9,
-            500,
+            5000,
         )
     ]
     assert "检测到修炼中倒计时，坐观万象开始修炼" in task.logs
@@ -202,8 +201,8 @@ def test_wait_meditation_complete_uses_stable_missing_threshold():
             task.ICON_MEDITATING,
             900000,
             0.9,
-            10,
-            2000,
+            3,
+            5000,
         )
     ]
     assert "检测到修炼中倒计时消失，坐观万象修炼结束" in task.logs

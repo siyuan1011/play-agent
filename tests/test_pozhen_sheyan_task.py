@@ -102,6 +102,30 @@ class ScreenshotPozhenSheyanTask(PozhenSheyanTask):
         self.logs.append(message)
 
 
+class StartupPozhenSheyanTask(PozhenSheyanTask):
+    def __init__(self):
+        super().__init__()
+        self.events = []
+
+    def is_game_foreground(self) -> bool:
+        self.events.append("foreground")
+        return True
+
+    def ensure_game_started(self, *, force: bool = False) -> None:
+        self.events.append("ensure")
+
+    def detect_login_state(self, **kwargs):
+        self.events.append("detect_login")
+        raise AssertionError("PZSY before_start should not detect login state")
+
+    def wake_from_power_saving_if_needed(self) -> bool:
+        self.events.append("wake")
+        raise AssertionError("PZSY before_start should not wake power-saving mode")
+
+    def _log(self, message: str) -> None:
+        self.events.append(("log", message))
+
+
 def test_pozhen_sheyan_task_loads_and_is_visible():
     task_file = Path("src/ymjh_bot/task/PZSY_task.py")
 
@@ -117,7 +141,6 @@ def test_pozhen_sheyan_step_order():
     steps = [name for name, _, _ in PozhenSheyanTask.get_steps()]
 
     assert steps == [
-        "close_all",
         "open_bangpai_activity",
         "open_pozhen_list",
         "choose_guest",
@@ -126,6 +149,27 @@ def test_pozhen_sheyan_step_order():
         "process_banquet_items",
         "start_banquet_if_ready",
         "verify_completion",
+    ]
+
+
+def test_reset_startup_state_clears_banquet_started_flag():
+    task = FakePozhenSheyanTask()
+    task._started_banquet = True
+
+    task.reset_startup_state()
+
+    assert task._started_banquet is False
+
+
+def test_pozhen_before_start_defers_foreground_wake_to_base_on_start():
+    task = StartupPozhenSheyanTask()
+
+    task.before_start()
+
+    assert "before_start" not in PozhenSheyanTask.__dict__
+    assert task.events == [
+        "foreground",
+        ("log", "检测到游戏已在前台，省电唤醒交给 on_start"),
     ]
 
 

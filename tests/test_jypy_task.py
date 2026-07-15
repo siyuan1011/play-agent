@@ -42,6 +42,8 @@ class FakeJypyTask(JYPYTask):
         self.auto_path_waits = []
         self.auto_battle_calls = []
         self.collapse_chat_calls = []
+        self.safe_zone_calls = []
+        self.leave_calls = []
         self.logs = []
 
     def _make_deadline(self, timeout_ms):
@@ -104,6 +106,15 @@ class FakeJypyTask(JYPYTask):
 
     def close_all_panels(self, templates=None, *, timeout_ms=5000, wait_after_click_ms=500):
         self.close_panel_calls.append((templates, timeout_ms, wait_after_click_ms))
+
+    def wake_from_power_saving_if_needed(self) -> bool:
+        return False
+
+    def return_to_safe_zone(self) -> None:
+        self.safe_zone_calls.append(())
+
+    def leave_team_if_present(self) -> None:
+        self.leave_calls.append(())
 
     def collapse_chat_if_open(self, wait_after_click_ms: int = 800) -> bool:
         self.collapse_chat_calls.append(wait_after_click_ms)
@@ -170,7 +181,6 @@ def test_jypy_task_loads_and_is_visible():
 
 def test_jypy_step_order():
     assert [name for name, _, _ in JYPYTask.get_steps()] == [
-        "close_all_and_leave_team",
         "open_hangdang_activity",
         "start_auto_pathfinding",
         "wait_arrive_npc",
@@ -179,6 +189,20 @@ def test_jypy_step_order():
         "run_jypy_flow",
         "verify_completion",
     ]
+
+
+def test_on_start_returns_to_safe_zone_and_leaves_team():
+    task = FakeJypyTask()
+
+    task.on_start()
+
+    assert task.close_panel_calls == [
+        (None, 5000, 500),
+        (None, 3000, 500),
+    ]
+    assert task.wait_calls == [1000]
+    assert task.safe_zone_calls == [()]
+    assert task.leave_calls == [()]
 
 
 def test_open_hangdang_activity_uses_hangdang_tab():

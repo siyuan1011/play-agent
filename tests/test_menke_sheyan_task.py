@@ -136,7 +136,6 @@ def test_menke_sheyan_step_order():
     steps = [name for name, _, _ in MenkeSheyanTask.get_steps()]
 
     assert steps == [
-        "close_all",
         "open_bangpai_activity",
         "open_guest_list",
         "choose_guest",
@@ -146,6 +145,15 @@ def test_menke_sheyan_step_order():
         "start_banquet_if_ready",
         "verify_completion",
     ]
+
+
+def test_reset_startup_state_clears_banquet_started_flag():
+    task = FakeMenkeSheyanTask()
+    task._started_banquet = True
+
+    task.reset_startup_state()
+
+    assert task._started_banquet is False
 
 
 def test_open_guest_list_jumps_to_verify_when_entry_missing():

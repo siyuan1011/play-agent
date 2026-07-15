@@ -20,6 +20,8 @@ class RichangFubenTask(YmGameTask):
     task_name = "日常副本"
     task_description = "匹配江湖纪事日常副本，跟随队伍完成后自动退队"
     auto_recover_health = False
+    LEAVE_TEAM_ON_START = True
+    STARTUP_CLOSE_SETTLE_WAIT_MS = 1000
 
     BTN_DIALOG_NEXT = str(YmGameTask.TEMPLATES_DIR / "btn_dialog_next.png")
 
@@ -41,27 +43,7 @@ class RichangFubenTask(YmGameTask):
     TASK_MISSING_CONFIRMATIONS = 3
     SIDEBAR_SCROLL_COUNT = 2
     IDLE_TRACKER_CLICK_LIMIT = 6
-
-    def before_start(self) -> None:
-        """Let close_all handle foreground power-saving recovery."""
-        if self.auto_ensure_game_started and not self.is_game_foreground():
-            self.ensure_game_started()
-
-    def on_start(self) -> None:
-        """任务开始前准备。"""
-        self._log("=" * 40)
-        self._log("日常副本任务开始")
-        self._log("=" * 40)
-
-    @step(retry=1, timeout_ms=120000)
-    def close_all_and_leave_team(self) -> None:
-        """回到干净主界面，并退出已有队伍。"""
-        self.close_all_panels()
-        if self.wake_from_power_saving_if_needed():
-            self.close_all_panels()
-        self.wait(1000)
-        self.leave_team_if_present()
-        self.close_all_panels(timeout_ms=3000)
+    DEFER_FOREGROUND_WAKE_TO_ON_START = True
 
     @step(retry=3, timeout_ms=60000)
     def start_daily_match(self) -> None:

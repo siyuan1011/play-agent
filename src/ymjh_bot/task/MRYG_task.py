@@ -27,17 +27,6 @@ class MRYGTask(YmGameTask):
     POINT_QIANWANG = (434, 416)
     POINT_ANSWER = (1232, 540)
 
-    def on_start(self) -> None:
-        """任务开始前准备。"""
-        self._log("=" * 40)
-        self._log("每日一卦任务开始")
-        self._log("=" * 40)
-
-    @step(retry=1, timeout_ms=30000)
-    def close_all(self) -> None:
-        """关闭所有弹窗（循环点击关闭按钮直到全部消失）。"""
-        self.close_all_panels()
-
     @step(retry=3, timeout_ms=30000)
     def open_huodong(self) -> None:
         """打开活动界面。"""
@@ -97,7 +86,7 @@ class MRYGTask(YmGameTask):
     def on_finish(self, results: list) -> None:
         """任务结束处理。"""
         success_count = sum(1 for r in results if r.success)
-        self.close_all()
+        self.close_all_panels()
         self._log("=" * 40)
         self._log(f"每日一卦任务完成：{success_count}/{len(results)} 步骤成功")
         self._log("=" * 40)

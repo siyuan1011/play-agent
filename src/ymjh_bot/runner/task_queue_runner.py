@@ -20,6 +20,8 @@ class TaskQueueRunner:
         runner.stop()  # 停止
     """
 
+    MAX_TASK_ATTEMPTS = 3
+
     def __init__(
         self,
         task_list: list[GameTask],
@@ -155,26 +157,22 @@ class TaskQueueRunner:
                 break
 
             task = self.task_list[self.current_task_index]
-            task_name = getattr(task, "task_name", task.__class__.__name__)
-
-            self._emit(f">>> 开始执行任务 {self.current_task_index + 1}/{self.total_tasks}: {task_name}")
 
             # 设置任务运行时依赖
             task._screen_resolution = getattr(task, "FIXED_RESOLUTION", task.design_resolution)
             task.setup(self.adb, self.vision, self.logger, self.event_callback)
 
-            # 执行单个任务
-            task_results, task_completed = self._run_single_task(task)
+            # 执行当前任务，失败时从头重试，最多执行 MAX_TASK_ATTEMPTS 次。
+            task_results, task_completed = self._run_task_with_retries(task)
             all_results.extend(task_results)
 
             if self._stop_requested:
                 break
             if self._paused:
                 continue
+
             if not task_completed:
-                if self._last_failure_message:
-                    raise RuntimeError(self._last_failure_message)
-                break
+                self._emit("当前任务已跳过，继续执行下一个任务")
 
             # 任务完成后，更新索引
             self.current_task_index += 1
@@ -190,6 +188,69 @@ class TaskQueueRunner:
 
         return all_results
 
+    def _run_task_with_retries(self, task: GameTask) -> tuple[list[ExecutionResult], bool]:
+        """执行当前任务，失败时在当前进程内从头重试。"""
+        results: list[ExecutionResult] = []
+        task_name = getattr(task, "task_name", task.__class__.__name__)
+        attempt = 1
+
+        self._emit_task_attempt_start(task_name, attempt)
+        while attempt <= self.MAX_TASK_ATTEMPTS:
+            task_results, task_completed = self._run_single_task(task)
+            results.extend(task_results)
+
+            if self._stop_requested:
+                return results, False
+
+            if self._paused:
+                self._wait_until_resumed_or_stopped()
+                if self._stop_requested:
+                    return results, False
+                # Keep the current attempt and saved step progress after resuming.
+                continue
+
+            if task_completed:
+                return results, True
+
+            failure_message = self._last_failure_message or f"任务 {task_name} 未完成"
+            self._emit(
+                f"任务 {task_name} 第 {attempt}/{self.MAX_TASK_ATTEMPTS} 次完整流程失败："
+                f"{failure_message}"
+            )
+            if attempt >= self.MAX_TASK_ATTEMPTS:
+                self._emit(
+                    f"任务 {task_name} 连续 {self.MAX_TASK_ATTEMPTS} 次未完成，跳过当前任务"
+                )
+                return results, False
+
+            attempt += 1
+            self._reset_task_for_retry(task)
+            self._emit(f"任务 {task_name} 将从头开始第 {attempt}/{self.MAX_TASK_ATTEMPTS} 次尝试")
+            self._emit_task_attempt_start(task_name, attempt)
+
+        return results, False
+
+    def _emit_task_attempt_start(self, task_name: str, attempt: int) -> None:
+        self._emit(
+            f">>> 开始执行任务 {self.current_task_index + 1}/{self.total_tasks}: {task_name} "
+            f"(第 {attempt}/{self.MAX_TASK_ATTEMPTS} 次)"
+        )
+
+    def _wait_until_resumed_or_stopped(self) -> None:
+        """等待暂停恢复，保留当前任务的步骤和尝试次数。"""
+        while self._paused and not self._stop_requested:
+            time.sleep(0.1)
+
+    def _reset_task_for_retry(self, task: GameTask) -> None:
+        """将任务恢复为一次完整流程的起点。"""
+        self.current_step_index = 0
+        self._started_task_index = None
+        task._current_step_index = 0
+        task._jump_target = None
+        task._stop_requested = False
+        self._last_failure_message = None
+        self._emit_progress()
+
     def _run_single_task(self, task: GameTask) -> tuple[list[ExecutionResult], bool]:
         """执行单个任务。
 
@@ -204,12 +265,28 @@ class TaskQueueRunner:
         loop_count = max(1, task.loop_count)
         task_name = getattr(task, "task_name", task.__class__.__name__)
 
-        # 调用任务启动钩子（只在第一次 loop 调用）
+        # 调用任务启动钩子（暂停恢复时不重复调用，完整重试时会重置该标记）。
         if self._started_task_index != self.current_task_index:
             if hasattr(task, "before_start"):
-                task.before_start()
+                try:
+                    task.before_start()
+                except Exception as exc:
+                    return self._handle_lifecycle_failure(
+                        results,
+                        task_name,
+                        "before_start",
+                        exc,
+                    )
             if hasattr(task, "on_start"):
-                task.on_start()
+                try:
+                    task.on_start()
+                except Exception as exc:
+                    return self._handle_lifecycle_failure(
+                        results,
+                        task_name,
+                        "on_start",
+                        exc,
+                    )
         self._started_task_index = self.current_task_index
 
         for round_idx in range(loop_count):
@@ -259,7 +336,7 @@ class TaskQueueRunner:
                     self._last_failure_message = (
                         f"任务 {task_name} 步骤 {step_name} 执行失败：{result.reason}"
                     )
-                    self._emit(f"    {self._last_failure_message}，队列停止")
+                    self._emit(f"    {self._last_failure_message}")
                     self._emit_progress()
                     return results, False
 
@@ -291,9 +368,31 @@ class TaskQueueRunner:
 
         # 调用 on_finish
         if hasattr(task, "on_finish") and not self._paused and not self._stop_requested:
-            task.on_finish(results)
+            try:
+                task.on_finish(results)
+            except Exception as exc:
+                return self._handle_lifecycle_failure(
+                    results,
+                    task_name,
+                    "on_finish",
+                    exc,
+                )
 
         return results, not self._paused and not self._stop_requested
+
+    def _handle_lifecycle_failure(
+        self,
+        results: list[ExecutionResult],
+        task_name: str,
+        hook_name: str,
+        exc: Exception,
+    ) -> tuple[list[ExecutionResult], bool]:
+        """Convert a task lifecycle hook exception into a retryable task failure."""
+        if not self._paused and not self._stop_requested:
+            self._last_failure_message = f"任务 {task_name} 生命周期 {hook_name} 执行异常：{exc}"
+            self._emit(f"    {self._last_failure_message}")
+            self._emit_progress()
+        return results, False
 
     def _execute_step(
         self,

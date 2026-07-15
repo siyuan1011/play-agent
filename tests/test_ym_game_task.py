@@ -1,6 +1,10 @@
+import inspect
 from pathlib import Path
 import time
 
+import numpy as np
+
+from botCore import StepStopException
 from botCore.vision import load_image
 from ymjh_bot.task.QDYX_task import StartTask
 from ymjh_bot.task.BPRW_task import BPRWTask
@@ -39,6 +43,7 @@ class ScriptedLoginTask(YmGameTask):
         self.shell_calls: list[str] = []
         self.detect_calls: list[tuple[bool, float]] = []
         self.taps: list[str | None] = []
+        self.tap_coordinates: list[tuple[int | None, int | None]] = []
         self.clicked_points: list[tuple[int, int, int]] = []
         self.waits: list[int | float] = []
         self.logs: list[str] = []
@@ -63,6 +68,7 @@ class ScriptedLoginTask(YmGameTask):
         state = self._current_state()
         if state is None:
             return None
+        self._last_match_center = (100, 100)
         return LoginState(
             name=state,
             description=state,
@@ -74,6 +80,7 @@ class ScriptedLoginTask(YmGameTask):
     def tap(self, x=None, y=None):
         state = self._current_state()
         self.taps.append(state)
+        self.tap_coordinates.append((x, y))
         if state in {
             self.LOGIN_STATE_NOTICE,
             self.LOGIN_STATE_LOGIN,
@@ -85,6 +92,10 @@ class ScriptedLoginTask(YmGameTask):
 
     def is_power_saving_mode(self) -> bool:
         return self.power_saving_results.pop(0) if self.power_saving_results else False
+
+    def confirm_center_modal_ok_if_visible(self, description: str, **kwargs) -> bool:
+        self._last_match_center = None
+        return False
 
     def click_point(self, x: int, y: int, offset: int = 3) -> None:
         self.clicked_points.append((x, y, offset))
@@ -113,16 +124,28 @@ class ScriptedLoginTask(YmGameTask):
 
 
 class FakeTaskPanelTask(ScriptedLoginTask):
-    def __init__(self, image_results: list[bool]):
+    def __init__(self, image_results: list[bool], *, title_results: list[bool] | None = None):
         super().__init__([])
         self.image_results = image_results
+        self.title_results = title_results or []
         self.wait_image_calls = []
+        self.find_image_calls = []
         self.clicked_points = []
         self.wait_calls = []
+        self.close_panel_calls = []
 
     def wait_image_appear(self, template, timeout_ms=10000, threshold=0.8, callback=None, interval_ms=500):
         self.wait_image_calls.append((template, timeout_ms, threshold))
         return self.image_results.pop(0)
+
+    def find_image(self, template, *, threshold=0.8, roi=None):
+        self.find_image_calls.append((template, threshold, roi))
+        if template == self.TEXT_TASK_PANEL_TITLE and self.title_results:
+            return self.title_results.pop(0)
+        return False
+
+    def close_all_panels(self, templates=None, *, timeout_ms=5000, wait_after_click_ms=500, max_attempts=None):
+        self.close_panel_calls.append((templates, timeout_ms, wait_after_click_ms, max_attempts))
 
     def click_point(self, x: int, y: int, offset: int = 3) -> None:
         self.clicked_points.append((x, y, offset))
@@ -400,6 +423,9 @@ class FakeSafeZoneTask(YmGameTask):
     def is_chat_open(self) -> bool:
         return False
 
+    def wake_from_power_saving_if_needed(self) -> bool:
+        return False
+
     def wait_image_appear(self, template, timeout_ms=10000, threshold=0.8, callback=None, interval_ms=500):
         self.image_calls.append((template, timeout_ms, threshold, interval_ms))
         self.events.append(("image", template, timeout_ms, threshold, interval_ms))
@@ -465,9 +491,8 @@ class RetrySafeZoneTask(FakeSafeZoneTask):
         timeout_ms=5000,
         wait_after_click_ms=500,
         max_attempts=None,
-        back_safe=False,
     ) -> None:
-        self.close_all_calls.append((templates, timeout_ms, wait_after_click_ms, max_attempts, back_safe))
+        self.close_all_calls.append((templates, timeout_ms, wait_after_click_ms, max_attempts))
 
 
 class FakeTeamTask(YmGameTask):
@@ -477,12 +502,18 @@ class FakeTeamTask(YmGameTask):
         in_team: bool = False,
         team_panel_open: bool = False,
         quick_panel_open: bool = False,
+        matching: bool = False,
+        start_matching_on_click: bool = True,
+        member_counts: list[int] | None = None,
         template_click_results: list[bool] | None = None,
     ):
         super().__init__()
         self.in_team = in_team
         self.team_panel_open = team_panel_open
         self.quick_panel_open = quick_panel_open
+        self.matching = matching
+        self.start_matching_on_click = start_matching_on_click
+        self.member_counts = member_counts or [1]
         self.template_click_results = template_click_results or []
         self.modal_ok_visible = False
         self.leave_pending = False
@@ -493,6 +524,8 @@ class FakeTeamTask(YmGameTask):
         self.find_calls = []
         self.wait_calls = []
         self.logs = []
+        self.screenshot_calls = 0
+        self.debug_prefixes = []
 
     def collapse_chat_if_open(self, wait_after_click_ms: int = 800) -> bool:
         return False
@@ -503,13 +536,13 @@ class FakeTeamTask(YmGameTask):
             template, self.BTN_TEAM_FOLLOW_OK
         ):
             return self.modal_ok_visible
+        if self._contains_template(template, self.TEXT_TEAM_PANEL_TITLE):
+            return self.team_panel_open or self.quick_panel_open
         if self._contains_template(template, self.BTN_TEAM_QUICK):
-            return self.team_panel_open and not self.quick_panel_open
+            return self.team_panel_open and not self.quick_panel_open and not self.in_team
         if self._contains_template(template, self.BTN_TEAM_LEAVE):
             return self.team_panel_open and self.in_team and not self.quick_panel_open
-        if self._contains_template(template, self.BTN_TEAM_REFRESH_LIST) or self._contains_template(
-            template, self.BTN_TEAM_AUTO_MATCH
-        ):
+        if self._contains_template(template, self.BTN_TEAM_REFRESH_LIST):
             return self.quick_panel_open
         return False
 
@@ -524,12 +557,16 @@ class FakeTeamTask(YmGameTask):
         interval_ms=500,
     ):
         self.roi_calls.append((template, roi, timeout_ms, description, threshold, interval_ms))
+        if self._contains_template(template, self.TEXT_TEAM_PANEL_TITLE):
+            return self.team_panel_open or self.quick_panel_open
         if self._contains_template(template, self.BTN_TEAM_QUICK):
-            return self.team_panel_open and not self.quick_panel_open
+            return self.team_panel_open and not self.quick_panel_open and not self.in_team
         if self._contains_template(template, self.BTN_TEAM_LEAVE):
             return self.team_panel_open and self.in_team and not self.quick_panel_open
         if self._contains_template(template, self.BTN_TEAM_REFRESH_LIST):
             return self.quick_panel_open
+        if self._contains_template(template, self.BTN_TEAM_CANCEL_MATCH):
+            return self.matching
         return False
 
     def click_template_if_available(
@@ -543,7 +580,12 @@ class FakeTeamTask(YmGameTask):
         wait_after_click_ms=1000,
     ):
         self.template_clicks.append((template, timeout_ms, description, threshold, roi, wait_after_click_ms))
-        return self.template_click_results.pop(0) if self.template_click_results else True
+        result = self.template_click_results.pop(0) if self.template_click_results else True
+        if result and self._contains_template(template, self.BTN_TEAM_CREATE_10_RAID):
+            self.in_team = True
+            self.team_panel_open = True
+            self.quick_panel_open = False
+        return result
 
     def click(self, offset: int = 3) -> None:
         self.clicks.append(offset)
@@ -564,23 +606,33 @@ class FakeTeamTask(YmGameTask):
         elif point == self.POINT_TEAM_LEAVE and self.in_team:
             self.modal_ok_visible = True
             self.leave_pending = True
-        elif point in {self.POINT_TEAM_QUICK_BOTTOM, self.POINT_TEAM_QUICK_TOP}:
+        elif point == self.POINT_TEAM_QUICK_BOTTOM:
             self.quick_panel_open = True
             self.team_panel_open = False
         elif point == self.POINT_TEAM_QUICK_RETURN:
             self.quick_panel_open = False
             self.team_panel_open = True
-        elif point == self.POINT_TEAM_CREATE:
-            self.in_team = True
-            self.team_panel_open = True
-            self.quick_panel_open = False
-        elif point in self.POINT_TEAM_CREATE_RAID_OPTIONS.values():
-            self.in_team = True
-            self.team_panel_open = True
-            self.quick_panel_open = False
+        elif point == self.POINT_TEAM_START_MATCH:
+            self.matching = self.start_matching_on_click
 
     def wait(self, ms):
         self.wait_calls.append(ms)
+
+    def screenshot(self):
+        self.screenshot_calls += 1
+        return np.zeros((720, 1280, 3), dtype=np.uint8)
+
+    def count_team_members(self, screenshot=None) -> int:
+        if len(self.member_counts) > 1:
+            return self.member_counts.pop(0)
+        return self.member_counts[0]
+
+    def is_team_matching(self, screenshot=None) -> bool:
+        return self.matching
+
+    def save_debug_screenshot(self, prefix: str) -> str:
+        self.debug_prefixes.append(prefix)
+        return f"screenshots/{prefix}.png"
 
     def _log(self, message: str) -> None:
         self.logs.append(message)
@@ -657,6 +709,7 @@ def test_enter_game_resumes_from_role_page():
     task.enter_game()
 
     assert task.taps == [YmGameTask.LOGIN_STATE_ROLE]
+    assert task.tap_coordinates == [(100, 100)]
     assert "登录流程结束，主界面已清理" in task.logs
 
 
@@ -845,16 +898,16 @@ def test_close_all_panels_checks_jhyxb_purchase_dialog_before_regular_close():
     assert "已关闭所有弹窗" in task.logs
 
 
-def test_close_all_panels_does_not_check_purchase_dialog_for_other_tasks():
+def test_close_all_panels_checks_purchase_dialog_hook_for_any_task():
     task = FakeCloseAllTask(task_key="BPRW", purchase_results=[True], image_results=[False])
 
     task.close_all_panels()
 
-    assert task.events == ["image"]
+    assert task.events == ["purchase", "purchase", "image"]
 
 
-def test_close_all_panels_uses_jhyxb_default_close_attempt_limit():
-    task = FakeCloseAllTask(task_key="JHYXB", purchase_results=[True, True, True], image_results=[True])
+def test_close_all_panels_uses_task_default_close_attempt_limit():
+    task = FakeCloseAllTask(task_key="BPRW", purchase_results=[True, True, True], image_results=[True])
     task.CLOSE_ALL_MAX_ATTEMPTS = 2
 
     task.close_all_panels()
@@ -874,12 +927,14 @@ def test_close_all_panels_does_not_return_to_safe_zone_by_default():
     assert task.image_calls == [
         ([task.BTN_CLOSE, task.BTN_PANE_CLOSE, task.BTN_WELCOME_CLOSE], 5000, 0.8, 500)
     ]
+    assert "back_safe" not in inspect.signature(task.close_all_panels).parameters
 
 
-def test_close_all_panels_returns_to_safe_zone_when_requested():
+def test_on_start_returns_to_safe_zone_when_enabled():
     task = FakeSafeZoneTask()
+    task.RETURN_TO_SAFE_ZONE_ON_START = True
 
-    task.close_all_panels(back_safe=True)
+    task.on_start()
 
     assert task.clicked_points == [
         (task.POINT_MINIMAP[0], task.POINT_MINIMAP[1], 0),
@@ -1006,6 +1061,125 @@ def test_close_all_panels_returns_to_safe_zone_when_requested():
     assert "已回到鸡鸣寺安全区" in task.logs
 
 
+def test_on_start_resets_state_before_logging_and_panel_cleanup():
+    class StartupHookTask(YmGameTask):
+        task_name = "启动钩子"
+
+        def __init__(self):
+            super().__init__()
+            self.events = []
+
+        def reset_startup_state(self) -> None:
+            self.events.append("reset")
+
+        def close_all_panels(self, *args, **kwargs) -> None:
+            self.events.append("close")
+
+        def after_startup_panel_close(self) -> None:
+            self.events.append("after_close")
+
+        def wake_from_power_saving_if_needed(self) -> bool:
+            self.events.append("wake")
+            return False
+
+        def _log(self, message: str) -> None:
+            self.events.append(f"log:{message}")
+
+    task = StartupHookTask()
+
+    task.on_start()
+
+    assert task.events == [
+        "reset",
+        "log:========================================",
+        "log:启动钩子任务开始",
+        "log:========================================",
+        "close",
+        "after_close",
+        "wake",
+    ]
+
+
+class BeforeStartPolicyTask(YmGameTask):
+    def __init__(self, *, foreground: bool, auto_ensure_game_started: bool = True):
+        super().__init__()
+        self.foreground = foreground
+        self.auto_ensure_game_started = auto_ensure_game_started
+        self.events = []
+
+    def is_game_foreground(self) -> bool:
+        self.events.append("foreground")
+        return self.foreground
+
+    def ensure_game_started(self, *, force: bool = False) -> None:
+        self.events.append(("ensure", force))
+
+    def _log(self, message: str) -> None:
+        self.events.append(("log", message))
+
+
+def test_before_start_uses_normal_startup_guard_by_default():
+    task = BeforeStartPolicyTask(foreground=True)
+
+    task.before_start()
+
+    assert task.events == [("ensure", False)]
+
+
+def test_before_start_skips_startup_guard_when_auto_start_is_disabled():
+    task = BeforeStartPolicyTask(foreground=True, auto_ensure_game_started=False)
+
+    task.before_start()
+
+    assert task.events == []
+
+
+def test_before_start_defers_foreground_wake_to_on_start_when_enabled():
+    task = BeforeStartPolicyTask(foreground=True)
+    task.DEFER_FOREGROUND_WAKE_TO_ON_START = True
+
+    task.before_start()
+
+    assert task.events == [
+        "foreground",
+        ("log", "检测到游戏已在前台，省电唤醒交给 on_start"),
+    ]
+
+
+def test_before_start_starts_game_when_deferred_task_is_not_foreground():
+    task = BeforeStartPolicyTask(foreground=False)
+    task.DEFER_FOREGROUND_WAKE_TO_ON_START = True
+
+    task.before_start()
+
+    assert task.events == ["foreground", ("ensure", False)]
+
+
+def test_enter_game_confirms_online_role_dialog_only_on_role_page():
+    class OnlineRoleConfirmTask(ScriptedLoginTask):
+        def __init__(self):
+            super().__init__([self.LOGIN_STATE_ROLE, self.LOGIN_STATE_MAIN])
+            self.confirm_calls = []
+
+        def confirm_center_modal_ok_if_visible(self, description, **kwargs) -> bool:
+            self.confirm_calls.append((description, kwargs))
+            self._advance_state()
+            return True
+
+        def close_startup_panels(self, **kwargs) -> bool:
+            return True
+
+    task = OnlineRoleConfirmTask()
+
+    task.enter_game()
+
+    assert task.confirm_calls == [
+        (
+            "在线角色确认",
+            {"wait_after_click_ms": task.LOGIN_WAIT_AFTER_CLICK_MS},
+        )
+    ]
+    assert task.taps == []
 def test_return_to_safe_zone_world_map_visible_uses_region_button_template():
     task = FakeSafeZoneTask(find_once_results=[True])
 
@@ -1186,7 +1360,7 @@ def test_return_to_safe_zone_retries_from_start_when_auto_path_does_not_start_th
         (task.TEXT_AUTO_PATH, task.AUTO_PATH_START_TIMEOUT_MS, 0.8, 500),
         (task.TEXT_AUTO_PATH, task.AUTO_PATH_START_TIMEOUT_MS, 0.8, 500),
     ]
-    assert task.close_all_calls == [(None, 5000, 500, None, False)]
+    assert task.close_all_calls == [(None, 5000, 500, None)]
     assert task.auto_path_calls == [{"timeout_ms": 90000}]
 
 
@@ -1229,7 +1403,7 @@ def test_return_to_safe_zone_raises_after_three_auto_path_start_failures():
     else:
         raise AssertionError("Expected RuntimeError")
 
-    assert task.close_all_calls == [(None, 5000, 500, None, False)] * 3
+    assert task.close_all_calls == [(None, 5000, 500, None)] * 3
     assert task.debug_prefixes == ["safe_zone_auto_path_not_started"]
     assert task.auto_path_calls == []
 
@@ -1484,7 +1658,6 @@ def test_bangpai_task_steps_include_sidebar_execution_after_accept():
     step_names = [name for name, _, _ in BPRWTask.get_steps()]
 
     assert step_names == [
-        "close_all",
         "resume_existing_task",
         "open_bangpai_activity",
         "start_auto_pathfinding",
@@ -1527,7 +1700,7 @@ def test_switch_task_panel_opens_sidebar_when_not_active():
 
     assert task.wait_image_calls == [
         (task.ICON_TASK_ACTIVE, 3000, 0.8),
-        (task.ICON_TASK_ACTIVE, 3000, 0.8),
+        (task.ICON_TASK_ACTIVE, task.TASK_PANEL_ACTIVE_WAIT_MS, 0.8),
         (task.ICON_TASK_RW, 3000, 0.8),
     ]
     assert task.clicked_points == [
@@ -1535,10 +1708,32 @@ def test_switch_task_panel_opens_sidebar_when_not_active():
         (88, 124, 3),
     ]
     assert task.wait_calls == [500, 500]
+    assert task.find_image_calls == []
 
 
-def test_switch_task_panel_raises_when_sidebar_cannot_open():
-    task = FakeTaskPanelTask([False, False])
+def test_switch_task_panel_recovers_after_click_opens_full_task_panel():
+    task = FakeTaskPanelTask([False, False, True], title_results=[True])
+
+    task.switch_task_panel("江湖")
+
+    assert task.wait_image_calls == [
+        (task.ICON_TASK_ACTIVE, 3000, 0.8),
+        (task.ICON_TASK_ACTIVE, task.TASK_PANEL_ACTIVE_WAIT_MS, 0.8),
+        (task.ICON_TASK_JH, 3000, 0.8),
+    ]
+    assert task.find_image_calls == [
+        (task.TEXT_TASK_PANEL_TITLE, task.TASK_PANEL_TITLE_THRESHOLD, task.ROI_TASK_PANEL_TITLE),
+    ]
+    assert task.close_panel_calls == [(None, 5000, 500, None)]
+    assert task.clicked_points == [
+        (task.POINT_MAIN_TASK[0], task.POINT_MAIN_TASK[1], 3),
+        (task.POINT_TASK_TAB_JIANGHU[0], task.POINT_TASK_TAB_JIANGHU[1], 3),
+    ]
+    assert task.wait_calls == [500, 500]
+
+
+def test_switch_task_panel_raises_when_sidebar_or_full_task_panel_cannot_open():
+    task = FakeTaskPanelTask([False, False], title_results=[False])
 
     try:
         task.switch_task_panel("奇遇")
@@ -1548,6 +1743,7 @@ def test_switch_task_panel_raises_when_sidebar_cannot_open():
         raise AssertionError("Expected RuntimeError")
 
     assert task.clicked_points == [(22, 160, 3)]
+    assert task.close_panel_calls == []
 
 
 def test_switch_task_panel_rejects_unknown_panel():
@@ -1561,27 +1757,156 @@ def test_switch_task_panel_rejects_unknown_panel():
         raise AssertionError("Expected ValueError")
 
 
-def test_create_own_team_creates_raid_and_sets_target():
-    task = FakeTeamTask()
+def test_create_team_creates_targeted_raid_starts_matching_and_accepts_minimum():
+    task = FakeTeamTask(member_counts=[3])
 
-    task.create_own_team(
-        target=YmGameTask.TEAM_TARGET_JIANGHU_DAILY,
-        member_count=10,
+    task.create_team(
+        YmGameTask.TEAM_TARGET_JIANGHU_DAILY,
+        min_member_count=3,
         wait_after_click_ms=0,
     )
 
     assert task.clicked_points == [
         (task.POINT_MAIN_TEAM[0], task.POINT_MAIN_TEAM[1], 0),
-        (task.POINT_TEAM_CREATE_RAID[0], task.POINT_TEAM_CREATE_RAID[1], 0),
-        (task.POINT_TEAM_CREATE_RAID_OPTIONS[10][0], task.POINT_TEAM_CREATE_RAID_OPTIONS[10][1], 0),
-        (task.POINT_TEAM_TARGET_DROPDOWN[0], task.POINT_TEAM_TARGET_DROPDOWN[1], 0),
-        (task.POINT_TEAM_TARGET_CATEGORY_JIANGHU[0], task.POINT_TEAM_TARGET_CATEGORY_JIANGHU[1], 0),
-        (task.POINT_TEAM_TARGET_ITEM_FIRST[0], task.POINT_TEAM_TARGET_ITEM_FIRST[1], 0),
-        (task.POINT_TEAM_TARGET_CONFIRM[0], task.POINT_TEAM_TARGET_CONFIRM[1], 0),
+        (task.POINT_TEAM_QUICK_BOTTOM[0], task.POINT_TEAM_QUICK_BOTTOM[1], 0),
+        (task.POINT_TEAM_START_MATCH[0], task.POINT_TEAM_START_MATCH[1], 0),
+    ]
+    assert task.template_clicks == [
+        (
+            task.TEXT_TEAM_TARGET_DAILY,
+            1000,
+            "便捷组队目标 江湖纪事-日常",
+            0.85,
+            task.ROI_TEAM_QUICK_LEFT_PANEL,
+            0,
+        ),
+        (
+            task.BTN_TEAM_CREATE_10_RAID,
+            5000,
+            "创建10人团按钮",
+            task.TEAM_TEMPLATE_THRESHOLD,
+            task.ROI_TEAM_CREATE_ACTION,
+            0,
+        ),
     ]
     assert task.in_team
-    assert "创建团队：人数=10" in task.logs
-    assert "设置队伍目标：江湖纪事-日常" in task.logs
+    assert task.matching
+    assert "队伍人数已达到要求：3/3" in task.logs
+
+
+def test_create_team_validates_minimum_member_count_and_removes_old_aliases():
+    task = FakeTeamTask()
+
+    assert_value_error(
+        "min_member_count must be between 1 and 10",
+        lambda: task.create_team(YmGameTask.TEAM_TARGET_JIANGHU_DAILY, min_member_count=0),
+    )
+    assert_value_error(
+        "min_member_count must be between 1 and 10",
+        lambda: task.create_team(YmGameTask.TEAM_TARGET_JIANGHU_DAILY, min_member_count=11),
+    )
+    for method_name in ("create_own_team", "create_self_team", "convenient_team", "exit_team"):
+        assert not hasattr(YmGameTask, method_name)
+
+
+def test_create_team_saves_debug_screenshot_when_matching_does_not_start():
+    task = FakeTeamTask(start_matching_on_click=False)
+
+    try:
+        task.create_team(YmGameTask.TEAM_TARGET_JIANGHU_DAILY, wait_after_click_ms=0)
+    except RuntimeError as exc:
+        assert "创建队伍后未进入匹配状态" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError")
+
+    assert task.debug_prefixes == ["team_match_start_failed"]
+
+
+def test_team_panel_and_team_state_use_title_and_quick_button():
+    unteamed = FakeTeamTask(team_panel_open=True)
+    teamed = FakeTeamTask(in_team=True, team_panel_open=True)
+
+    assert unteamed.is_team_panel_open()
+    assert teamed.is_team_panel_open()
+    assert not unteamed.is_in_team()
+    assert teamed.is_in_team()
+
+    assert unteamed.find_calls[0][0] == unteamed.TEXT_TEAM_PANEL_TITLE
+    assert unteamed.find_calls[1][0] == unteamed.BTN_TEAM_QUICK
+
+
+def test_team_member_count_uses_empty_slots_from_one_screenshot():
+    root = Path(__file__).resolve().parents[1]
+    task = YmGameTask()
+    screen = load_image(root / "screenshots/team_report_02_created_jhxsh.png")
+
+    assert task.count_team_members(screen) == 1
+
+
+def test_click_team_shout_uses_detected_speaker_center():
+    class TeamShoutTask(YmGameTask):
+        def __init__(self):
+            super().__init__()
+            self.clicked_points = []
+
+        def click_point(self, x: int, y: int, offset: int = 3) -> None:
+            self.clicked_points.append((x, y, offset))
+
+    root = Path(__file__).resolve().parents[1]
+    task = TeamShoutTask()
+    screen = load_image(root / "screenshots/team_report_02_created_jhxsh.png")
+
+    task.click_team_shout(screen)
+
+    assert task.clicked_points == [(612, 116, 0)]
+
+
+def test_wait_for_team_members_shouts_every_ten_seconds_until_minimum():
+    task = FakeTeamTask(in_team=True, team_panel_open=True, matching=True, member_counts=[1, 2, 3])
+
+    task.wait_for_team_members(3)
+
+    assert task.clicked_points == [
+        (task.POINT_TEAM_SHOUT[0], task.POINT_TEAM_SHOUT[1], 0),
+        (task.POINT_TEAM_SHOUT[0], task.POINT_TEAM_SHOUT[1], 0),
+    ]
+    assert task.wait_calls == [task.TEAM_RECRUIT_INTERVAL_MS, task.TEAM_RECRUIT_INTERVAL_MS]
+    assert task.screenshot_calls == 3
+    assert "队伍人数已达到要求：3/3" in task.logs
+
+
+def test_wait_for_team_members_returns_immediately_when_minimum_is_already_met():
+    task = FakeTeamTask(in_team=True, team_panel_open=True, matching=True, member_counts=[4])
+
+    task.wait_for_team_members(3)
+
+    assert task.clicked_points == []
+    assert task.wait_calls == []
+
+
+def test_wait_for_team_members_raises_when_matching_is_interrupted():
+    task = FakeTeamTask(in_team=True, team_panel_open=True, matching=False, member_counts=[2])
+
+    try:
+        task.wait_for_team_members(3)
+    except RuntimeError as exc:
+        assert "队伍人数未达标时匹配状态已结束" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError")
+
+    assert task.debug_prefixes == ["team_matching_interrupted"]
+
+
+def test_wait_for_team_members_honors_stop_request():
+    task = FakeTeamTask(in_team=True, team_panel_open=True, matching=True, member_counts=[1])
+    task.stop()
+
+    try:
+        task.wait_for_team_members(3)
+    except StepStopException:
+        pass
+    else:
+        raise AssertionError("Expected StepStopException")
 
 
 def test_quick_team_selects_target_and_clicks_auto_match():
@@ -1634,6 +1959,19 @@ def test_quick_team_selects_target_and_clicks_auto_match():
         ),
     ]
     assert "已点击便捷组队自动匹配" in task.logs
+
+
+def test_open_quick_team_panel_rejects_existing_team():
+    task = FakeTeamTask(in_team=True, team_panel_open=True)
+
+    try:
+        task.open_quick_team_panel(wait_after_click_ms=0)
+    except RuntimeError as exc:
+        assert str(exc) == "当前已处于组队状态，请先退出队伍"
+    else:
+        raise AssertionError("Expected RuntimeError")
+
+    assert task.clicked_points == []
 
 
 def test_leave_team_confirms_dialog_and_returns_to_unteamed_state():

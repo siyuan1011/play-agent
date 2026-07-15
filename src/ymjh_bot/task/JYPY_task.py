@@ -19,6 +19,11 @@ class JYPYTask(YmGameTask):
     task_name = "聚义平冤"
     task_description = "聚义平冤便捷组队并跟随完成任务"
     auto_recover_health = False
+    RETURN_TO_SAFE_ZONE_ON_START = True
+    DEFER_FOREGROUND_WAKE_TO_ON_START = True
+    LEAVE_TEAM_ON_START = True
+    STARTUP_CLOSE_SETTLE_WAIT_MS = 1000
+    SAFE_ZONE_RETURN_FAILURE_LOG = "返回安全区未完成，保持当前主界面继续：{error}"
 
     BTN_ACTIVITY_FORWARD = str(YmGameTask.TEMPLATES_DIR / "btn_activity_forward.png")
     BTN_DIALOG_NEXT = str(YmGameTask.TEMPLATES_DIR / "btn_dialog_next.png")
@@ -47,35 +52,6 @@ class JYPYTask(YmGameTask):
     ARRIVE_MIN_WAIT_MS = 25000
     TASK_MISSING_CONFIRMATIONS = 3
     IDLE_TRACKER_CLICK_LIMIT = 5
-
-    def before_start(self) -> None:
-        """Let close_all handle foreground power-saving recovery."""
-        if not self.auto_ensure_game_started:
-            return
-        if self.is_game_foreground():
-            self._log("检测到游戏已在前台，省电唤醒交给 close_all")
-            return
-        self.ensure_game_started()
-
-    def on_start(self) -> None:
-        """任务开始前准备。"""
-        self._log("=" * 40)
-        self._log("聚义平冤任务开始")
-        self._log("=" * 40)
-
-    @step(retry=1, timeout_ms=120000)
-    def close_all_and_leave_team(self) -> None:
-        """关闭弹窗，回到干净主界面，并退出已有队伍。"""
-        self.close_all_panels()
-        if self.wake_from_power_saving_if_needed():
-            self.close_all_panels()
-        self.wait(1000)
-        try:
-            self.return_to_safe_zone()
-        except Exception as exc:
-            self._log(f"返回安全区未完成，保持当前主界面继续：{exc}")
-        self.leave_team_if_present()
-        self.close_all_panels(timeout_ms=3000)
 
     @step(retry=3, timeout_ms=30000)
     def open_hangdang_activity(self) -> None:

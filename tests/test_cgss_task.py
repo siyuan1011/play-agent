@@ -1,10 +1,10 @@
 import pytest
 
 from botCore import StepJumpException
-from ymjh_bot.task.CGSS_task import ChaguanTask
+from ymjh_bot.task.CGSS_task import CGSSTask
 
 
-class FakeChaguanTask(ChaguanTask):
+class FakeCGSSTask(CGSSTask):
     def __init__(
         self,
         *,
@@ -104,10 +104,9 @@ class FakeChaguanTask(ChaguanTask):
 
 
 def test_chaguan_step_order_includes_completion_verification():
-    steps = [name for name, _, _ in ChaguanTask.get_steps()]
+    steps = [name for name, _, _ in CGSSTask.get_steps()]
 
     assert steps == [
-        "close_all",
         "open_huodong",
         "auto_pathfinding",
         "enter_chaguan",
@@ -118,22 +117,22 @@ def test_chaguan_step_order_includes_completion_verification():
 
 
 def test_chaguan_task_disables_health_recovery_guard():
-    assert ChaguanTask.auto_recover_health is False
+    assert CGSSTask.auto_recover_health is False
 
 
 def test_chaguan_answer_point_uses_right_answer_option_area():
-    assert ChaguanTask.POINT_ANSWER == (1232, 540)
-    assert ChaguanTask.POINT_ANSWER in ChaguanTask.ANSWER_POINTS
+    assert CGSSTask.POINT_ANSWER == (1232, 540)
+    assert CGSSTask.ANSWER_CLICK_INTERVAL_MS == 3000
 
 
-def test_chaguan_answer_step_has_timeout_guard():
-    steps = {name: meta for name, _, meta in ChaguanTask.get_steps()}
+def test_chaguan_answer_step_has_no_timeout_limit():
+    steps = {name: meta for name, _, meta in CGSSTask.get_steps()}
 
-    assert steps["click_answer"]["timeout_ms"] == ChaguanTask.ANSWER_MAX_DURATION_MS + 30000
+    assert steps["click_answer"]["timeout_ms"] is None
 
 
 def test_open_huodong_clicks_chaguan_entry_from_activity_card():
-    task = FakeChaguanTask(roi_results=[True])
+    task = FakeCGSSTask(roi_results=[True])
 
     task.open_huodong()
 
@@ -157,7 +156,7 @@ def test_open_huodong_clicks_chaguan_entry_from_activity_card():
 
 
 def test_open_huodong_jumps_to_end_when_chaguan_entry_is_missing():
-    task = FakeChaguanTask(roi_results=[False])
+    task = FakeCGSSTask(roi_results=[False])
 
     with pytest.raises(StepJumpException) as exc_info:
         task.open_huodong()
@@ -169,7 +168,7 @@ def test_open_huodong_jumps_to_end_when_chaguan_entry_is_missing():
 
 
 def test_enter_chaguan_raises_when_entry_button_is_missing():
-    task = FakeChaguanTask(image_results=[False])
+    task = FakeCGSSTask(image_results=[False])
 
     with pytest.raises(RuntimeError, match="未找到进入茶馆按钮"):
         task.enter_chaguan()
@@ -180,7 +179,7 @@ def test_enter_chaguan_raises_when_entry_button_is_missing():
 
 
 def test_enter_chaguan_clicks_entry_button_until_missing():
-    task = FakeChaguanTask(image_results=[True], missing_results=[True])
+    task = FakeCGSSTask(image_results=[True], missing_results=[True])
 
     task.enter_chaguan()
 
@@ -192,7 +191,7 @@ def test_enter_chaguan_clicks_entry_button_until_missing():
 
 
 def test_enter_chaguan_raises_when_entry_button_stays_visible():
-    task = FakeChaguanTask(image_results=[True], missing_results=[False])
+    task = FakeCGSSTask(image_results=[True], missing_results=[False])
 
     with pytest.raises(RuntimeError, match="进入茶馆按钮未消失"):
         task.enter_chaguan()
@@ -200,17 +199,23 @@ def test_enter_chaguan_raises_when_entry_button_stays_visible():
     assert task.click_count == 1
 
 
-def test_click_answer_clicks_until_exit_button_appears():
-    task = FakeChaguanTask(find_results=[False, False, True])
+def test_click_answer_keeps_polling_third_option_until_exit_button_appears():
+    task = FakeCGSSTask(find_results=[False, False, False, False, False, True])
 
     task.click_answer()
 
     assert task.clicked_points == [
-        (task.ANSWER_POINTS[0][0], task.ANSWER_POINTS[0][1], 3),
-        (task.ANSWER_POINTS[1][0], task.ANSWER_POINTS[1][1], 3),
+        (task.POINT_ANSWER[0], task.POINT_ANSWER[1], 3),
+        (task.POINT_ANSWER[0], task.POINT_ANSWER[1], 3),
+        (task.POINT_ANSWER[0], task.POINT_ANSWER[1], 3),
+        (task.POINT_ANSWER[0], task.POINT_ANSWER[1], 3),
+        (task.POINT_ANSWER[0], task.POINT_ANSWER[1], 3),
     ]
-    assert task.wait_calls == [task.ANSWER_CLICK_INTERVAL_MS] * 2
+    assert task.wait_calls == [task.ANSWER_CLICK_INTERVAL_MS] * 5
     assert task.find_calls == [
+        (task.BTN_TCCG, 0.8, None),
+        (task.BTN_TCCG, 0.8, None),
+        (task.BTN_TCCG, 0.8, None),
         (task.BTN_TCCG, 0.8, None),
         (task.BTN_TCCG, 0.8, None),
         (task.BTN_TCCG, 0.8, None),
@@ -218,23 +223,8 @@ def test_click_answer_clicks_until_exit_button_appears():
     assert "检测到退出茶馆按钮，停止答题" in task.logs
 
 
-def test_click_answer_raises_after_polling_limit_without_exit_button():
-    task = FakeChaguanTask(find_results=[False, False, False, False])
-    task.ANSWER_MAX_CLICKS = 3
-
-    with pytest.raises(RuntimeError, match="茶馆答题超时"):
-        task.click_answer()
-
-    assert task.clicked_points == [
-        (task.ANSWER_POINTS[0][0], task.ANSWER_POINTS[0][1], 3),
-        (task.ANSWER_POINTS[1][0], task.ANSWER_POINTS[1][1], 3),
-        (task.ANSWER_POINTS[2][0], task.ANSWER_POINTS[2][1], 3),
-    ]
-    assert task.wait_calls == [task.ANSWER_CLICK_INTERVAL_MS] * 3
-
-
 def test_click_answer_returns_immediately_when_exit_button_is_already_visible():
-    task = FakeChaguanTask(find_results=[True])
+    task = FakeCGSSTask(find_results=[True])
 
     task.click_answer()
 
@@ -244,7 +234,7 @@ def test_click_answer_returns_immediately_when_exit_button_is_already_visible():
 
 
 def test_exit_chaguan_clicks_exit_button_template():
-    task = FakeChaguanTask(image_results=[True])
+    task = FakeCGSSTask(image_results=[True])
 
     task.exit_chaguan()
 
@@ -255,7 +245,7 @@ def test_exit_chaguan_clicks_exit_button_template():
 
 
 def test_verify_completion_accepts_missing_activity_entry():
-    task = FakeChaguanTask(roi_results=[False])
+    task = FakeCGSSTask(roi_results=[False])
 
     task.verify_completion()
 
@@ -278,7 +268,7 @@ def test_verify_completion_accepts_missing_activity_entry():
 
 
 def test_verify_completion_raises_when_activity_entry_remains():
-    task = FakeChaguanTask(roi_results=[True])
+    task = FakeCGSSTask(roi_results=[True])
 
     with pytest.raises(RuntimeError, match="茶馆说书完成验证失败：活动页仍存在茶馆说书入口"):
         task.verify_completion()

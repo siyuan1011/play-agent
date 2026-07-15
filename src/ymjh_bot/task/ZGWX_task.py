@@ -21,20 +21,7 @@ class ZGWXTask(YmGameTask):
     ROI_ZGWX_FORWARD = (120, 250, 220, 120)
 
     FORWARD_THRESHOLD = 0.85
-
-    def on_start(self) -> None:
-        """任务开始前准备。"""
-        self._log("=" * 40)
-        self._log("坐观万象任务开始")
-        self._log("=" * 40)
-
-    @step(retry=1, timeout_ms=30000)
-    def close_all(self) -> None:
-        """关闭所有弹窗，回到游戏主界面。"""
-        self.close_all_panels()
-        if self.wake_from_power_saving_if_needed():
-            self.close_all_panels()
-        self.wait(1000)
+    STARTUP_CLOSE_SETTLE_WAIT_MS = 1000
 
     @step(retry=3, timeout_ms=30000)
     def open_youli_activity(self) -> None:
@@ -65,6 +52,7 @@ class ZGWXTask(YmGameTask):
             self.ICON_MEDITATING,
             timeout_ms=180000,
             threshold=0.9,
+            interval_ms=5000,
         ):
             raise RuntimeError("坐观万象修炼开始等待超时")
         self._log("检测到修炼中倒计时，坐观万象开始修炼")
@@ -76,8 +64,8 @@ class ZGWXTask(YmGameTask):
             self.ICON_MEDITATING,
             timeout_ms=900000,
             threshold=0.9,
-            missing_threshold=10,
-            interval_ms=2000,
+            missing_threshold=3,
+            interval_ms=5000,
         ):
             raise RuntimeError("坐观万象修炼完成等待超时")
         self._log("检测到修炼中倒计时消失，坐观万象修炼结束")

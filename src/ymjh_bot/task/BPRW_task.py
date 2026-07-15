@@ -37,41 +37,20 @@ class BPRWTask(YmGameTask):
     ROI_ONE_KEY_SUBMIT = (900, 330, 340, 160)
     ROI_TASK_COMPLETE = (40, 570, 650, 90)
     ROI_PURCHASE_DIALOG_CLOSE = (850, 130, 170, 110)
-    POINT_TASK_LIST_SCROLL_START = (190, 520)
-    POINT_TASK_LIST_SCROLL_END = (190, 220)
+    POINT_TASK_LIST_SCROLL_START = (190, 360)
+    POINT_TASK_LIST_SCROLL_END = (190, 170)
     POINT_DIALOG_NEXT = (1230, 690)
 
     CLOSE_ALL_MAX_ATTEMPTS = 8
+    DEFER_FOREGROUND_WAKE_TO_ON_START = True
     TASK_FLOW_TIMEOUT_MS = 900000
     TASK_FLOW_RETRY_WAIT_MS = 3000
     TASK_IDLE_CLICK_LIMIT = 3
     TRADE_BUY_THRESHOLD = 0.7
 
-    def before_start(self) -> None:
-        """Avoid waking foreground power-saving mode before close_all owns that check."""
-        if not self.auto_ensure_game_started:
-            return
-        if self.is_game_foreground():
-            self._log("检测到游戏已在前台，省电唤醒交给 close_all")
-            return
-        self.ensure_game_started()
-
-    def on_start(self) -> None:
-        """任务开始前准备。"""
-        self._log("=" * 40)
-        self._log("帮派任务开始")
-        self._log("=" * 40)
-
-    @step(retry=1, timeout_ms=30000)
-    def close_all(self) -> None:
-        """关闭所有弹窗，回到游戏主界面。"""
-        self.close_purchase_dialog_if_needed()
-        self.close_all_panels(max_attempts=self.CLOSE_ALL_MAX_ATTEMPTS)
+    def after_startup_panel_close(self) -> None:
+        """Close the Bangpai completion dialog after each startup cleanup pass."""
         self.close_completion_dialog_if_visible()
-        if self.wake_from_power_saving_if_needed():
-            self.close_purchase_dialog_if_needed()
-            self.close_all_panels(max_attempts=self.CLOSE_ALL_MAX_ATTEMPTS)
-            self.close_completion_dialog_if_visible()
 
     def close_purchase_dialog_if_needed(self) -> bool:
         """Close a leftover PvP extra-challenge purchase dialog before generic panel closing."""
@@ -163,8 +142,14 @@ class BPRWTask(YmGameTask):
     @step(retry=3, timeout_ms=60000)
     def start_accepted_task(self) -> None:
         """接取后从任务栏启动帮派任务。"""
-        if not self.click_bangpai_task_from_sidebar(max_scrolls=5, required=True):
-            raise RuntimeError("未找到任务栏帮派任务")
+        if self.click_bangpai_task_from_sidebar(max_scrolls=5, required=True):
+            return
+
+        if self.is_bangpai_list_visible():
+            self._log("检测到当前未加入帮派，跳过帮派任务")
+        else:
+            self._log("接取后未检测到帮派任务追踪，按当前不可执行或已完成处理")
+        self.jump_to_end()
 
     @step(retry=1, timeout_ms=TASK_FLOW_TIMEOUT_MS)
     def run_task_flow(self) -> None:
@@ -269,15 +254,6 @@ class BPRWTask(YmGameTask):
         ):
             return False
         return True
-
-    def ensure_left_task_sidebar_visible(self) -> None:
-        """Open only the compact left task sidebar without switching task panels."""
-        if self.find_image(self.ICON_TASK_ACTIVE, threshold=0.8):
-            return
-
-        self._log("左侧任务栏未展开，点击主界面任务栏")
-        self.click_point(self.POINT_MAIN_TASK[0], self.POINT_MAIN_TASK[1])
-        self.wait(800)
 
     def scroll_task_list_down(self) -> None:
         """Scroll the task list down to reveal lower entries."""

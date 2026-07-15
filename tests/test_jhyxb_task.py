@@ -33,6 +33,7 @@ class FakeJhyxbTask(JianghuYingxiongbangTask):
         self.swipe_calls = []
         self.wait_calls = []
         self.safe_zone_calls = []
+        self.debug_prefixes = []
         self.logs = []
 
     def wait_find_image_in_roi(
@@ -82,9 +83,8 @@ class FakeJhyxbTask(JianghuYingxiongbangTask):
         timeout_ms=5000,
         wait_after_click_ms=500,
         max_attempts=None,
-        back_safe=False,
     ):
-        self.close_panel_calls.append((templates, timeout_ms, wait_after_click_ms, max_attempts, back_safe))
+        self.close_panel_calls.append((templates, timeout_ms, wait_after_click_ms, max_attempts))
 
     def is_power_saving_mode(self) -> bool:
         if self.power_saving_results:
@@ -107,6 +107,10 @@ class FakeJhyxbTask(JianghuYingxiongbangTask):
         self.safe_zone_calls.append(())
         if self.safe_zone_error:
             raise self.safe_zone_error
+
+    def save_debug_screenshot(self, prefix: str) -> str:
+        self.debug_prefixes.append(prefix)
+        return f"screenshots/{prefix}.png"
 
     def _log(self, message: str) -> None:
         self.logs.append(message)
@@ -150,20 +154,23 @@ class LoopOnlyJhyxbTask(JianghuYingxiongbangTask):
         self.ready_calls = []
         self.match_clicks = 0
         self.battle_matches = []
+        self.battle_deadlines = []
 
     def ensure_jhyxb_panel_ready(self, *, timeout_ms: int) -> None:
         self.ready_calls.append(timeout_ms)
 
-    def click_match_button(self) -> None:
+    def click_match_button(self) -> float:
         self.match_clicks += 1
+        return float(self.match_clicks)
 
     def is_challenge_count_zero(self) -> bool:
         if self.challenge_zero_results:
             return self.challenge_zero_results.pop(0)
         return False
 
-    def run_match_battle(self, match_index: int) -> None:
+    def run_match_battle(self, match_index: int, *, match_deadline: float | None = None) -> None:
         self.battle_matches.append(match_index)
+        self.battle_deadlines.append(match_deadline)
 
     def _log(self, message: str) -> None:
         pass
@@ -183,7 +190,7 @@ class BattleFlowJhyxbTask(FakeJhyxbTask):
         self.ready_states = ready_states or [self.MATCH_READY_STATE_READY]
         self.auto_battle_calls = []
 
-    def click_ready_button(self, match_index: int) -> str:
+    def click_ready_button(self, match_index: int, *, deadline: float | None = None) -> str:
         state = self.ready_states.pop(0)
         if state == self.MATCH_READY_STATE_READY:
             self.roi_calls.append(
@@ -196,6 +203,7 @@ class BattleFlowJhyxbTask(FakeJhyxbTask):
                     self.MATCH_WAIT_POLL_INTERVAL_MS,
                 )
             )
+            self._battle_result_deadline = self._make_deadline(self.RESULT_TIMEOUT_MS)
             self.click_offsets.append(0)
             self.wait_calls.append(1000)
         return state
@@ -230,12 +238,14 @@ class ReadyWaitJhyxbTask(JianghuYingxiongbangTask):
         self.panel_results = panel_results or []
         self.challenge_zero_results = challenge_zero_results or []
         self.match_button_results = match_button_results or []
+        self.confirm_calls = []
         self.wait_calls = []
         self.click_offsets = []
         self.debug_prefixes = []
         self.logs = []
 
     def confirm_match_leave_team_dialog_if_needed(self, activity_name: str, **kwargs) -> bool:
+        self.confirm_calls.append(activity_name)
         return self.confirm_results.pop(0) if self.confirm_results else False
 
     def is_ready_button_visible(self) -> bool:
@@ -267,6 +277,40 @@ class ReadyWaitJhyxbTask(JianghuYingxiongbangTask):
         self.logs.append(message)
 
 
+class MatchDeadlineTrackingJhyxbTask(FakeJhyxbTask):
+    def __init__(self):
+        super().__init__(roi_results=[False])
+        self.events = []
+
+    def _make_deadline(self, timeout_ms: int | None) -> float | None:
+        self.events.append(("deadline", timeout_ms))
+        return super()._make_deadline(timeout_ms)
+
+    def wait(self, ms):
+        self.events.append(("wait", ms))
+        super().wait(ms)
+
+    def click_point(self, x: int, y: int, offset: int = 3) -> None:
+        self.events.append(("click", x, y, offset))
+        super().click_point(x, y, offset)
+
+
+class ReadyDeadlineTrackingJhyxbTask(ReadyWaitJhyxbTask):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.deadline_timeouts = []
+        self.events = []
+
+    def _make_deadline(self, timeout_ms: int | None) -> float | None:
+        self.deadline_timeouts.append(timeout_ms)
+        self.events.append(("deadline", timeout_ms))
+        return super()._make_deadline(timeout_ms)
+
+    def click(self, offset: int = 3) -> None:
+        self.events.append(("click", offset))
+        super().click(offset)
+
+
 def test_jhyxb_task_loads_and_is_visible():
     task_file = Path("src/ymjh_bot/task/JHYXB_task.py")
 
@@ -283,13 +327,19 @@ def test_jhyxb_step_order():
     step_names = [name for name, _, _ in steps]
 
     assert step_names == [
-        "close_all",
         "open_fenzheng_activity",
         "open_jhyxb_panel",
         "use_all_challenges",
         "claim_first_battle_chest",
     ]
-    assert steps[0][2]["timeout_ms"] == 120000
+
+
+def test_jhyxb_match_and_battle_timeouts_are_separate_without_total_step_timeout():
+    steps = dict((name, metadata) for name, _, metadata in JianghuYingxiongbangTask.get_steps())
+
+    assert JianghuYingxiongbangTask.MATCH_READY_TIMEOUT_MS == 60 * 1000
+    assert JianghuYingxiongbangTask.RESULT_TIMEOUT_MS == 6 * 60 * 1000
+    assert steps["use_all_challenges"]["timeout_ms"] is None
 
 
 def test_jhyxb_safe_close_panels_collapses_chat_before_and_after():
@@ -305,39 +355,39 @@ def test_jhyxb_safe_close_panels_collapses_chat_before_and_after():
     assert "已关闭所有弹窗" in task.logs
 
 
-def test_close_all_wakes_power_saving_with_right_joystick_center():
+def test_on_start_wakes_power_saving_with_right_joystick_center():
     task = FakeJhyxbTask(power_saving_results=[True])
 
-    task.close_all()
+    task.on_start()
 
     assert task.clicked_points == [
         (task.POINT_RIGHT_JOYSTICK_CENTER[0], task.POINT_RIGHT_JOYSTICK_CENTER[1], 0)
     ]
     assert task.close_panel_calls == [
-        (None, 5000, 500, None, False),
-        (None, 5000, 500, None, False),
+        (None, 5000, 500, None),
+        (None, 5000, 500, None),
     ]
     assert task.wait_calls == [1000, 1000]
     assert task.safe_zone_calls == [()]
     assert "检测到省电模式，点击右下角摇杆中心唤醒" in task.logs
 
 
-def test_close_all_returns_to_safe_zone_after_cleanup():
+def test_on_start_returns_to_safe_zone_after_cleanup():
     task = FakeJhyxbTask()
 
-    task.close_all()
+    task.on_start()
 
-    assert task.close_panel_calls == [(None, 5000, 500, None, False)]
+    assert task.close_panel_calls == [(None, 5000, 500, None)]
     assert task.wait_calls == [1000]
     assert task.safe_zone_calls == [()]
 
 
-def test_close_all_continues_when_safe_zone_return_fails():
+def test_on_start_continues_when_safe_zone_return_fails():
     task = FakeJhyxbTask(safe_zone_error=RuntimeError("未找到地图世界按钮"))
 
-    task.close_all()
+    task.on_start()
 
-    assert task.close_panel_calls == [(None, 5000, 500, None, False)]
+    assert task.close_panel_calls == [(None, 5000, 500, None)]
     assert task.wait_calls == [1000]
     assert task.safe_zone_calls == [()]
     assert "返回鸡鸣寺安全区未完成，继续从当前界面打开江湖英雄榜：未找到地图世界按钮" in task.logs
@@ -388,6 +438,7 @@ def test_use_all_challenges_runs_default_five_matches():
     assert task.ready_calls == [10000] * task.DEFAULT_CHALLENGE_COUNT
     assert task.match_clicks == task.DEFAULT_CHALLENGE_COUNT
     assert task.battle_matches == [1, 2, 3, 4, 5]
+    assert task.battle_deadlines == [1.0, 2.0, 3.0, 4.0, 5.0]
 
 
 def test_use_all_challenges_stops_when_challenge_count_is_zero():
@@ -400,24 +451,18 @@ def test_use_all_challenges_stops_when_challenge_count_is_zero():
     assert task.battle_matches == [1, 2]
 
 
-def test_jhyxb_click_match_confirms_leave_team_dialog():
-    task = FakeJhyxbTask(roi_results=[False], find_once_results=[True])
+def test_jhyxb_click_match_starts_deadline_without_fixed_settle_wait():
+    task = MatchDeadlineTrackingJhyxbTask()
 
-    task.click_match_button()
+    deadline = task.click_match_button()
 
+    assert deadline is not None
     assert task.clicked_points == [(task.POINT_JHYXB_MATCH[0], task.POINT_JHYXB_MATCH[1], 0)]
-    assert task.find_once_calls == [
-        (
-            task.BTN_MODAL_OK,
-            0.85,
-            task.scale_roi(task.ROI_CENTER_MODAL_OK),
-            False,
-            False,
-        )
+    assert task.events == [
+        ("click", task.POINT_JHYXB_MATCH[0], task.POINT_JHYXB_MATCH[1], 0),
+        ("deadline", task.MATCH_READY_TIMEOUT_MS),
     ]
-    assert task.click_offsets == [0]
-    assert task.wait_calls == [task.MATCH_SETTLE_WAIT_MS, 1200]
-    assert "检测到江湖英雄榜单人匹配退队确认，点击确定" in task.logs
+    assert task.wait_calls == []
 
 
 def test_jhyxb_ready_wait_returns_when_panel_has_match_button():
@@ -433,6 +478,34 @@ def test_jhyxb_ready_wait_returns_when_panel_has_match_button():
     assert task.click_offsets == []
     assert task.wait_calls == []
     assert "第 2 次匹配已回到江湖英雄榜面板" in task.logs
+
+
+def test_jhyxb_ready_wait_handles_leave_team_dialog_before_ready():
+    task = ReadyWaitJhyxbTask(confirm_results=[True, False], ready_results=[True])
+
+    state = task.click_ready_button(1)
+
+    assert state == task.MATCH_READY_STATE_READY
+    assert task.confirm_calls == ["江湖英雄榜", "江湖英雄榜"]
+    assert task.click_offsets == [0]
+    assert task.wait_calls == [1000]
+
+
+def test_jhyxb_ready_click_starts_six_minute_battle_deadline():
+    task = ReadyDeadlineTrackingJhyxbTask(ready_results=[True])
+    match_deadline = task._make_deadline(task.MATCH_READY_TIMEOUT_MS)
+    task.deadline_timeouts.clear()
+    task.events.clear()
+
+    state = task.click_ready_button(1, deadline=match_deadline)
+
+    assert state == task.MATCH_READY_STATE_READY
+    assert task.deadline_timeouts == [task.RESULT_TIMEOUT_MS]
+    assert task.events == [
+        ("click", 0),
+        ("deadline", task.RESULT_TIMEOUT_MS),
+    ]
+    assert task.click_offsets == [0]
 
 
 def test_jhyxb_ready_wait_times_out_with_debug_screenshot():
@@ -528,40 +601,98 @@ def test_jhyxb_run_match_battle_skips_battle_when_panel_returned_before_ready():
     assert task.wait_calls == []
 
 
-def test_claim_first_battle_chest_clicks_template_and_closes_confirm_dialog():
-    task = FakeJhyxbTask(roi_results=[True, True], image_results=[True, False, False])
+def test_claim_first_battle_chest_clicks_ready_chest_and_confirms_claimed_state():
+    task = FakeJhyxbTask(
+        roi_results=[True, True, True],
+        image_results=[False],
+        find_once_results=[False, True],
+    )
 
-    task.claim_first_battle_chest()
+    assert task.claim_first_battle_chest() is True
 
-    assert task.roi_calls == [
+    assert task.find_once_calls == [
         (
-            task.TITLE_JHYXB,
-            task.ROI_PANEL_TITLE,
-            10000,
-            "江湖英雄榜面板",
+            task.ICON_JHYXB_FIRST_WIN_CHEST,
             0.85,
-            500,
+            task.scale_roi(task.ROI_FIRST_BATTLE_CHEST),
+            False,
+            False,
         ),
         (
-            task.ICON_JHYXB_FIRST_CHEST,
+            task.ICON_JHYXB_FIRST_WIN_READY,
+            0.85,
+            task.scale_roi(task.ROI_FIRST_BATTLE_CHEST),
+            False,
+            False,
+        ),
+    ]
+    assert task.roi_calls == [
+        (task.TITLE_JHYXB, task.ROI_PANEL_TITLE, 10000, "江湖英雄榜面板", 0.85, 500),
+        (task.TITLE_JHYXB, task.ROI_PANEL_TITLE, 10000, "江湖英雄榜面板", 0.85, 500),
+        (
+            task.ICON_JHYXB_FIRST_WIN_CHEST,
             task.ROI_FIRST_BATTLE_CHEST,
-            3000,
-            "每日首战宝箱",
+            2500,
+            "江湖英雄榜已领取首战宝箱",
             0.85,
             500,
         ),
     ]
-    assert task.click_offsets == [0, 0]
+    assert task.click_offsets == [0]
+    assert task.clicked_points == [
+        (task.POINT_FIRST_BATTLE_REWARD_DIALOG_DISMISS[0], task.POINT_FIRST_BATTLE_REWARD_DIALOG_DISMISS[1], 0)
+    ]
     assert task.wait_calls == [1500, 1000]
+    assert "江湖英雄榜首战宝箱领取完成" in task.logs
 
 
-def test_claim_first_battle_chest_uses_fixed_point_when_template_missing():
-    task = FakeJhyxbTask(roi_results=[True, False])
+def test_claim_first_battle_chest_skips_already_claimed_chest():
+    task = FakeJhyxbTask(roi_results=[True], find_once_results=[True])
 
-    task.claim_first_battle_chest()
+    assert task.claim_first_battle_chest() is True
 
+    assert task.click_offsets == []
+    assert task.clicked_points == []
+    assert task.wait_calls == []
+    assert "江湖英雄榜首战宝箱已领取" in task.logs
+
+
+def test_claim_first_battle_chest_skips_initial_chest():
+    task = FakeJhyxbTask(roi_results=[True], find_once_results=[False, False, True])
+
+    assert task.claim_first_battle_chest() is False
+
+    assert task.click_offsets == []
+    assert task.clicked_points == []
+    assert task.wait_calls == []
+    assert "江湖英雄榜首战宝箱尚未达成，跳过领取" in task.logs
+
+
+def test_claim_first_battle_chest_uses_safe_point_fallback_for_unknown_state():
+    task = FakeJhyxbTask(
+        roi_results=[True, True, True],
+        image_results=[False],
+        find_once_results=[False, False, False, True],
+    )
+
+    assert task.claim_first_battle_chest() is True
+
+    assert task.debug_prefixes == ["jhyxb_first_battle_reward_unknown"]
     assert task.clicked_points == [
         (task.POINT_FIRST_BATTLE_CHEST[0], task.POINT_FIRST_BATTLE_CHEST[1], 0),
+        (task.POINT_FIRST_BATTLE_REWARD_DIALOG_DISMISS[0], task.POINT_FIRST_BATTLE_REWARD_DIALOG_DISMISS[1], 0),
     ]
-    assert task.click_offsets == []
-    assert task.wait_calls == [1500]
+    assert "首战宝箱状态未知，使用保底坐标尝试领取" in task.logs
+
+
+def test_claim_first_battle_chest_raises_when_claim_is_not_confirmed():
+    task = FakeJhyxbTask(
+        roi_results=[True, False],
+        image_results=[False],
+        find_once_results=[False, True],
+    )
+
+    with pytest.raises(RuntimeError, match="领取后未确认已领取状态"):
+        task.claim_first_battle_chest()
+
+    assert task.debug_prefixes == ["jhyxb_first_battle_reward_claim_failed"]

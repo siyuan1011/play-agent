@@ -12,7 +12,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from botCore import GameTask, VisionEngine
+from botCore import GameTask, StepStopException, VisionEngine
 from botCore.coords import apply_random_offset
 
 
@@ -44,6 +44,14 @@ class YmGameTask(GameTask):
     auto_recover_health = True
     task_visible = True
 
+    STARTUP_LOG_DISPLAY_NAME: str | None = None
+    DEFER_FOREGROUND_WAKE_TO_ON_START = False
+    RETURN_TO_SAFE_ZONE_ON_START = False
+    LEAVE_TEAM_ON_START = False
+    STARTUP_CLOSE_SETTLE_WAIT_MS = 0
+    STARTUP_FINAL_CLOSE_TIMEOUT_MS = 3000
+    SAFE_ZONE_RETURN_FAILURE_LOG = "返回安全区未完成，保持当前主界面继续：{error}"
+
     TEMPLATES_DIR = TEMPLATES_DIR
 
     BTN_OK = str(TEMPLATES_DIR / "btn_OK.png")
@@ -64,6 +72,7 @@ class YmGameTask(GameTask):
     ICON_TASK_RW = str(TEMPLATES_DIR / "icon_task_rw.png")
     ICON_TASK_JH = str(TEMPLATES_DIR / "icon_task_jh.png")
     ICON_TASK_QY = str(TEMPLATES_DIR / "icon_task_qy.png")
+    TEXT_TASK_PANEL_TITLE = str(TEMPLATES_DIR / "text_task_panel_title.png")
     TEXT_AUTO_PATH = str(TEMPLATES_DIR / "text_zidongxunlu.png")
     TEXT_POWER_SAVING = str(TEMPLATES_DIR / "text_power_saving.png")
     ACTIVITY_TAB_JIANGHU_ACTIVE = str(TEMPLATES_DIR / "activity_tab_jianghu_active.png")
@@ -78,11 +87,16 @@ class YmGameTask(GameTask):
     MAP_JINLING_JIMING_TEMPLE = str(TEMPLATES_DIR / "map_jinling_jiming_temple.png")
     ICON_SAFE_POINT = str(TEMPLATES_DIR / "icon_safe_point.png")
     ICON_SAFE_POINT_CURRENT = str(TEMPLATES_DIR / "icon_safe_point_current.png")
+    TEXT_TEAM_PANEL_TITLE = str(TEMPLATES_DIR / "text_team_panel_title.png")
     BTN_TEAM_QUICK = str(TEMPLATES_DIR / "btn_team_quick.png")
     BTN_TEAM_LEAVE = str(TEMPLATES_DIR / "btn_team_leave.png")
     BTN_TEAM_AUTO_MATCH = str(TEMPLATES_DIR / "btn_team_auto_match.png")
+    BTN_TEAM_CREATE_10_RAID = str(TEMPLATES_DIR / "btn_team_create_10_raid.png")
+    BTN_TEAM_CANCEL_MATCH = str(TEMPLATES_DIR / "btn_team_cancel_match.png")
     BTN_TEAM_REFRESH_LIST = str(TEMPLATES_DIR / "btn_team_refresh_list.png")
     BTN_TEAM_FOLLOW_OK = str(TEMPLATES_DIR / "btn_team_follow_ok.png")
+    ICON_TEAM_SHOUT = str(TEMPLATES_DIR / "icon_team_shout.png")
+    ICON_TEAM_EMPTY_SLOT = str(TEMPLATES_DIR / "icon_team_empty_slot.png")
     TEXT_TEAM_QUICK_CATEGORY_HANGDANG = str(TEMPLATES_DIR / "text_team_quick_category_hangdang.png")
     TEXT_TEAM_QUICK_CATEGORY_HANGDANG_ACTIVE = str(TEMPLATES_DIR / "text_team_quick_category_hangdang_active.png")
     TEXT_TEAM_QUICK_CATEGORY_JIANGHU = str(TEMPLATES_DIR / "text_team_quick_category_jianghu.png")
@@ -104,23 +118,11 @@ class YmGameTask(GameTask):
     POINT_MAIN_TEAM_WHEN_TASK_PANEL_OPEN = (22, 420)
     POINT_MINIMAP = (1260, 90)
     POINT_SAFE_POINT_FALLBACK = (535, 35)
-    POINT_TEAM_CREATE = (826, 663)
-    POINT_TEAM_CREATE_RAID = (968, 663)
     POINT_TEAM_QUICK_BOTTOM = (1106, 663)
-    POINT_TEAM_QUICK_TOP = (1088, 116)
     POINT_TEAM_QUICK_RETURN = (1150, 116)
     POINT_TEAM_LEAVE = (1106, 663)
-    POINT_TEAM_TARGET_DROPDOWN = (248, 116)
-    POINT_TEAM_TARGET_CONFIRM = (324, 549)
-    POINT_TEAM_TARGET_CATEGORY_HANGDANG = (250, 354)
-    POINT_TEAM_TARGET_CATEGORY_JIANGHU = (250, 433)
-    POINT_TEAM_TARGET_ITEM_FIRST = (250, 278)
-    POINT_TEAM_TARGET_ITEM_SECOND = (250, 359)
-    POINT_TEAM_CREATE_RAID_OPTIONS = {
-        10: (968, 452),
-        15: (968, 519),
-        20: (968, 586),
-    }
+    POINT_TEAM_START_MATCH = (295, 663)
+    POINT_TEAM_SHOUT = (613, 116)
     POINT_TASK_TAB_TASK = (88, 124)
     POINT_TASK_TAB_JIANGHU = (174, 124)
     POINT_TASK_TAB_QIYU = (258, 124)
@@ -158,10 +160,26 @@ class YmGameTask(GameTask):
     ROI_MAP_JINLING_JIMING_TEMPLE = (460, 60, 130, 140)
     ROI_MAP_SAFE_POINT = (440, 0, 130, 80)
     ROI_MAP_CLOSE = (1180, 0, 100, 95)
+    ROI_TASK_PANEL_TITLE = (190, 35, 180, 100)
+    ROI_TEAM_PANEL_TITLE = (35, 0, 170, 65)
     ROI_TEAM_PANEL_BOTTOM_RIGHT = (1010, 600, 220, 115)
-    ROI_TEAM_PANEL_BOTTOM = (720, 600, 470, 115)
     ROI_TEAM_QUICK_ACTIONS = (880, 620, 370, 90)
     ROI_TEAM_QUICK_LEFT_PANEL = (40, 90, 280, 560)
+    ROI_TEAM_CREATE_ACTION = (320, 620, 190, 90)
+    ROI_TEAM_MATCH_ACTION = (230, 620, 140, 90)
+    ROI_TEAM_SHOUT = (580, 85, 80, 65)
+    ROI_TEAM_MEMBER_SLOTS = (
+        (275, 250, 70, 80),
+        (465, 250, 70, 80),
+        (655, 250, 70, 80),
+        (845, 250, 70, 80),
+        (1035, 250, 70, 80),
+        (275, 435, 70, 80),
+        (465, 435, 70, 80),
+        (655, 435, 70, 80),
+        (845, 435, 70, 80),
+        (1035, 435, 70, 80),
+    )
     HEALTH_FULL_WIDTH = 255
     HEALTH_RECOVER_THRESHOLD = 0.80
     HEALTH_FULL_THRESHOLD = 0.90
@@ -198,6 +216,10 @@ class YmGameTask(GameTask):
     MAP_STATE_POLL_INTERVAL_MS = 300
     AUTO_PATH_START_TIMEOUT_MS = 5000
     SAFE_ZONE_RETURN_MAX_ATTEMPTS = 3
+    TEAM_RECRUIT_INTERVAL_MS = 10000
+    TEAM_TEMPLATE_THRESHOLD = 0.9
+    TASK_PANEL_ACTIVE_WAIT_MS = 3000
+    TASK_PANEL_TITLE_THRESHOLD = 0.9
     MAP_CLOSE_TEMPLATES = [BTN_CLOSE, BTN_WELCOME_CLOSE, BTN_PANE_CLOSE]
     ICON_SAFE_POINT_TEMPLATES = [ICON_SAFE_POINT, ICON_SAFE_POINT_CURRENT]
 
@@ -216,36 +238,27 @@ class YmGameTask(GameTask):
     TEAM_TARGET_CONFIGS = {
         TEAM_TARGET_JIANGHU_XINGSHANG: {
             "display": "行当玩法-江湖行商",
-            "team_category_point": POINT_TEAM_TARGET_CATEGORY_HANGDANG,
-            "team_item_point": POINT_TEAM_TARGET_ITEM_FIRST,
             "quick_category_templates": [
                 TEXT_TEAM_QUICK_CATEGORY_HANGDANG,
                 TEXT_TEAM_QUICK_CATEGORY_HANGDANG_ACTIVE,
             ],
             "quick_item_template": TEXT_TEAM_TARGET_JIANGHU_XINGSHANG,
-            "recommended_member_count": 10,
         },
         TEAM_TARGET_JUYI_PINGYUAN: {
             "display": "行当玩法-聚义平冤",
-            "team_category_point": POINT_TEAM_TARGET_CATEGORY_HANGDANG,
-            "team_item_point": POINT_TEAM_TARGET_ITEM_SECOND,
             "quick_category_templates": [
                 TEXT_TEAM_QUICK_CATEGORY_HANGDANG,
                 TEXT_TEAM_QUICK_CATEGORY_HANGDANG_ACTIVE,
             ],
             "quick_item_template": TEXT_TEAM_TARGET_JUYI_PINGYUAN,
-            "recommended_member_count": 10,
         },
         TEAM_TARGET_JIANGHU_DAILY: {
             "display": "江湖纪事-日常",
-            "team_category_point": POINT_TEAM_TARGET_CATEGORY_JIANGHU,
-            "team_item_point": POINT_TEAM_TARGET_ITEM_FIRST,
             "quick_category_templates": [
                 TEXT_TEAM_QUICK_CATEGORY_JIANGHU,
                 TEXT_TEAM_QUICK_CATEGORY_JIANGHU_ACTIVE,
             ],
             "quick_item_template": TEXT_TEAM_TARGET_DAILY,
-            "recommended_member_count": 10,
         },
     }
 
@@ -285,8 +298,48 @@ class YmGameTask(GameTask):
 
     def before_start(self) -> None:
         """Ensure the game is ready before task-specific setup runs."""
-        if self.auto_ensure_game_started:
-            self.ensure_game_started()
+        if not self.auto_ensure_game_started:
+            return
+
+        if self.DEFER_FOREGROUND_WAKE_TO_ON_START and self.is_game_foreground():
+            self._log("检测到游戏已在前台，省电唤醒交给 on_start")
+            return
+
+        self.ensure_game_started()
+
+    def reset_startup_state(self) -> None:
+        """Reset task-specific state before the shared startup cleanup."""
+
+    def after_startup_panel_close(self) -> None:
+        """Handle task-specific dialogs after each startup panel cleanup pass."""
+
+    def on_start(self) -> None:
+        """Log task startup and normalize the game scene before DSL steps run."""
+        self.reset_startup_state()
+        task_name = self.STARTUP_LOG_DISPLAY_NAME or getattr(self, "task_name", self.__class__.__name__)
+        suffix = "" if task_name.endswith("任务") else "任务"
+        self._log("=" * 40)
+        self._log(f"{task_name}{suffix}开始")
+        self._log("=" * 40)
+
+        self.close_all_panels()
+        self.after_startup_panel_close()
+        if self.wake_from_power_saving_if_needed():
+            self.close_all_panels()
+            self.after_startup_panel_close()
+
+        if self.STARTUP_CLOSE_SETTLE_WAIT_MS:
+            self.wait(self.STARTUP_CLOSE_SETTLE_WAIT_MS)
+
+        if self.RETURN_TO_SAFE_ZONE_ON_START:
+            try:
+                self.return_to_safe_zone()
+            except RuntimeError as exc:
+                self._log(self.SAFE_ZONE_RETURN_FAILURE_LOG.format(error=exc))
+
+        if self.LEAVE_TEAM_ON_START:
+            self.leave_team_if_present()
+            self.close_all_panels(timeout_ms=self.STARTUP_FINAL_CLOSE_TIMEOUT_MS)
 
     def before_step(self, step_name: str, step_meta: dict[str, Any]) -> None:
         """Run shared Yi Meng Jiang Hu guards before each task step."""
@@ -696,7 +749,16 @@ class YmGameTask(GameTask):
                 continue
 
             if state.name == self.LOGIN_STATE_ROLE:
-                self.tap()
+                role_entry_center = self._last_match_center
+                if self.confirm_center_modal_ok_if_visible(
+                    "在线角色确认",
+                    wait_after_click_ms=self.LOGIN_WAIT_AFTER_CLICK_MS,
+                ):
+                    continue
+                if role_entry_center:
+                    self.tap(*role_entry_center)
+                else:
+                    self.tap()
                 self.wait(self.LOGIN_WAIT_AFTER_CLICK_MS)
                 continue
 
@@ -824,14 +886,13 @@ class YmGameTask(GameTask):
         timeout_ms: int = 5000,
         wait_after_click_ms: int = 500,
         max_attempts: int | None = None,
-        back_safe: bool = False,
     ) -> None:
         """Close visible panels by repeatedly tapping known close buttons."""
         targets = templates or [self.BTN_CLOSE, self.BTN_PANE_CLOSE, self.BTN_WELCOME_CLOSE]
-        is_jhyxb = getattr(self, "task_key", "") == "JHYXB"
         effective_max_attempts = max_attempts
-        if is_jhyxb and effective_max_attempts is None:
+        if effective_max_attempts is None:
             effective_max_attempts = getattr(self, "CLOSE_ALL_MAX_ATTEMPTS", None)
+        close_purchase_dialog = getattr(self, "close_purchase_dialog_if_needed", None)
         attempts = 0
         reached_limit = False
         self.collapse_chat_if_open()
@@ -841,11 +902,9 @@ class YmGameTask(GameTask):
                 reached_limit = True
                 break
 
-            if is_jhyxb:
-                close_purchase_dialog = getattr(self, "close_purchase_dialog_if_needed", None)
-                if callable(close_purchase_dialog) and close_purchase_dialog():
-                    attempts += 1
-                    continue
+            if callable(close_purchase_dialog) and close_purchase_dialog():
+                attempts += 1
+                continue
 
             if not self.wait_image_appear(targets, timeout_ms=timeout_ms):
                 break
@@ -859,8 +918,6 @@ class YmGameTask(GameTask):
             self._log(f"关闭弹窗达到上限 {effective_max_attempts} 次，继续后续流程")
         else:
             self._log("已关闭所有弹窗")
-        if back_safe:
-            self.return_to_safe_zone()
 
     def return_to_safe_zone(
         self,
@@ -880,7 +937,7 @@ class YmGameTask(GameTask):
                 break
 
             self._log(f"第 {attempt} 次点击鸡鸣寺安全点后未检测到自动寻路，清理界面后重试")
-            self.close_all_panels(back_safe=False)
+            self.close_all_panels()
             if attempt >= self.SAFE_ZONE_RETURN_MAX_ATTEMPTS:
                 debug_path = self.save_debug_screenshot("safe_zone_auto_path_not_started")
                 raise RuntimeError(f"点击鸡鸣寺安全点后未开始自动寻路，已保存截图：{debug_path}")
@@ -1106,26 +1163,26 @@ class YmGameTask(GameTask):
         return normalized
 
     def is_team_panel_open(self) -> bool:
-        """Return whether the normal team panel is visible."""
+        """Return whether any team panel is visible."""
         return self.find_image_once(
-            [self.BTN_TEAM_QUICK, self.BTN_TEAM_LEAVE],
-            threshold=0.9,
-            roi=self.scale_roi(self.ROI_TEAM_PANEL_BOTTOM_RIGHT),
+            self.TEXT_TEAM_PANEL_TITLE,
+            threshold=self.TEAM_TEMPLATE_THRESHOLD,
+            roi=self.scale_roi(self.ROI_TEAM_PANEL_TITLE),
         )
 
     def is_quick_team_panel_open(self) -> bool:
         """Return whether the convenient team list is visible."""
         return self.find_image_once(
-            [self.BTN_TEAM_AUTO_MATCH, self.BTN_TEAM_REFRESH_LIST],
-            threshold=0.9,
+            self.BTN_TEAM_REFRESH_LIST,
+            threshold=self.TEAM_TEMPLATE_THRESHOLD,
             roi=self.scale_roi(self.ROI_TEAM_QUICK_ACTIONS),
         )
 
     def is_in_team(self) -> bool:
-        """Return whether the current team panel shows an active team."""
-        return self.find_image_once(
-            self.BTN_TEAM_LEAVE,
-            threshold=0.9,
+        """Return whether the open normal team panel represents an active team."""
+        return not self.find_image_once(
+            self.BTN_TEAM_QUICK,
+            threshold=self.TEAM_TEMPLATE_THRESHOLD,
             roi=self.scale_roi(self.ROI_TEAM_PANEL_BOTTOM_RIGHT),
         )
 
@@ -1140,6 +1197,8 @@ class YmGameTask(GameTask):
             self._log("当前在便捷组队界面，返回我的队伍")
             self.click_point(self.POINT_TEAM_QUICK_RETURN[0], self.POINT_TEAM_QUICK_RETURN[1], offset=0)
             self.wait(wait_after_click_ms)
+            if self.is_quick_team_panel_open():
+                raise RuntimeError("未能从便捷组队界面返回队伍面板")
 
         if self.is_team_panel_open():
             return
@@ -1150,11 +1209,11 @@ class YmGameTask(GameTask):
             self.click_point(point[0], point[1], offset=0)
             self.wait(wait_after_click_ms)
             if self.wait_find_image_in_roi(
-                [self.BTN_TEAM_QUICK, self.BTN_TEAM_LEAVE],
-                self.ROI_TEAM_PANEL_BOTTOM_RIGHT,
+                self.TEXT_TEAM_PANEL_TITLE,
+                self.ROI_TEAM_PANEL_TITLE,
                 timeout_ms=timeout_ms,
                 description="队伍面板",
-                threshold=0.9,
+                threshold=self.TEAM_TEMPLATE_THRESHOLD,
             ):
                 return
             if index == 1:
@@ -1173,113 +1232,81 @@ class YmGameTask(GameTask):
             return
 
         self.open_team_panel(timeout_ms=timeout_ms, wait_after_click_ms=wait_after_click_ms)
-        point = self.POINT_TEAM_QUICK_TOP if self.is_in_team() else self.POINT_TEAM_QUICK_BOTTOM
-        self._log("打开便捷组队界面")
-        self.click_point(point[0], point[1], offset=0)
-        self.wait(wait_after_click_ms)
+        if self.is_in_team():
+            raise RuntimeError("当前已处于组队状态，请先退出队伍")
 
+        self._log("打开便捷组队界面")
+        self.click_point(self.POINT_TEAM_QUICK_BOTTOM[0], self.POINT_TEAM_QUICK_BOTTOM[1], offset=0)
+        self.wait(wait_after_click_ms)
         if not self.wait_find_image_in_roi(
             self.BTN_TEAM_REFRESH_LIST,
             self.ROI_TEAM_QUICK_ACTIONS,
             timeout_ms=timeout_ms,
             description="便捷组队界面",
-            threshold=0.9,
+            threshold=self.TEAM_TEMPLATE_THRESHOLD,
         ):
             raise RuntimeError("未能打开便捷组队界面")
 
-    def set_team_target(
+    def create_team(
         self,
         target: str,
         *,
-        confirm_conversion: bool = True,
-        wait_after_click_ms: int = 800,
-    ) -> None:
-        """Set the current team target in the normal team panel."""
-        target_name = self.normalize_team_target(target)
-        config = self.TEAM_TARGET_CONFIGS[target_name]
-
-        self.open_team_panel()
-        self._log(f"设置队伍目标：{config['display']}")
-        self.click_point(self.POINT_TEAM_TARGET_DROPDOWN[0], self.POINT_TEAM_TARGET_DROPDOWN[1], offset=0)
-        self.wait(wait_after_click_ms)
-        category_point = config["team_category_point"]
-        self.click_point(category_point[0], category_point[1], offset=0)
-        self.wait(wait_after_click_ms)
-        item_point = config["team_item_point"]
-        self.click_point(item_point[0], item_point[1], offset=0)
-        self.wait(wait_after_click_ms)
-        self.click_point(self.POINT_TEAM_TARGET_CONFIRM[0], self.POINT_TEAM_TARGET_CONFIRM[1], offset=0)
-        self.wait(wait_after_click_ms)
-
-        if confirm_conversion:
-            self.confirm_center_modal_ok_if_visible("队伍目标人数转换")
-
-    def create_own_team(
-        self,
-        target: str | None = None,
-        *,
-        member_count: int = 5,
+        min_member_count: int = 3,
         timeout_ms: int = 5000,
-        wait_after_click_ms: int = 1200,
+        wait_after_click_ms: int = 1000,
     ) -> None:
-        """Create a team/raid owned by the current account, optionally setting a target."""
-        if member_count <= 0:
-            raise ValueError("member_count must be greater than 0")
-        if member_count > 5 and member_count not in self.POINT_TEAM_CREATE_RAID_OPTIONS:
-            raise ValueError("member_count must be 1-5, 10, 15, or 20")
+        """Create a targeted 10-player raid and recruit until the minimum is reached."""
+        if not 1 <= min_member_count <= len(self.ROI_TEAM_MEMBER_SLOTS):
+            raise ValueError("min_member_count must be between 1 and 10")
 
-        target_name = self.normalize_team_target(target) if target is not None else None
-        self.open_team_panel()
-        if not self.is_in_team():
-            if member_count > 5:
-                self._log(f"创建团队：人数={member_count}")
-                option_point = self.POINT_TEAM_CREATE_RAID_OPTIONS[member_count]
-                for attempt in range(2):
-                    self.click_point(self.POINT_TEAM_CREATE_RAID[0], self.POINT_TEAM_CREATE_RAID[1], offset=0)
-                    self.wait(wait_after_click_ms)
-                    self.click_point(option_point[0], option_point[1], offset=0)
-                    self.wait(wait_after_click_ms)
-                    verify_timeout_ms = timeout_ms if attempt else min(timeout_ms, 1500)
-                    if self.wait_find_image_in_roi(
-                        self.BTN_TEAM_LEAVE,
-                        self.ROI_TEAM_PANEL_BOTTOM_RIGHT,
-                        timeout_ms=verify_timeout_ms,
-                        description="组队状态",
-                        threshold=0.9,
-                    ):
-                        break
-                else:
-                    raise RuntimeError("创建队伍后未进入组队状态")
-            else:
-                self._log(f"创建队伍：人数={member_count}")
-                self.click_point(self.POINT_TEAM_CREATE[0], self.POINT_TEAM_CREATE[1], offset=0)
-                self.wait(wait_after_click_ms)
-                if not self.wait_find_image_in_roi(
-                    self.BTN_TEAM_LEAVE,
-                    self.ROI_TEAM_PANEL_BOTTOM_RIGHT,
-                    timeout_ms=timeout_ms,
-                    description="组队状态",
-                    threshold=0.9,
-                ):
-                    raise RuntimeError("创建队伍后未进入组队状态")
-        else:
-            self._log("已处于组队状态，跳过创建队伍")
+        target_name = self.normalize_team_target(target)
+        self.open_team_panel(timeout_ms=timeout_ms, wait_after_click_ms=wait_after_click_ms)
+        if self.is_in_team():
+            raise RuntimeError("当前已处于组队状态，请先退出队伍")
 
-        if target_name is not None:
-            self.set_team_target(target_name, wait_after_click_ms=wait_after_click_ms)
+        self.open_quick_team_panel(timeout_ms=timeout_ms, wait_after_click_ms=wait_after_click_ms)
+        self.select_quick_team_target(target_name, wait_after_click_ms=wait_after_click_ms)
+        if not self.click_template_if_available(
+            self.BTN_TEAM_CREATE_10_RAID,
+            timeout_ms=timeout_ms,
+            description="创建10人团按钮",
+            threshold=self.TEAM_TEMPLATE_THRESHOLD,
+            roi=self.ROI_TEAM_CREATE_ACTION,
+            wait_after_click_ms=wait_after_click_ms,
+        ):
+            raise RuntimeError("未找到创建10人团按钮")
+
+        if not self.wait_for_normal_team_state(expected_in_team=True, timeout_ms=timeout_ms):
+            debug_path = self.save_debug_screenshot("team_create_state_failed")
+            raise RuntimeError(f"创建队伍后未进入组队状态，已保存截图：{debug_path}")
+
+        self._log("创建队伍成功，开始自动匹配")
+        self.click_point(self.POINT_TEAM_START_MATCH[0], self.POINT_TEAM_START_MATCH[1], offset=0)
+        self.wait(wait_after_click_ms)
+        if not self.wait_find_image_in_roi(
+            self.BTN_TEAM_CANCEL_MATCH,
+            self.ROI_TEAM_MATCH_ACTION,
+            timeout_ms=timeout_ms,
+            description="取消匹配按钮",
+            threshold=self.TEAM_TEMPLATE_THRESHOLD,
+        ):
+            debug_path = self.save_debug_screenshot("team_match_start_failed")
+            raise RuntimeError(f"创建队伍后未进入匹配状态，已保存截图：{debug_path}")
+
+        self._log(f"已进入自动匹配，等待队伍人数达到 {min_member_count}")
+        self.wait_for_team_members(min_member_count)
 
     def quick_team(
         self,
-        target: str | None = None,
+        target: str,
         *,
         timeout_ms: int = 5000,
         wait_after_click_ms: int = 1000,
     ) -> None:
-        """Use convenient team matching, optionally filtering by a supported target."""
-        target_name = self.normalize_team_target(target) if target is not None else None
+        """Use convenient team matching for a supported target."""
+        target_name = self.normalize_team_target(target)
         self.open_quick_team_panel(timeout_ms=timeout_ms, wait_after_click_ms=wait_after_click_ms)
-        if target_name is not None:
-            self.select_quick_team_target(target_name, wait_after_click_ms=wait_after_click_ms)
+        self.select_quick_team_target(target_name, wait_after_click_ms=wait_after_click_ms)
 
         if not self.click_template_if_available(
             self.BTN_TEAM_AUTO_MATCH,
@@ -1293,6 +1320,95 @@ class YmGameTask(GameTask):
 
         self.confirm_center_modal_ok_if_visible("便捷组队自动匹配")
         self._log("已点击便捷组队自动匹配")
+
+    def wait_for_normal_team_state(self, *, expected_in_team: bool, timeout_ms: int) -> bool:
+        """Wait until the normal team panel shows the requested team state."""
+        deadline = self._make_deadline(timeout_ms)
+        while not self._is_deadline_expired(deadline):
+            if (
+                not self.is_quick_team_panel_open()
+                and self.is_team_panel_open()
+                and self.is_in_team() is expected_in_team
+            ):
+                return True
+            self.wait(250)
+        return False
+
+    def is_team_matching(self, screenshot: np.ndarray | None = None) -> bool:
+        """Return whether the normal team panel shows the cancel-match action."""
+        screen = self.screenshot() if screenshot is None else screenshot
+        match = self._match_team_template(
+            screen,
+            self.BTN_TEAM_CANCEL_MATCH,
+            threshold=self.TEAM_TEMPLATE_THRESHOLD,
+            roi=self.scale_roi(self.ROI_TEAM_MATCH_ACTION),
+        )
+        return match.found
+
+    def count_team_members(self, screenshot: np.ndarray | None = None) -> int:
+        """Count occupied slots in the current 10-player raid from one screenshot."""
+        screen = self.screenshot() if screenshot is None else screenshot
+        empty_count = 0
+        for roi in self.ROI_TEAM_MEMBER_SLOTS:
+            match = self._match_team_template(
+                screen,
+                self.ICON_TEAM_EMPTY_SLOT,
+                threshold=0.85,
+                roi=self.scale_roi(roi),
+            )
+            empty_count += int(match.found)
+        return len(self.ROI_TEAM_MEMBER_SLOTS) - empty_count
+
+    def click_team_shout(self, screenshot: np.ndarray | None = None) -> None:
+        """Click the one-key shout speaker, falling back to its fixed point."""
+        screen = self.screenshot() if screenshot is None else screenshot
+        match = self._match_team_template(
+            screen,
+            self.ICON_TEAM_SHOUT,
+            threshold=self.TEAM_TEMPLATE_THRESHOLD,
+            roi=self.scale_roi(self.ROI_TEAM_SHOUT),
+        )
+        if match.found and match.center:
+            self.click_point(match.center[0], match.center[1], offset=0)
+            return
+
+        self._log("未识别到一键喊话小喇叭，使用固定坐标点击")
+        self.click_point(self.POINT_TEAM_SHOUT[0], self.POINT_TEAM_SHOUT[1], offset=0)
+
+    def _match_team_template(
+        self,
+        screenshot: np.ndarray,
+        template: str,
+        *,
+        threshold: float,
+        roi: tuple[int, int, int, int],
+    ):
+        """Match a team template, lazily supplying vision for standalone helpers."""
+        vision = getattr(self, "_vision", None)
+        if vision is None:
+            vision = VisionEngine()
+            self._vision = vision
+        return vision.match_template(screenshot, template, threshold=threshold, roi=roi)
+
+    def wait_for_team_members(self, min_member_count: int) -> None:
+        """Recruit indefinitely until the team reaches the requested size."""
+        while True:
+            if self.is_stopped():
+                raise StepStopException("Stop requested")
+
+            screen = self.screenshot()
+            member_count = self.count_team_members(screen)
+            if member_count >= min_member_count:
+                self._log(f"队伍人数已达到要求：{member_count}/{min_member_count}")
+                return
+
+            if not self.is_team_matching(screen):
+                debug_path = self.save_debug_screenshot("team_matching_interrupted")
+                raise RuntimeError(f"队伍人数未达标时匹配状态已结束，已保存截图：{debug_path}")
+
+            self._log(f"当前队伍人数：{member_count}/{min_member_count}，发送一键喊话")
+            self.click_team_shout(screen)
+            self.wait(self.TEAM_RECRUIT_INTERVAL_MS)
 
     def select_quick_team_target(
         self,
@@ -1361,18 +1477,6 @@ class YmGameTask(GameTask):
             raise RuntimeError("退出队伍后未回到未组队状态")
 
         return True
-
-    def convenient_team(self, *args, **kwargs) -> None:
-        """Alias for quick_team."""
-        self.quick_team(*args, **kwargs)
-
-    def create_self_team(self, *args, **kwargs) -> None:
-        """Alias for create_own_team."""
-        self.create_own_team(*args, **kwargs)
-
-    def exit_team(self, *args, **kwargs) -> bool:
-        """Alias for leave_team."""
-        return self.leave_team(*args, **kwargs)
 
     def confirm_center_modal_ok_if_visible(
         self,
@@ -1481,8 +1585,20 @@ class YmGameTask(GameTask):
             self.click_point(self.POINT_MAIN_TASK[0], self.POINT_MAIN_TASK[1])
             self.wait(wait_after_click_ms)
 
-            if not self.wait_image_appear(self.ICON_TASK_ACTIVE, timeout_ms=timeout_ms, threshold=threshold):
-                raise RuntimeError("未能打开任务侧栏")
+            if not self.wait_image_appear(
+                self.ICON_TASK_ACTIVE,
+                timeout_ms=self.TASK_PANEL_ACTIVE_WAIT_MS,
+                threshold=threshold,
+            ):
+                if not self.find_image(
+                    self.TEXT_TASK_PANEL_TITLE,
+                    threshold=self.TASK_PANEL_TITLE_THRESHOLD,
+                    roi=self.scale_roi(self.ROI_TASK_PANEL_TITLE),
+                ):
+                    raise RuntimeError("未能打开任务侧栏")
+
+                self._log("点击任务栏后打开全屏任务面板，关闭面板并恢复任务侧栏")
+                self.close_all_panels()
 
         tab_point, active_template = panel_targets[panel]
         self.click_point(tab_point[0], tab_point[1])

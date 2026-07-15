@@ -115,13 +115,25 @@ def test_rcfb_task_loads_and_is_visible():
 
 def test_rcfb_step_order():
     assert [name for name, _, _ in RichangFubenTask.get_steps()] == [
-        "close_all_and_leave_team",
         "start_daily_match",
         "wait_team_follow",
         "wait_dungeon_task",
         "run_daily_raid_flow",
         "leave_team_after_completion",
     ]
+
+
+def test_on_start_leaves_team_and_closes_panels_again():
+    task = FakeRcfbTask()
+
+    task.on_start()
+
+    assert task.close_panel_calls == [
+        (None, 5000, 500),
+        (None, 3000, 500),
+    ]
+    assert task.wait_calls == [1000]
+    assert task.leave_calls == ["leave"]
 
 
 def test_start_daily_auto_match_uses_daily_target():

@@ -18,12 +18,7 @@ class StartTask(YmGameTask):
     task_visible = False
     auto_ensure_game_started = False
     auto_recover_health = False
-
-    def on_start(self) -> None:
-        """任务开始前准备。"""
-        self._log("=" * 40)
-        self._log("一梦江湖启动任务开始")
-        self._log("=" * 40)
+    STARTUP_LOG_DISPLAY_NAME = "一梦江湖启动"
 
     @step(retry=0, timeout_ms=360000)
     def start_game(self) -> None:

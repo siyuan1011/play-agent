@@ -37,6 +37,7 @@ class FakeKyrwTask(KyrwTask):
         self.clicked_points = []
         self.click_count = 0
         self.wait_calls = []
+        self.swipe_calls = []
         self.close_transient_calls = 0
         self.logs = []
 
@@ -129,6 +130,9 @@ class FakeKyrwTask(KyrwTask):
     def wait(self, ms):
         self.wait_calls.append(ms)
 
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 400) -> None:
+        self.swipe_calls.append((x1, y1, x2, y2, duration_ms))
+
     def _log(self, message: str) -> None:
         self.logs.append(message)
 
@@ -143,7 +147,6 @@ def test_kyrw_task_loads_with_expected_metadata():
 
 def test_kyrw_task_steps_follow_planned_order():
     assert [name for name, _, _ in KyrwTask.get_steps()] == [
-        "close_all",
         "resume_existing_course",
         "open_wuchan_activity",
         "enter_course_from_wuchan_panel",
@@ -152,6 +155,26 @@ def test_kyrw_task_steps_follow_planned_order():
         "run_course_flow",
         "verify_completion",
     ]
+
+
+def test_course_task_list_scroll_uses_sidebar_coordinates():
+    task = FakeKyrwTask()
+
+    task.scroll_task_list_down()
+
+    assert task.swipe_calls == [(190, 360, 190, 170, 350)]
+    assert task.wait_calls == [800]
+
+
+def test_reset_startup_state_clears_course_retry_counters():
+    task = FakeKyrwTask()
+    task._item_acquire_rounds = 5
+    task._npc_accept_recoveries = 2
+
+    task.reset_startup_state()
+
+    assert task._item_acquire_rounds == 0
+    assert task._npc_accept_recoveries == 0
 
 
 def test_resume_existing_course_clicks_sidebar_task_and_jumps_to_run_flow():
@@ -249,12 +272,15 @@ def test_accept_or_open_course_panel_reopens_activity_when_npc_state_is_stale():
     assert "进入课业面板失败，重新从悟禅活动入口接取" in task.logs
 
 
-def test_accept_or_open_course_panel_stops_after_recovery_limit():
+def test_accept_or_open_course_panel_skips_when_no_course_exists_after_recovery_limit():
     task = FakeKyrwTask(wait_roi_results=[False])
     task._npc_accept_recoveries = task.MAX_NPC_ACCEPT_RECOVERY
 
-    with pytest.raises(RuntimeError, match="进入课业面板后未找到可执行课业"):
+    with pytest.raises(StepJumpException) as exc_info:
         task.accept_or_open_course_panel()
+
+    assert exc_info.value.target == StepJumpException.JUMP_TO_END
+    assert "进入课业面板后未检测到可执行课业，按当前不可接取或已完成处理" in task.logs
 
 
 def test_click_npc_course_action_uses_wuchan_or_course_button_template():

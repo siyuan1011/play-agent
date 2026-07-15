@@ -236,7 +236,11 @@ class GameTask:
                 return True
             if callback:
                 callback(False)
-            time.sleep(min(interval_ms / 1000.0, 0.1))
+            remaining_ms = interval_ms if deadline is None else max(
+                0, min(interval_ms, int((deadline - time.perf_counter()) * 1000))
+            )
+            if remaining_ms:
+                self.wait(remaining_ms)
 
         self._last_match_center = None
         self._log(f"Image not found: {template} (timeout)")
@@ -271,7 +275,11 @@ class GameTask:
                 consecutive_missing = 0
                 if callback:
                     callback(True, consecutive_missing)
-            time.sleep(min(interval_ms / 1000.0, 0.1))
+            remaining_ms = interval_ms if deadline is None else max(
+                0, min(interval_ms, int((deadline - time.perf_counter()) * 1000))
+            )
+            if remaining_ms:
+                self.wait(remaining_ms)
 
         if callback:
             callback(False, consecutive_missing)
