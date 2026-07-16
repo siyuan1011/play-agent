@@ -76,6 +76,23 @@ class DslStepExecutor:
 
             if attempts > 0:
                 attempts -= 1
+
+            retry_available = attempts == -1 or attempts > 0
+            retry_in_time = deadline is None or time.perf_counter() <= deadline
+            if not retry_available or not retry_in_time or self._should_stop():
+                break
+
+            hook_started_at = time.perf_counter()
+            try:
+                task.before_retry("step", last_error)
+            except Exception as exc:
+                self._emit(f"[{name}] Retry recovery error: {exc}")
+            finally:
+                if deadline is not None:
+                    deadline += time.perf_counter() - hook_started_at
+
+            if self._should_stop():
+                return self._result(start, False, "Stopped by user")
             time.sleep(0.15)
 
         reason = str(last_error) if last_error else "Timeout exceeded"

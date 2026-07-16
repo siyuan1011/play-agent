@@ -39,6 +39,7 @@ class FakeBPRWTask(BPRWTask):
         self.open_activity_calls = []
         self.close_transient_calls = 0
         self.click_template_calls = []
+        self.click_template_intervals = []
         self.find_image_calls = []
         self.route_panel_calls = 0
         self.confirm_calls = 0
@@ -159,10 +160,12 @@ class FakeBPRWTask(BPRWTask):
         threshold=0.8,
         wait_after_click_ms=1000,
         roi=None,
+        interval_ms=500,
     ):
         self.click_template_calls.append(
             (template, timeout_ms, description, threshold, wait_after_click_ms, roi)
         )
+        self.click_template_intervals.append(interval_ms)
         if not self.click_template_results:
             return False
         return self.click_template_results.pop(0)
@@ -182,6 +185,33 @@ class FakeBPRWTask(BPRWTask):
 
     def _log(self, message: str) -> None:
         self.logs.append(message)
+
+
+class FlowProbeBPRWTask(FakeBPRWTask):
+    def __init__(self):
+        super().__init__(deadline_expired_results=[False, True])
+        self.state_calls = []
+        self.sidebar_calls = 0
+
+    def close_completion_dialog_if_visible(self) -> bool:
+        self.state_calls.append("completion")
+        return False
+
+    def handle_submit_panel_if_visible(self) -> bool:
+        self.state_calls.append("submit")
+        return False
+
+    def handle_trade_panel_if_visible(self) -> bool:
+        self.state_calls.append("trade")
+        return False
+
+    def handle_acquire_route_panel_if_visible(self) -> bool:
+        self.state_calls.append("acquire")
+        return False
+
+    def click_bangpai_task_from_sidebar(self, *, max_scrolls: int, required: bool) -> bool:
+        self.sidebar_calls += 1
+        return False
 
 
 def test_on_start_wakes_only_when_power_saving_mode_is_visible():
@@ -300,6 +330,7 @@ def test_click_bangpai_task_from_sidebar_switches_to_jianghu_before_click():
 
     assert task.switch_panel_calls == [("江湖", 3000, 0.8, 500)]
     assert task.click_count == 1
+    assert task.wait_calls == [task.SIDEBAR_TASK_CLICK_SETTLE_MS]
 
 
 def test_click_bangpai_task_from_sidebar_confirms_popup_when_visible():
@@ -343,6 +374,15 @@ def test_resume_existing_task_continues_when_sidebar_task_missing():
     assert "未发现已接取帮派任务，关闭任务面板并继续接取流程" in task.logs
 
 
+def test_reset_startup_state_allows_warehouse_check_for_new_run():
+    task = FakeBPRWTask()
+    task._warehouse_item_checked = True
+
+    task.reset_startup_state()
+
+    assert task._warehouse_item_checked is False
+
+
 def test_accept_task_skips_when_account_is_not_in_bangpai():
     task = FakeBPRWTask(find_image_results=[True])
 
@@ -360,7 +400,7 @@ def test_accept_task_skips_when_account_is_not_in_bangpai():
     assert "检测到当前未加入帮派，跳过帮派任务" in task.logs
 
 
-def test_task_item_flow_submits_from_warehouse_before_stall():
+def test_task_item_flow_submits_from_warehouse_before_mall_and_stall():
     task = FakeBPRWTask(
         acquire_visible_results=[True],
         click_template_results=[True, True],
@@ -369,57 +409,161 @@ def test_task_item_flow_submits_from_warehouse_before_stall():
     assert task.handle_acquire_route_panel_if_visible()
 
     assert task.click_template_calls == [
-        (task.ROUTE_WAREHOUSE, 1000, "帮派仓库获取途径", 0.8, 2000, task.ROI_ROUTE_PANEL),
+        (
+            task.ROUTE_WAREHOUSE,
+            1000,
+            "帮派仓库获取途径",
+            0.8,
+            task.ACQUIRE_ROUTE_OPEN_SETTLE_MS,
+            task.ROI_ROUTE_PANEL,
+        ),
         (task.BTN_WAREHOUSE_SUBMIT, 3000, "帮派仓库提交按钮", 0.85, 2000, task.ROI_WAREHOUSE_SUBMIT),
     ]
+    assert task.click_template_intervals == [task.FLOW_DETECTION_INTERVAL_MS] * 2
+    assert task.route_panel_calls == 0
     assert task.close_transient_calls == 1
+
+
+def test_task_item_flow_uses_mall_after_warehouse_has_no_item():
+    task = FakeBPRWTask(
+        acquire_visible_results=[True],
+        click_template_results=[True, False, True, True],
+    )
+
+    assert task.handle_acquire_route_panel_if_visible()
+
+    assert task.click_template_calls == [
+        (
+            task.ROUTE_WAREHOUSE,
+            1000,
+            "帮派仓库获取途径",
+            0.8,
+            task.ACQUIRE_ROUTE_OPEN_SETTLE_MS,
+            task.ROI_ROUTE_PANEL,
+        ),
+        (task.BTN_WAREHOUSE_SUBMIT, 3000, "帮派仓库提交按钮", 0.85, 2000, task.ROI_WAREHOUSE_SUBMIT),
+        (
+            task.ROUTE_MALL,
+            1000,
+            "商城购买获取途径",
+            0.8,
+            task.ACQUIRE_ROUTE_OPEN_SETTLE_MS,
+            task.ROI_ROUTE_PANEL,
+        ),
+        (
+            task.BTN_MALL_BUY_AREA,
+            5000,
+            "商城默认数量购买按钮",
+            0.85,
+            task.TRADE_ACTION_SETTLE_MS,
+            task.ROI_MALL_BUY,
+        ),
+    ]
+    assert task.click_template_intervals == [task.FLOW_DETECTION_INTERVAL_MS] * 4
+    assert task.confirm_calls == 1
+    assert task.close_transient_calls == 2
+
+
+def test_task_item_flow_checks_warehouse_only_once_across_repeated_acquire_panels():
+    task = FakeBPRWTask(
+        acquire_visible_results=[True, True],
+        click_template_results=[True, False, True, True, True, True],
+    )
+
+    assert task.handle_acquire_route_panel_if_visible()
+    assert task.handle_acquire_route_panel_if_visible()
+
+    assert [call[0] for call in task.click_template_calls].count(task.ROUTE_WAREHOUSE) == 1
+    assert [call[0] for call in task.click_template_calls].count(task.BTN_WAREHOUSE_SUBMIT) == 1
+    assert [call[0] for call in task.click_template_calls].count(task.ROUTE_MALL) == 2
+    assert "本轮已检查帮派仓库，跳过重复检测" in task.logs
+
+
+def test_warehouse_check_is_not_consumed_when_route_does_not_open():
+    task = FakeBPRWTask(click_template_results=[False])
+
+    assert not task.try_warehouse_route(route_panel_ready=True)
+
+    assert task._warehouse_item_checked is False
+    assert [call[0] for call in task.click_template_calls] == [task.ROUTE_WAREHOUSE]
 
 
 def test_task_item_flow_falls_back_to_stall_and_all_server_then_stops():
     task = FakeBPRWTask(
         acquire_visible_results=[True],
-        click_template_results=[True, False, True, False, True, False],
+        click_template_results=[True, False, True, False, True, False, True, False],
     )
 
     with pytest.raises(StepJumpException) as exc_info:
         task.handle_acquire_route_panel_if_visible()
 
     assert exc_info.value.target == StepJumpException.JUMP_TO_END
-    assert task.click_template_calls == [
-        (task.ROUTE_WAREHOUSE, 1000, "帮派仓库获取途径", 0.8, 2000, task.ROI_ROUTE_PANEL),
-        (task.BTN_WAREHOUSE_SUBMIT, 3000, "帮派仓库提交按钮", 0.85, 2000, task.ROI_WAREHOUSE_SUBMIT),
-        (task.ROUTE_STALL, 1000, "摆摊购买获取途径", 0.8, 2500, task.ROI_ROUTE_PANEL),
-        (task.BTN_BUY, 4000, "摆摊购买按钮", task.TRADE_BUY_THRESHOLD, 1500, task.ROI_TRADE_ACTION),
-        (task.BTN_VIEW_ALL_SERVER, 2500, "查看全服按钮", 0.85, 2500, task.ROI_TRADE_ACTION),
-        (task.BTN_BUY, 5000, "全服摆摊购买按钮", task.TRADE_BUY_THRESHOLD, 1500, task.ROI_TRADE_ACTION),
+    assert [call[0] for call in task.click_template_calls] == [
+        task.ROUTE_WAREHOUSE,
+        task.BTN_WAREHOUSE_SUBMIT,
+        task.ROUTE_MALL,
+        task.BTN_MALL_BUY_AREA,
+        task.ROUTE_STALL,
+        task.BTN_BUY,
+        task.BTN_VIEW_ALL_SERVER,
+        task.BTN_BUY,
     ]
-    assert task.close_transient_calls == 3
-    assert "帮派任务物品无法通过仓库或摆摊获取，关闭面板并结束本轮执行" in task.logs
+    assert task.click_template_calls[4][4] == task.ACQUIRE_ROUTE_OPEN_SETTLE_MS
+    assert task.click_template_calls[5][4] == task.TRADE_ACTION_SETTLE_MS
+    assert task.click_template_calls[6][4] == task.ACQUIRE_ROUTE_OPEN_SETTLE_MS
+    assert task.click_template_calls[7][4] == task.TRADE_ACTION_SETTLE_MS
+    assert task.click_template_intervals == [task.FLOW_DETECTION_INTERVAL_MS] * 8
+    assert task.close_transient_calls == 4
+    assert "帮派任务物品无法通过仓库、商城或摆摊获取，关闭面板并结束本轮执行" in task.logs
+
+
+def test_acquire_route_panel_detection_includes_mall_with_reduced_polling():
+    task = FakeBPRWTask(roi_results=[True])
+
+    assert task.wait_acquire_route_panel_visible(timeout_ms=5000)
+
+    assert task.roi_calls == [
+        (
+            [task.ROUTE_WAREHOUSE, task.ROUTE_MALL, task.ROUTE_STALL],
+            task.ROI_ROUTE_PANEL,
+            5000,
+            "帮派任务物品获取途径面板",
+            0.8,
+            task.FLOW_DETECTION_INTERVAL_MS,
+        )
+    ]
 
 
 def test_buy_retries_when_button_still_visible_after_no_confirm():
     task = FakeBPRWTask(
-        roi_results=[True],
         click_template_results=[True],
         confirm_results=[False, False],
+        find_image_results=[True],
     )
 
     assert task.buy_from_current_trade_panel("摆摊购买按钮", timeout_ms=4000)
 
     assert task.click_template_calls == [
-        (task.BTN_BUY, 4000, "摆摊购买按钮", task.TRADE_BUY_THRESHOLD, 1500, task.ROI_TRADE_ACTION),
-    ]
-    assert task.roi_calls == [
         (
             task.BTN_BUY,
-            task.ROI_TRADE_ACTION,
-            800,
-            "摆摊购买按钮点击后仍可见",
+            4000,
+            "摆摊购买按钮",
             task.TRADE_BUY_THRESHOLD,
-            300,
+            task.TRADE_ACTION_SETTLE_MS,
+            task.ROI_TRADE_ACTION,
         ),
     ]
+    assert task.click_template_intervals == [task.FLOW_DETECTION_INTERVAL_MS]
+    assert task.find_image_calls == [
+        (
+            task.BTN_BUY,
+            task.TRADE_BUY_THRESHOLD,
+            task.scale_roi(task.ROI_TRADE_ACTION),
+        ),
+    ]
+    assert task.roi_calls == []
     assert task.click_count == 1
+    assert task.wait_calls == [task.TRADE_ACTION_SETTLE_MS]
     assert task.confirm_calls == 2
     assert "购买按钮点击后仍可见，重试点击" in task.logs
 
@@ -433,6 +577,7 @@ def test_submit_panel_clicks_one_key_submit_and_confirms():
         (task.BTN_ONE_KEY_SUBMIT, 600, "帮派任务一键提交按钮", 0.85, 1500, task.ROI_ONE_KEY_SUBMIT),
         ([task.BTN_MODAL_OK, task.BTN_OK], 3000, "帮派任务提交确认按钮", 0.85, 1500, None),
     ]
+    assert task.click_template_intervals == [task.FLOW_DETECTION_INTERVAL_MS] * 2
 
 
 def test_run_task_flow_times_out_when_sidebar_tracker_is_missing():
@@ -447,6 +592,17 @@ def test_run_task_flow_times_out_when_sidebar_tracker_is_missing():
     assert task.switch_panel_calls == [("江湖", 3000, 0.8, 500)]
     assert task.scroll_calls == 2
     assert "江湖任务栏暂未找到帮派任务，继续等待完成信号 (1)" in task.logs
+
+
+def test_run_task_flow_checks_each_state_once_per_cycle():
+    task = FlowProbeBPRWTask()
+
+    with pytest.raises(RuntimeError, match="帮派任务执行流程超时"):
+        task.run_task_flow()
+
+    assert task.state_calls == ["completion", "submit", "trade", "acquire"]
+    assert task.sidebar_calls == 1
+    assert task.wait_calls == [task.TASK_FLOW_RETRY_WAIT_MS]
 
 
 def test_run_task_flow_times_out_instead_of_succeeding_after_idle_sidebar_clicks():

@@ -31,6 +31,7 @@ class TaskQueueRunner:
         logger: RunLogger | None = None,
         event_callback: Callable[[str], None] | None = None,
         progress_callback: Callable[[dict[str, int]], None] | None = None,
+        verbose: bool = False,
     ):
         self.task_list = task_list
         self.adb = adb_client
@@ -38,6 +39,7 @@ class TaskQueueRunner:
         self.logger = logger
         self.event_callback = event_callback
         self.progress_callback = progress_callback
+        self.verbose = verbose
         self._stop_requested = False
         self._paused = False
 
@@ -160,7 +162,13 @@ class TaskQueueRunner:
 
             # 设置任务运行时依赖
             task._screen_resolution = getattr(task, "FIXED_RESOLUTION", task.design_resolution)
-            task.setup(self.adb, self.vision, self.logger, self.event_callback)
+            task.setup(
+                self.adb,
+                self.vision,
+                self.logger,
+                self.event_callback,
+                verbose=self.verbose,
+            )
 
             # 执行当前任务，失败时从头重试，最多执行 MAX_TASK_ATTEMPTS 次。
             task_results, task_completed = self._run_task_with_retries(task)
@@ -223,6 +231,14 @@ class TaskQueueRunner:
                 )
                 return results, False
 
+            self._run_before_retry_hook(task, failure_message)
+            if self._stop_requested:
+                return results, False
+            if self._paused:
+                self._wait_until_resumed_or_stopped()
+                if self._stop_requested:
+                    return results, False
+
             attempt += 1
             self._reset_task_for_retry(task)
             self._emit(f"任务 {task_name} 将从头开始第 {attempt}/{self.MAX_TASK_ATTEMPTS} 次尝试")
@@ -240,6 +256,14 @@ class TaskQueueRunner:
         """等待暂停恢复，保留当前任务的步骤和尝试次数。"""
         while self._paused and not self._stop_requested:
             time.sleep(0.1)
+
+    def _run_before_retry_hook(self, task: GameTask, failure_message: str) -> None:
+        """Run retry recovery without replacing the task failure that triggered it."""
+        try:
+            task.before_retry("task", failure_message)
+        except Exception as exc:
+            task_name = getattr(task, "task_name", task.__class__.__name__)
+            self._emit(f"任务 {task_name} 异常重试前恢复失败，仍继续重试：{exc}")
 
     def _reset_task_for_retry(self, task: GameTask) -> None:
         """将任务恢复为一次完整流程的起点。"""

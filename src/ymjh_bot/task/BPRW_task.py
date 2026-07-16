@@ -20,8 +20,10 @@ class BPRWTask(YmGameTask):
     TEXT_BANGPAI_DAILY = str(YmGameTask.TEMPLATES_DIR / "text_bangpai_daily.png")
     SIDEBAR_BANGPAI_TASK_TEMPLATES = [TEXT_BANGPAI, TEXT_BANGPAI_DAILY]
     ROUTE_WAREHOUSE = str(YmGameTask.TEMPLATES_DIR / "route_bangpai_warehouse.png")
+    ROUTE_MALL = str(YmGameTask.TEMPLATES_DIR / "route_mall.png")
     ROUTE_STALL = str(YmGameTask.TEMPLATES_DIR / "route_stall.png")
     BTN_WAREHOUSE_SUBMIT = str(YmGameTask.TEMPLATES_DIR / "btn_warehouse_submit.png")
+    BTN_MALL_BUY_AREA = str(YmGameTask.TEMPLATES_DIR / "btn_mall_buy_area.png")
     BTN_VIEW_ALL_SERVER = str(YmGameTask.TEMPLATES_DIR / "btn_view_all_server.png")
     BTN_ONE_KEY_SUBMIT = str(YmGameTask.TEMPLATES_DIR / "btn_bangpai_one_key_submit.png")
     BTN_BUY = str(YmGameTask.TEMPLATES_DIR / "btn_buy.png")
@@ -33,6 +35,7 @@ class BPRWTask(YmGameTask):
     ROI_TASK_LIST = (40, 135, 330, 430)
     ROI_ROUTE_PANEL = (720, 120, 480, 500)
     ROI_WAREHOUSE_SUBMIT = (760, 530, 230, 115)
+    ROI_MALL_BUY = (800, 610, 290, 100)
     ROI_TRADE_ACTION = (520, 440, 330, 120)
     ROI_ONE_KEY_SUBMIT = (900, 330, 340, 160)
     ROI_TASK_COMPLETE = (40, 570, 650, 90)
@@ -45,8 +48,21 @@ class BPRWTask(YmGameTask):
     DEFER_FOREGROUND_WAKE_TO_ON_START = True
     TASK_FLOW_TIMEOUT_MS = 900000
     TASK_FLOW_RETRY_WAIT_MS = 3000
+    TASK_FLOW_POLL_INTERVAL_MS = 2000
+    SIDEBAR_TASK_CLICK_SETTLE_MS = 3000
+    ACQUIRE_ROUTE_OPEN_SETTLE_MS = 3500
+    FLOW_DETECTION_INTERVAL_MS = 1000
+    TRADE_ACTION_SETTLE_MS = 2500
     TASK_IDLE_CLICK_LIMIT = 3
     TRADE_BUY_THRESHOLD = 0.7
+
+    def __init__(self, default_interval_ms: int | None = None):
+        super().__init__(default_interval_ms=default_interval_ms)
+        self._warehouse_item_checked = False
+
+    def reset_startup_state(self) -> None:
+        """Reset per-run item acquisition state before startup cleanup."""
+        self._warehouse_item_checked = False
 
     def after_startup_panel_close(self) -> None:
         """Close the Bangpai completion dialog after each startup cleanup pass."""
@@ -164,39 +180,27 @@ class BPRWTask(YmGameTask):
             if self.handle_submit_panel_if_visible():
                 idle_task_clicks = 0
                 missing_task_confirmations = 0
+                self.wait(self.TASK_FLOW_POLL_INTERVAL_MS)
                 continue
 
             if self.handle_trade_panel_if_visible():
                 idle_task_clicks = 0
                 missing_task_confirmations = 0
+                self.wait(self.TASK_FLOW_POLL_INTERVAL_MS)
                 continue
 
             if self.handle_acquire_route_panel_if_visible():
                 idle_task_clicks = 0
                 missing_task_confirmations = 0
-                continue
-
-            self.wait_auto_pathfinding(timeout_ms=30000)
-
-            if self.handle_submit_panel_if_visible():
-                idle_task_clicks = 0
-                missing_task_confirmations = 0
-                continue
-
-            if self.handle_trade_panel_if_visible():
-                idle_task_clicks = 0
-                missing_task_confirmations = 0
-                continue
-
-            if self.handle_acquire_route_panel_if_visible():
-                idle_task_clicks = 0
-                missing_task_confirmations = 0
+                self.wait(self.TASK_FLOW_POLL_INTERVAL_MS)
                 continue
 
             self.close_transient_panels(max_attempts=2)
             if self.click_bangpai_task_from_sidebar(max_scrolls=2, required=False):
                 missing_task_confirmations = 0
                 idle_task_clicks += 1
+                self.wait_auto_pathfinding(timeout_ms=30000)
+                self.wait(self.TASK_FLOW_POLL_INTERVAL_MS)
                 if idle_task_clicks >= self.TASK_IDLE_CLICK_LIMIT:
                     self._log("连续点击左侧帮派任务未出现新流程，继续等待完成信号")
                     idle_task_clicks = 0
@@ -219,7 +223,7 @@ class BPRWTask(YmGameTask):
 
         self._log("点击任务栏帮派任务")
         self.click()
-        self.wait(1500)
+        self.wait(self.SIDEBAR_TASK_CLICK_SETTLE_MS)
         self.confirm_sidebar_task_popup_if_needed()
         return True
 
@@ -281,15 +285,22 @@ class BPRWTask(YmGameTask):
         if not self.is_acquire_route_panel_visible():
             return False
 
-        self._log("检测到帮派任务物品获取途径面板，优先尝试帮派仓库")
-        if self.try_warehouse_route():
+        if not self._warehouse_item_checked:
+            self._log("检测到帮派任务物品获取途径面板，优先尝试帮派仓库")
+            if self.try_warehouse_route(route_panel_ready=True):
+                return True
+        else:
+            self._log("本轮已检查帮派仓库，跳过重复检测")
+
+        self._log("帮派仓库无法提交，改走商城购买")
+        if self.try_mall_route():
             return True
 
-        self._log("帮派仓库无法提交，改走摆摊购买")
+        self._log("商城无法购买，改走摆摊购买")
         if self.try_stall_route():
             return True
 
-        self._log("帮派任务物品无法通过仓库或摆摊获取，关闭面板并结束本轮执行")
+        self._log("帮派任务物品无法通过仓库、商城或摆摊获取，关闭面板并结束本轮执行")
         self.close_transient_panels()
         self.jump_to_end()
         return True
@@ -303,6 +314,7 @@ class BPRWTask(YmGameTask):
             roi=self.ROI_ONE_KEY_SUBMIT,
             threshold=0.85,
             wait_after_click_ms=1500,
+            interval_ms=self.FLOW_DETECTION_INTERVAL_MS,
         ):
             return False
 
@@ -310,9 +322,9 @@ class BPRWTask(YmGameTask):
         self.wait_auto_pathfinding(timeout_ms=120000)
         return True
 
-    def try_warehouse_route(self) -> bool:
+    def try_warehouse_route(self, *, route_panel_ready: bool = False) -> bool:
         """Try to submit the requested item from gang warehouse."""
-        if not self.ensure_acquire_route_panel_open():
+        if not route_panel_ready and not self.ensure_acquire_route_panel_open():
             return False
 
         if not self.click_template_if_available(
@@ -321,10 +333,12 @@ class BPRWTask(YmGameTask):
             description="帮派仓库获取途径",
             roi=self.ROI_ROUTE_PANEL,
             threshold=0.8,
-            wait_after_click_ms=2000,
+            wait_after_click_ms=self.ACQUIRE_ROUTE_OPEN_SETTLE_MS,
+            interval_ms=self.FLOW_DETECTION_INTERVAL_MS,
         ):
             return False
 
+        self._warehouse_item_checked = True
         if self.click_template_if_available(
             self.BTN_WAREHOUSE_SUBMIT,
             timeout_ms=3000,
@@ -332,6 +346,7 @@ class BPRWTask(YmGameTask):
             roi=self.ROI_WAREHOUSE_SUBMIT,
             threshold=0.85,
             wait_after_click_ms=2000,
+            interval_ms=self.FLOW_DETECTION_INTERVAL_MS,
         ):
             self.close_transient_panels()
             return True
@@ -339,6 +354,39 @@ class BPRWTask(YmGameTask):
         self._log("帮派仓库未找到可提交物品")
         self.close_transient_panels()
         return False
+
+    def try_mall_route(self) -> bool:
+        """Buy the requested item from mall using the default quantity."""
+        if not self.ensure_acquire_route_panel_open():
+            return False
+
+        if not self.click_template_if_available(
+            self.ROUTE_MALL,
+            timeout_ms=1000,
+            description="商城购买获取途径",
+            roi=self.ROI_ROUTE_PANEL,
+            threshold=0.8,
+            wait_after_click_ms=self.ACQUIRE_ROUTE_OPEN_SETTLE_MS,
+            interval_ms=self.FLOW_DETECTION_INTERVAL_MS,
+        ):
+            return False
+
+        if not self.click_template_if_available(
+            self.BTN_MALL_BUY_AREA,
+            timeout_ms=5000,
+            description="商城默认数量购买按钮",
+            roi=self.ROI_MALL_BUY,
+            threshold=0.85,
+            wait_after_click_ms=self.TRADE_ACTION_SETTLE_MS,
+            interval_ms=self.FLOW_DETECTION_INTERVAL_MS,
+        ):
+            self._log("商城未找到默认购买按钮")
+            self.close_transient_panels()
+            return False
+
+        self.confirm_purchase_if_needed()
+        self.close_transient_panels()
+        return True
 
     def try_stall_route(self) -> bool:
         """Try to buy the requested item from stall or all-server stall."""
@@ -351,7 +399,8 @@ class BPRWTask(YmGameTask):
             description="摆摊购买获取途径",
             roi=self.ROI_ROUTE_PANEL,
             threshold=0.8,
-            wait_after_click_ms=2500,
+            wait_after_click_ms=self.ACQUIRE_ROUTE_OPEN_SETTLE_MS,
+            interval_ms=self.FLOW_DETECTION_INTERVAL_MS,
         ):
             return False
 
@@ -364,7 +413,8 @@ class BPRWTask(YmGameTask):
             description="查看全服按钮",
             roi=self.ROI_TRADE_ACTION,
             threshold=0.85,
-            wait_after_click_ms=2500,
+            wait_after_click_ms=self.ACQUIRE_ROUTE_OPEN_SETTLE_MS,
+            interval_ms=self.FLOW_DETECTION_INTERVAL_MS,
         ):
             self._log("摆摊未找到商品，且未出现查看全服按钮")
             self.close_transient_panels()
@@ -379,16 +429,17 @@ class BPRWTask(YmGameTask):
 
     def handle_trade_panel_if_visible(self) -> bool:
         """Handle a trade panel that the game opens automatically."""
-        if self.buy_from_current_trade_panel("自动打开的交易购买按钮", timeout_ms=600):
+        if self.buy_from_current_trade_panel("自动打开的交易购买按钮", timeout_ms=1000):
             return True
 
         if not self.click_template_if_available(
             self.BTN_VIEW_ALL_SERVER,
-            timeout_ms=600,
+            timeout_ms=1000,
             description="自动打开的查看全服按钮",
             roi=self.ROI_TRADE_ACTION,
             threshold=0.85,
-            wait_after_click_ms=2500,
+            wait_after_click_ms=self.ACQUIRE_ROUTE_OPEN_SETTLE_MS,
+            interval_ms=self.FLOW_DETECTION_INTERVAL_MS,
         ):
             return False
 
@@ -407,22 +458,20 @@ class BPRWTask(YmGameTask):
             description=description,
             roi=self.ROI_TRADE_ACTION,
             threshold=self.TRADE_BUY_THRESHOLD,
-            wait_after_click_ms=1500,
+            wait_after_click_ms=self.TRADE_ACTION_SETTLE_MS,
+            interval_ms=self.FLOW_DETECTION_INTERVAL_MS,
         ):
             return False
 
         confirmed = self.confirm_purchase_if_needed()
-        if not confirmed and self.wait_find_image_in_roi(
+        if not confirmed and self.find_image(
             self.BTN_BUY,
-            self.ROI_TRADE_ACTION,
-            timeout_ms=800,
-            description=f"{description}点击后仍可见",
             threshold=self.TRADE_BUY_THRESHOLD,
-            interval_ms=300,
+            roi=self.scale_roi(self.ROI_TRADE_ACTION),
         ):
             self._log("购买按钮点击后仍可见，重试点击")
             self.click()
-            self.wait(1500)
+            self.wait(self.TRADE_ACTION_SETTLE_MS)
             self.confirm_purchase_if_needed()
 
         self.close_transient_panels()
@@ -441,17 +490,18 @@ class BPRWTask(YmGameTask):
     def wait_acquire_route_panel_visible(self, timeout_ms: int = 3000) -> bool:
         """Wait until any supported acquisition route appears."""
         return self.wait_find_image_in_roi(
-            [self.ROUTE_WAREHOUSE, self.ROUTE_STALL],
+            [self.ROUTE_WAREHOUSE, self.ROUTE_MALL, self.ROUTE_STALL],
             self.ROI_ROUTE_PANEL,
             timeout_ms=timeout_ms,
             description="帮派任务物品获取途径面板",
             threshold=0.8,
+            interval_ms=self.FLOW_DETECTION_INTERVAL_MS,
         )
 
     def is_acquire_route_panel_visible(self) -> bool:
         """Return whether the task item acquisition route panel is visible."""
         return self.find_image(
-            [self.ROUTE_WAREHOUSE, self.ROUTE_STALL],
+            [self.ROUTE_WAREHOUSE, self.ROUTE_MALL, self.ROUTE_STALL],
             threshold=0.8,
             roi=self.scale_roi(self.ROI_ROUTE_PANEL),
         )
@@ -464,6 +514,7 @@ class BPRWTask(YmGameTask):
             description="购买二次确认按钮",
             threshold=0.85,
             wait_after_click_ms=2000,
+            interval_ms=self.FLOW_DETECTION_INTERVAL_MS,
         )
 
     def confirm_submit_if_needed(self) -> bool:
@@ -474,6 +525,7 @@ class BPRWTask(YmGameTask):
             description="帮派任务提交确认按钮",
             threshold=0.85,
             wait_after_click_ms=1500,
+            interval_ms=self.FLOW_DETECTION_INTERVAL_MS,
         )
 
     def close_transient_panels(self, max_attempts: int = 4) -> bool:
@@ -497,10 +549,16 @@ class BPRWTask(YmGameTask):
         threshold: float = 0.8,
         wait_after_click_ms: int = 1000,
         roi: tuple[int, int, int, int] | None = None,
+        interval_ms: int = 500,
     ) -> bool:
         """Click a template if it appears within an optional design-resolution ROI."""
         if roi is None:
-            found = self.wait_image_appear(template, timeout_ms=timeout_ms, threshold=threshold)
+            found = self.wait_image_appear(
+                template,
+                timeout_ms=timeout_ms,
+                threshold=threshold,
+                interval_ms=interval_ms,
+            )
         else:
             found = self.wait_find_image_in_roi(
                 template,
@@ -508,6 +566,7 @@ class BPRWTask(YmGameTask):
                 timeout_ms=timeout_ms,
                 description=description,
                 threshold=threshold,
+                interval_ms=interval_ms,
             )
 
         if not found:

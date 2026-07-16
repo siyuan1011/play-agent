@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime
 
 import cv2
 import numpy as np
@@ -168,7 +167,7 @@ class RichangFubenTask(YmGameTask):
             if last_heartbeat_at <= 0 or (now - last_heartbeat_at) * 1000 >= self.MATCH_WAIT_HEARTBEAT_MS:
                 if self.confirm_already_in_team():
                     return
-                self._log("日常副本匹配入队等待中...")
+                self._debug("日常副本匹配入队等待中...")
                 last_heartbeat_at = now
             self.wait(self.MATCH_WAIT_POLL_INTERVAL_MS)
 
@@ -295,14 +294,6 @@ class RichangFubenTask(YmGameTask):
             self.leave_team(timeout_ms=5000, wait_after_click_ms=1000)
         except Exception as exc:
             self._log(f"退队检查未完成，按未组队继续：{exc}")
-
-    def save_debug_screenshot(self, prefix: str) -> str:
-        """Save the current screen for post-run debugging."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        path = self.TEMPLATES_DIR.parents[2] / "screenshots" / f"{prefix}_{timestamp}.png"
-        cv2.imwrite(str(path), self.screenshot())
-        self._log(f"已保存调试截图：{path}")
-        return str(path)
 
     def on_finish(self, results: list) -> None:
         """任务结束处理。"""

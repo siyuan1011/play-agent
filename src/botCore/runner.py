@@ -24,12 +24,14 @@ class DSLTaskRunner:
         *,
         logger: RunLogger | None = None,
         event_callback: Callable[[str], None] | None = None,
+        verbose: bool = False,
     ):
         self.task = task
         self.adb = adb_client
         self.vision = vision
         self.logger = logger
         self.event_callback = event_callback
+        self.verbose = verbose
         self._stop_requested = False
         self._executor = DslStepExecutor(
             should_stop=lambda: self._stop_requested,
@@ -56,7 +58,13 @@ class DSLTaskRunner:
             screen_size = (w, h)
 
         self.task._screen_resolution = screen_size
-        self.task.setup(self.adb, self.vision, self.logger, self.event_callback)
+        self.task.setup(
+            self.adb,
+            self.vision,
+            self.logger,
+            self.event_callback,
+            verbose=self.verbose,
+        )
 
         if hasattr(self.task, "before_start"):
             self.task.before_start()

@@ -81,6 +81,7 @@ class GameTask:
     _logger: RunLogger | None
     _event_callback: Callable[[str], None] | None
     _stop_requested: bool
+    _verbose: bool
     _screen_resolution: tuple[int, int] | None
     _jump_target: str | None
     _current_step_index: int
@@ -93,6 +94,7 @@ class GameTask:
         self._default_interval_ms = default_interval_ms
         self._logger: RunLogger | None = None
         self._event_callback: Callable[[str], None] | None = None
+        self._verbose = False
         self._jump_target: str | None = None
         self._current_step_index = 0
 
@@ -102,11 +104,13 @@ class GameTask:
         vision: VisionEngine,
         logger: RunLogger | None = None,
         event_callback: Callable[[str], None] | None = None,
+        verbose: bool = False,
     ) -> None:
         self._adb = adb
         self._vision = vision
         self._logger = logger
         self._event_callback = event_callback
+        self._verbose = verbose
 
     @classmethod
     def get_steps(cls) -> list[tuple[str, Callable[["GameTask"], Any], dict]]:
@@ -152,6 +156,13 @@ class GameTask:
     def before_step(self, step_name: str, step_meta: dict[str, Any]) -> None:
         """Hook called immediately before each DSL step attempt."""
 
+    def before_retry(
+        self,
+        retry_scope: str,
+        failure: Exception | str | None = None,
+    ) -> None:
+        """Hook called after an abnormal failure and before an actual retry."""
+
     def jump_to(self, step_name: str) -> None:
         raise StepJumpException(step_name)
 
@@ -180,11 +191,11 @@ class GameTask:
             else:
                 raise RuntimeError("No position to tap. Provide coordinates or find_image first.")
         self._adb.tap(x, y)
-        self._log(f"Clicked at ({x}, {y})")
+        self._debug(f"Clicked at ({x}, {y})")
 
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 400) -> None:
         self._adb.swipe(x1, y1, x2, y2, duration_ms)
-        self._log(f"Swiped ({x1},{y1}) -> ({x2},{y2})")
+        self._debug(f"Swiped ({x1},{y1}) -> ({x2},{y2})")
 
     def shell(self, command: str) -> str:
         return self._adb.shell(command)
@@ -204,10 +215,10 @@ class GameTask:
         self._last_match_score = match.score
         if match.found and match.center:
             self._last_match_center = match.center
-            self._log(f"Found image: {template} (score={match.score:.3f})")
+            self._debug(f"Found image: {template} (score={match.score:.3f})")
             return True
         self._last_match_center = None
-        self._log(f"Image not found: {template} (score={match.score:.3f})")
+        self._debug(f"Image not found: {template} (score={match.score:.3f})")
         return False
 
     def wait_image_appear(
@@ -230,7 +241,7 @@ class GameTask:
             self._last_match_score = match.score
             if match.found and match.center:
                 self._last_match_center = match.center
-                self._log(f"Found image: {template} (score={match.score:.3f})")
+                self._debug(f"Found image: {template} (score={match.score:.3f})")
                 if callback:
                     callback(True)
                 return True
@@ -243,7 +254,7 @@ class GameTask:
                 self.wait(remaining_ms)
 
         self._last_match_center = None
-        self._log(f"Image not found: {template} (timeout)")
+        self._debug(f"Image not found: {template} (timeout)")
         if callback:
             callback(False)
         return False
@@ -308,9 +319,16 @@ class GameTask:
             remaining_ms -= sleep_time
 
     def _log(self, message: str) -> None:
+        self._emit_log(message, level="INFO")
+
+    def _debug(self, message: str) -> None:
+        if self._verbose:
+            self._emit_log(message, level="DEBUG")
+
+    def _emit_log(self, message: str, *, level: str) -> None:
         if self._event_callback:
             self._event_callback(f"[{self.__class__.__name__}] {message}")
         if self._logger:
-            self._logger.log_event({"message": message})
+            self._logger.log_event({"message": message, "level": level})
         if not self._event_callback and not self._logger:
             print(f"[{self.__class__.__name__}] {message}")

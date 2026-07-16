@@ -7,6 +7,7 @@ build/
 dist/
 *.pyc
 logs/
+/screenshots/
 src/ymjh_bot/.task_queue_state.json
 src/ymjh_bot/.task_queue_states/
 uv.lock.bak

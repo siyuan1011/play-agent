@@ -88,6 +88,7 @@ class QueueRunnerWorker(QObject):
         serial: str | None,
         log_dir: Path | None = None,
         initial_progress: dict | None = None,
+        verbose: bool = False,
     ):
         super().__init__()
         self.task_instances = task_instances
@@ -95,6 +96,7 @@ class QueueRunnerWorker(QObject):
         self.serial = serial
         self.log_dir = log_dir
         self.initial_progress = initial_progress
+        self.verbose = verbose
         self.runner: TaskQueueRunner | None = None
 
     @Slot()
@@ -110,6 +112,7 @@ class QueueRunnerWorker(QObject):
                 logger=logger,
                 event_callback=self.progress.emit,
                 progress_callback=self.progress_state.emit,
+                verbose=self.verbose,
             )
             if self.initial_progress:
                 self.runner.load_progress(self.initial_progress)
@@ -349,6 +352,10 @@ class TaskQueueWindow(QMainWindow):
         self.screenshot_btn = QPushButton("截图")
         self.screenshot_btn.clicked.connect(self.take_screenshot)
         layout.addWidget(self.screenshot_btn)
+
+        self.verbose_log_check = QCheckBox("详细日志")
+        self.verbose_log_check.setToolTip("显示模板匹配、点击坐标和轮询过程")
+        layout.addWidget(self.verbose_log_check)
 
         layout.addStretch()
         return box
@@ -641,6 +648,7 @@ class TaskQueueWindow(QMainWindow):
             serial,
             self.repo_root / "logs" / safe_serial_name(serial),
             initial_progress if isinstance(initial_progress, dict) else None,
+            self.verbose_log_check.isChecked(),
         )
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
@@ -657,6 +665,7 @@ class TaskQueueWindow(QMainWindow):
         self.pause_btn.setEnabled(True)
         self.resume_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
+        self.verbose_log_check.setEnabled(False)
         self._set_queue_editing_enabled(False)
         self._append_log("任务队列已开始。")
         if initial_progress:
@@ -726,6 +735,7 @@ class TaskQueueWindow(QMainWindow):
         self.pause_btn.setEnabled(False)
         self.resume_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
+        self.verbose_log_check.setEnabled(True)
         self._set_queue_editing_enabled(True)
 
     def _cleanup_worker(self) -> None:
@@ -796,7 +806,12 @@ class TaskQueueWindow(QMainWindow):
             adb = ADBClient(adb_path=adb_path, serial=serial)
             adb.ensure_device()
             screenshot = adb.screenshot()
-            output_dir = self.repo_root / "screenshots"
+            output_dir = (
+                self.repo_root
+                / "logs"
+                / "manual_screenshots"
+                / safe_serial_name(serial)
+            )
             output_dir.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             output_path = output_dir / f"ymjh_queue_{safe_serial_name(serial)}_{timestamp}.png"

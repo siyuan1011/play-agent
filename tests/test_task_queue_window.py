@@ -1,5 +1,6 @@
 import os
 import re
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -124,7 +125,7 @@ def test_queue_window_screenshot_button_saves_current_device(monkeypatch, tmp_pa
 
     assert app is not None
     assert len(writes) == 1
-    assert "screenshots" in writes[0][0]
+    assert Path(writes[0][0]).is_relative_to(tmp_path / "logs" / "manual_screenshots")
     assert "ymjh_queue_127.0.0.1_16416_" in writes[0][0]
     log_text = window.log_view.toPlainText()
     assert "截图已保存：" in log_text

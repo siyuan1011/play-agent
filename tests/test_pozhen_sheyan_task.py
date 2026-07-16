@@ -9,6 +9,12 @@ from ymjh_bot.task.PZSY_task import PozhenSheyanTask
 from ymjh_bot.ui.task_queue_window import is_visible_task_class
 
 
+FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "ymjh"
+
+def fixture(path: str | Path) -> Path:
+    return (FIXTURES_DIR / path).with_suffix(".webp")
+
+
 class FakePozhenSheyanTask(PozhenSheyanTask):
     def __init__(
         self,
@@ -301,8 +307,8 @@ def test_pozhen_start_banquet_disabled_references_stay_below_threshold():
     root = Path(__file__).resolve().parents[1]
     prefix = "\u7834\u9635\u8bbe\u5bb4"
 
-    initial_panel = ScreenshotPozhenSheyanTask(root / "screenshots" / f"{prefix}7-1.png")
-    submitted_panel = ScreenshotPozhenSheyanTask(root / "screenshots" / f"{prefix}7-2.png")
+    initial_panel = ScreenshotPozhenSheyanTask(fixture(f"{prefix}7-1.png"))
+    submitted_panel = ScreenshotPozhenSheyanTask(fixture(f"{prefix}7-2.png"))
 
     assert not initial_panel.is_start_banquet_enabled()
     assert not submitted_panel.is_start_banquet_enabled()

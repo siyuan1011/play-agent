@@ -55,6 +55,7 @@ def main() -> int:
         vision,
         logger=logger,
         event_callback=lambda msg: print(msg),
+        verbose=args.debug,
     )
 
     try:

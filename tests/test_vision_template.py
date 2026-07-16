@@ -6,6 +6,13 @@ import numpy as np
 
 from botCore import VisionEngine
 from botCore.vision import load_image
+from ymjh_bot.ym_game_task import YmGameTask
+
+
+FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "ymjh"
+
+def fixture(path: str | Path) -> Path:
+    return (FIXTURES_DIR / path).with_suffix(".webp")
 
 
 def test_template_match_found():
@@ -41,11 +48,44 @@ def test_template_match_not_found():
     assert result.found is False
 
 
+def test_activity_and_unstuck_templates_match_curated_real_device_states():
+    engine = VisionEngine()
+    activity_positive = engine.match_template(
+        load_image(fixture("activity_tasks_20260708/jypy_01_activity_hangdang_panel.png")),
+        YmGameTask.ACTIVITY_PANEL_TEMPLATES,
+        threshold=YmGameTask.ACTIVITY_CATEGORY_VERIFY_THRESHOLD,
+        roi=YmGameTask.ROI_ACTIVITY_CATEGORY_TABS,
+    )
+    select_channel_negative = engine.match_template(
+        load_image(fixture("ymjh_queue_127.0.0.1_16416_20260716_083049.png")),
+        YmGameTask.ACTIVITY_PANEL_TEMPLATES,
+        threshold=YmGameTask.ACTIVITY_CATEGORY_VERIFY_THRESHOLD,
+        roi=YmGameTask.ROI_ACTIVITY_CATEGORY_TABS,
+    )
+    unstuck_menu_open = engine.match_template(
+        load_image(fixture("unstuck_live_menu_open_20260716.png")),
+        YmGameTask.BTN_ESCAPE_STUCK,
+        threshold=YmGameTask.ESCAPE_STUCK_ITEM_THRESHOLD,
+        roi=YmGameTask.ROI_ESCAPE_STUCK_ITEM,
+    )
+    unstuck_menu_closed = engine.match_template(
+        load_image(fixture("unstuck_real_closed_after_20260716.png")),
+        [YmGameTask.BTN_QUICK_MENU_FLOWER, YmGameTask.BTN_QUICK_MENU_FLOWER_NEW],
+        threshold=YmGameTask.ESCAPE_STUCK_MENU_THRESHOLD,
+        roi=YmGameTask.ROI_QUICK_MENU_BUTTON,
+    )
+
+    assert activity_positive.found
+    assert not select_channel_negative.found
+    assert unstuck_menu_open.found
+    assert unstuck_menu_closed.found
+
+
 def test_safe_zone_map_templates_match_reference_screenshots():
     root = Path(__file__).resolve().parents[1]
-    local_map = root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_211024.png"
-    world_map = root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_211854.png"
-    current_safe_point_roi = root / "screenshots/safe_point_current_roi_20260713.png"
+    local_map = fixture("ymjh_queue_127.0.0.1_16416_20260709_211024.png")
+    world_map = fixture("ymjh_queue_127.0.0.1_16416_20260709_211854.png")
+    current_safe_point_roi = fixture("safe_point_current_roi_20260713.png")
     cases = [
         (
             local_map,
@@ -121,9 +161,9 @@ def test_health_bar_anchor_template_matches_reference_screenshots():
     root = Path(__file__).resolve().parents[1]
     template_path = root / "src/ymjh_bot/templates/health_bar_anchor.png"
     cases = [
-        (root / "screenshots" / "1.png", True),
-        (root / "screenshots" / "5.png", True),
-        (root / "screenshots" / "hslj_debug_current_1v1.png", False),
+        (fixture("1.png"), True),
+        (fixture("5.png"), True),
+        (fixture("hslj_debug_current_1v1.png"), False),
     ]
 
     engine = VisionEngine()
@@ -146,7 +186,7 @@ def test_emotion_meditate_template_matches_reference_screenshot():
     root = Path(__file__).resolve().parents[1]
     engine = VisionEngine()
     result = engine.match_template(
-        load_image(root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260712_021342.png"),
+        load_image(fixture("ymjh_queue_127.0.0.1_16416_20260712_021342.png")),
         str(root / "src/ymjh_bot/templates/btn_emotion_meditate.png"),
         threshold=0.9,
         roi=(250, 480, 730, 240),
@@ -161,7 +201,7 @@ def test_cgss_entry_template_matches_reference_screenshot():
     root = Path(__file__).resolve().parents[1]
     engine = VisionEngine()
     result = engine.match_template(
-        load_image(root / "screenshots" / "cgss_verify_fail_20260705.png"),
+        load_image(fixture("cgss_verify_fail_20260705.png")),
         str(root / "src/ymjh_bot/templates/btn_CGSS_entry.png"),
         threshold=0.95,
         roi=(170, 430, 230, 210),
@@ -176,67 +216,67 @@ def test_menke_sheyan_templates_match_reference_screenshots():
     screenshot_prefix = "\u95e8\u5ba2\u8bbe\u5bb4"
     cases = [
         (
-            root / "screenshots" / f"{screenshot_prefix}3.png",
+            fixture(f"{screenshot_prefix}3.png"),
             root / "src/ymjh_bot/templates/btn_menke_sheyan_entry.png",
             (150, 470, 210, 145),
         ),
         (
-            root / "screenshots" / f"{screenshot_prefix}4.png",
+            fixture(f"{screenshot_prefix}4.png"),
             root / "src/ymjh_bot/templates/btn_menke_invite_forward.png",
             (780, 135, 170, 520),
         ),
         (
-            root / "screenshots" / f"{screenshot_prefix}5.png",
+            fixture(f"{screenshot_prefix}5.png"),
             root / "src/ymjh_bot/templates/btn_menke_banquet_invite.png",
             None,
         ),
         (
-            root / "screenshots" / f"{screenshot_prefix}6.png",
+            fixture(f"{screenshot_prefix}6.png"),
             root / "src/ymjh_bot/templates/btn_menke_confirm_invite.png",
             None,
         ),
         (
-            root / "screenshots" / f"{screenshot_prefix}7.png",
+            fixture(f"{screenshot_prefix}7.png"),
             root / "src/ymjh_bot/templates/btn_menke_get_item.png",
             (960, 530, 210, 100),
         ),
         (
-            root / "screenshots" / f"{screenshot_prefix}7-1.png",
+            fixture(f"{screenshot_prefix}7-1.png"),
             root / "src/ymjh_bot/templates/btn_menke_one_key_submit.png",
             (960, 530, 210, 100),
         ),
         (
-            root / "screenshots" / f"{screenshot_prefix}7-1.png",
+            fixture(f"{screenshot_prefix}7-1.png"),
             root / "src/ymjh_bot/templates/btn_menke_start_active.png",
             (220, 550, 200, 100),
         ),
         (
-            root / "screenshots" / f"{screenshot_prefix}8.png",
+            fixture(f"{screenshot_prefix}8.png"),
             root / "src/ymjh_bot/templates/route_menke_warehouse_recommended.png",
             (560, 70, 660, 480),
         ),
         (
-            root / "screenshots" / f"{screenshot_prefix}10.png",
+            fixture(f"{screenshot_prefix}10.png"),
             root / "src/ymjh_bot/templates/route_mall.png",
             (560, 70, 660, 480),
         ),
         (
-            root / "screenshots" / f"{screenshot_prefix}8.png",
+            fixture(f"{screenshot_prefix}8.png"),
             root / "src/ymjh_bot/templates/route_stall.png",
             (560, 70, 660, 480),
         ),
         (
-            root / "screenshots" / f"{screenshot_prefix}8-2.png",
+            fixture(f"{screenshot_prefix}8-2.png"),
             root / "src/ymjh_bot/templates/btn_warehouse_submit.png",
             (760, 530, 230, 115),
         ),
         (
-            root / "screenshots" / f"{screenshot_prefix}12.png",
+            fixture(f"{screenshot_prefix}12.png"),
             root / "src/ymjh_bot/templates/btn_view_all_server.png",
             (600, 440, 250, 100),
         ),
         (
-            root / "screenshots" / f"{screenshot_prefix}15.png",
+            fixture(f"{screenshot_prefix}15.png"),
             root / "src/ymjh_bot/templates/btn_mall_buy_area.png",
             (800, 610, 290, 100),
         ),
@@ -255,12 +295,12 @@ def test_menke_sheyan_templates_avoid_key_false_positives():
     screenshot_prefix = "\u95e8\u5ba2\u8bbe\u5bb4"
     cases = [
         (
-            root / "screenshots" / f"{screenshot_prefix}8-1.png",
+            fixture(f"{screenshot_prefix}8-1.png"),
             root / "src/ymjh_bot/templates/btn_warehouse_submit.png",
             (760, 530, 230, 115),
         ),
         (
-            root / "screenshots" / f"{screenshot_prefix}11.png",
+            fixture(f"{screenshot_prefix}11.png"),
             root / "src/ymjh_bot/templates/route_menke_warehouse_recommended.png",
             (560, 70, 660, 480),
         ),
@@ -279,43 +319,43 @@ def test_pozhen_sheyan_templates_match_reference_screenshots():
     pozhen_prefix = "\u7834\u9635\u8bbe\u5bb4"
     cases = [
         (
-            root / "screenshots" / f"{menke_prefix}3.png",
+            fixture(f"{menke_prefix}3.png"),
             root / "src/ymjh_bot/templates/btn_pozhen_sheyan_entry.png",
             (540, 230, 260, 160),
             0.95,
         ),
         (
-            root / "screenshots" / f"{pozhen_prefix}4.png",
+            fixture(f"{pozhen_prefix}4.png"),
             root / "src/ymjh_bot/templates/btn_menke_invite_forward.png",
             (780, 135, 170, 520),
             0.95,
         ),
         (
-            root / "screenshots" / f"{pozhen_prefix}5.png",
+            fixture(f"{pozhen_prefix}5.png"),
             root / "src/ymjh_bot/templates/btn_menke_banquet_invite.png",
             None,
             0.95,
         ),
         (
-            root / "screenshots" / f"{pozhen_prefix}7-1.png",
+            fixture(f"{pozhen_prefix}7-1.png"),
             root / "src/ymjh_bot/templates/btn_pozhen_get_item.png",
             (960, 530, 210, 110),
             0.95,
         ),
         (
-            root / "screenshots" / f"{pozhen_prefix}7-2.png",
+            fixture(f"{pozhen_prefix}7-2.png"),
             root / "src/ymjh_bot/templates/btn_pozhen_one_key_submit.png",
             (960, 530, 210, 110),
             0.95,
         ),
         (
-            root / "screenshots" / f"{pozhen_prefix}7-1.png",
+            fixture(f"{pozhen_prefix}7-1.png"),
             root / "src/ymjh_bot/templates/btn_pozhen_submit_5_tab.png",
             (110, 365, 215, 65),
             0.95,
         ),
         (
-            root / "screenshots" / f"{pozhen_prefix}7-1.png",
+            fixture(f"{pozhen_prefix}7-1.png"),
             root / "src/ymjh_bot/templates/btn_pozhen_submit_6_tab.png",
             (295, 365, 205, 65),
             0.95,
@@ -336,49 +376,49 @@ def test_jhyxb_templates_match_reference_screenshots():
     jhyxb = "\u6c5f\u6e56\u82f1\u96c4\u699c"
     cases = [
         (
-            root / "screenshots" / f"{activity_fenzheng}.png",
+            fixture(f"{activity_fenzheng}.png"),
             root / "src/ymjh_bot/templates/btn_jhyxb_activity_open.png",
             (720, 500, 240, 120),
             0.95,
         ),
         (
-            root / "screenshots" / f"{jhyxb}.png",
+            fixture(f"{jhyxb}.png"),
             root / "src/ymjh_bot/templates/text_JHYXB_title.png",
             (170, 45, 260, 75),
             0.95,
         ),
         (
-            root / "screenshots" / f"{jhyxb}.png",
+            fixture(f"{jhyxb}.png"),
             root / "src/ymjh_bot/templates/btn_jhyxb_match.png",
             (950, 520, 230, 120),
             0.95,
         ),
         (
-            root / "screenshots" / f"{jhyxb}.png",
+            fixture(f"{jhyxb}.png"),
             root / "src/ymjh_bot/templates/icon_jhyxb_first_win.png",
             (385, 535, 105, 90),
             0.95,
         ),
         (
-            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260713_145140.png",
+            fixture("ymjh_queue_127.0.0.1_16416_20260713_145140.png"),
             root / "src/ymjh_bot/templates/icon_jhyxb_first_win_ready.png",
             (385, 535, 105, 90),
             0.95,
         ),
         (
-            root / "screenshots" / f"{jhyxb}-首战已领取.png",
+            fixture(f"{jhyxb}-首战已领取.png"),
             root / "src/ymjh_bot/templates/icon_jhyxb_first_win_chest.png",
             (385, 535, 105, 90),
             0.95,
         ),
         (
-            root / "screenshots" / f"{jhyxb}-\u51c6\u5907.png",
-            root / "src/ymjh_bot/templates/btn_jhyxb_ready.png",
+            fixture(f"{jhyxb}-\u51c6\u5907.png"),
+            root / "src/ymjh_bot/templates/text_ready.png",
             (520, 40, 240, 120),
             0.95,
         ),
         (
-            root / "screenshots" / "jhyxb_debug_after_timeout.png",
+            fixture("jhyxb_debug_after_timeout.png"),
             root / "src/ymjh_bot/templates/text_jhyxb_challenge_zero.png",
             (880, 560, 60, 55),
             0.95,
@@ -397,67 +437,67 @@ def test_hslj_templates_match_reference_screenshots():
     root = Path(__file__).resolve().parents[1]
     cases = [
         (
-            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260708_234230.png",
+            fixture("ymjh_queue_127.0.0.1_16416_20260708_234230.png"),
             root / "src/ymjh_bot/templates/text_HSLJ_title.png",
             (170, 45, 330, 80),
             0.95,
         ),
         (
-            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260708_234214.png",
+            fixture("ymjh_queue_127.0.0.1_16416_20260708_234214.png"),
             root / "src/ymjh_bot/templates/text_exit.png",
             (540, 630, 180, 80),
             0.95,
         ),
         (
-            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260708_234230.png",
+            fixture("ymjh_queue_127.0.0.1_16416_20260708_234230.png"),
             root / "src/ymjh_bot/templates/btn_hslj_match.png",
             (850, 535, 220, 115),
             0.95,
         ),
         (
-            root / "screenshots" / "hslj_match_button_missing_20260709_102308_652091.png",
+            fixture("hslj_match_button_missing_20260709_102308_652091.png"),
             root / "src/ymjh_bot/templates/btn_hslj_match_3v3.png",
             (850, 535, 220, 115),
             0.95,
         ),
         (
-            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260708_234923.png",
+            fixture("ymjh_queue_127.0.0.1_16416_20260708_234923.png"),
             root / "src/ymjh_bot/templates/btn_hslj_match_exit.png",
             (850, 535, 220, 115),
             0.95,
         ),
         (
-            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_112937.png",
+            fixture("ymjh_queue_127.0.0.1_16416_20260709_112937.png"),
             root / "src/ymjh_bot/templates/btn_hslj_match_exit_3v3.png",
             (850, 535, 220, 115),
             0.95,
         ),
         (
-            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_112329.png",
+            fixture("ymjh_queue_127.0.0.1_16416_20260709_112329.png"),
             root / "src/ymjh_bot/templates/text_hslj_match_success.png",
             (500, 360, 300, 120),
             0.95,
         ),
         (
-            root / "screenshots" / "hslj_match_button_missing_20260712_182450_739672.png",
-            root / "src/ymjh_bot/templates/btn_hslj_ready_battle.png",
+            fixture("hslj_match_button_missing_20260712_182450_739672.png"),
+            root / "src/ymjh_bot/templates/text_ready.png",
             (520, 35, 240, 120),
             0.95,
         ),
         (
-            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260708_235916.png",
+            fixture("ymjh_queue_127.0.0.1_16416_20260708_235916.png"),
             root / "src/ymjh_bot/templates/icon_hslj_first_win.png",
             (900, 450, 130, 100),
             0.95,
         ),
         (
-            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_010126.png",
+            fixture("ymjh_queue_127.0.0.1_16416_20260709_010126.png"),
             root / "src/ymjh_bot/templates/icon_hslj_first_win_ready.png",
             (900, 450, 130, 100),
             0.95,
         ),
         (
-            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260708_234230.png",
+            fixture("ymjh_queue_127.0.0.1_16416_20260708_234230.png"),
             root / "src/ymjh_bot/templates/icon_hslj_first_win_chest.png",
             (900, 450, 130, 100),
             0.95,
@@ -483,7 +523,7 @@ def test_hslj_temp_dialog_close_templates_match_only_scoped_reward_dialog_roi():
     threshold = 0.70
 
     reward_dialog = engine.match_template(
-        load_image(root / "screenshots/hslj_3v3_2_match_ready_timeout_20260712_033145_932075.png"),
+        load_image(fixture("hslj_3v3_2_match_ready_timeout_20260712_033145_932075.png")),
         templates,
         threshold=threshold,
         roi=roi,
@@ -493,7 +533,7 @@ def test_hslj_temp_dialog_close_templates_match_only_scoped_reward_dialog_roi():
     assert reward_dialog.center == (1153, 250)
 
     current_reward_dialog = engine.match_template(
-        load_image(root / "screenshots/hslj_switch_3v3_failed_20260713_222424_793139.png"),
+        load_image(fixture("hslj_switch_3v3_failed_20260713_222424_793139.png")),
         templates,
         threshold=threshold,
         roi=roi,
@@ -508,7 +548,7 @@ def test_hslj_temp_dialog_close_templates_match_only_scoped_reward_dialog_roi():
         "ymjh_queue_127.0.0.1_16416_20260708_234230.png",
     ]:
         result = engine.match_template(
-            load_image(root / "screenshots" / screenshot_name),
+            load_image(fixture(screenshot_name)),
             templates,
             threshold=threshold,
             roi=roi,
@@ -521,12 +561,12 @@ def test_hslj_mode_tab_templates_are_mutually_exclusive():
     engine = VisionEngine()
     cases = [
         (
-            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260708_234230.png",
+            fixture("ymjh_queue_127.0.0.1_16416_20260708_234230.png"),
             root / "src/ymjh_bot/templates/tab_hslj_1v1_active.png",
             root / "src/ymjh_bot/templates/tab_hslj_3v3_active.png",
         ),
         (
-            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_112937.png",
+            fixture("ymjh_queue_127.0.0.1_16416_20260709_112937.png"),
             root / "src/ymjh_bot/templates/tab_hslj_3v3_active.png",
             root / "src/ymjh_bot/templates/tab_hslj_1v1_active.png",
         ),
@@ -545,103 +585,103 @@ def test_team_templates_match_reference_screenshots():
     root = Path(__file__).resolve().parents[1]
     cases = [
         (
-            root / "screenshots" / "ymjh_queue_127.0.0.1_16384_20260710_192949.png",
+            fixture("ymjh_queue_127.0.0.1_16384_20260710_192949.png"),
             root / "src/ymjh_bot/templates/text_team_panel_title.png",
             (35, 0, 170, 65),
             0.9,
         ),
         (
-            root / "screenshots" / "team_report_02_created_jhxsh.png",
+            fixture("team_report_02_created_jhxsh.png"),
             root / "src/ymjh_bot/templates/text_team_panel_title.png",
             (35, 0, 170, 65),
             0.9,
         ),
         (
-            root / "screenshots" / "team_debug_quick_jianghu_expanded_16416.png",
+            fixture("team_debug_quick_jianghu_expanded_16416.png"),
             root / "src/ymjh_bot/templates/text_team_panel_title.png",
             (35, 0, 170, 65),
             0.9,
         ),
         (
-            root / "screenshots" / "ymjh_queue_127.0.0.1_16384_20260710_192949.png",
+            fixture("ymjh_queue_127.0.0.1_16384_20260710_192949.png"),
             root / "src/ymjh_bot/templates/btn_team_quick.png",
             (1010, 600, 220, 115),
             0.95,
         ),
         (
-            root / "screenshots" / "ymjh_queue_127.0.0.1_16384_20260710_193125.png",
+            fixture("ymjh_queue_127.0.0.1_16384_20260710_193125.png"),
             root / "src/ymjh_bot/templates/btn_team_leave.png",
             (1010, 600, 220, 115),
             0.95,
         ),
         (
-            root / "screenshots" / "team_debug_quick_after_user_note_16416.png",
+            fixture("team_debug_quick_after_user_note_16416.png"),
             root / "src/ymjh_bot/templates/btn_team_auto_match.png",
             (880, 620, 370, 90),
             0.95,
         ),
         (
-            root / "screenshots" / "team_debug_quick_jianghu_expanded_16416.png",
+            fixture("team_debug_quick_jianghu_expanded_16416.png"),
             root / "src/ymjh_bot/templates/btn_team_create_10_raid.png",
             (320, 620, 190, 90),
             0.95,
         ),
         (
-            root / "screenshots" / "team_report_02_created_jhxsh.png",
+            fixture("team_report_02_created_jhxsh.png"),
             root / "src/ymjh_bot/templates/btn_team_cancel_match.png",
             (230, 620, 140, 90),
             0.95,
         ),
         (
-            root / "screenshots" / "team_report_02_created_jhxsh.png",
+            fixture("team_report_02_created_jhxsh.png"),
             root / "src/ymjh_bot/templates/icon_team_shout.png",
             (580, 85, 80, 65),
             0.95,
         ),
         (
-            root / "screenshots" / "team_report_02_created_jhxsh.png",
+            fixture("team_report_02_created_jhxsh.png"),
             root / "src/ymjh_bot/templates/icon_team_empty_slot.png",
             (465, 250, 70, 80),
             0.95,
         ),
         (
-            root / "screenshots" / "team_debug_quick_after_user_note_16416.png",
+            fixture("team_debug_quick_after_user_note_16416.png"),
             root / "src/ymjh_bot/templates/btn_team_refresh_list.png",
             (880, 620, 370, 90),
             0.95,
         ),
         (
-            root / "screenshots" / "team_report_04_quick_auto_match_jypy.png",
+            fixture("team_report_04_quick_auto_match_jypy.png"),
             root / "src/ymjh_bot/templates/btn_team_follow_ok.png",
             (730, 440, 250, 120),
             0.95,
         ),
         (
-            root / "screenshots" / "team_debug_quick_hangdang_16416.png",
+            fixture("team_debug_quick_hangdang_16416.png"),
             root / "src/ymjh_bot/templates/text_team_target_jianghu_xingshang.png",
             (40, 90, 280, 560),
             0.95,
         ),
         (
-            root / "screenshots" / "team_debug_quick_hangdang_16416.png",
+            fixture("team_debug_quick_hangdang_16416.png"),
             root / "src/ymjh_bot/templates/text_team_target_juyi_pingyuan.png",
             (40, 90, 280, 560),
             0.95,
         ),
         (
-            root / "screenshots" / "team_debug_quick_jianghu_expanded_16416.png",
+            fixture("team_debug_quick_jianghu_expanded_16416.png"),
             root / "src/ymjh_bot/templates/text_team_target_daily.png",
             (40, 90, 280, 560),
             0.95,
         ),
         (
-            root / "screenshots" / "team_report_refactor_17_daily_category_current.png",
+            fixture("team_report_refactor_17_daily_category_current.png"),
             root / "src/ymjh_bot/templates/text_team_target_daily.png",
             (40, 90, 280, 560),
             0.95,
         ),
         (
-            root / "screenshots" / "activity_tasks_20260708/jypy_20_after_click_tracker_linchong.png",
+            fixture("activity_tasks_20260708/jypy_20_after_click_tracker_linchong.png"),
             root / "src/ymjh_bot/templates/text_jypy_sidebar_chapter.png",
             (40, 135, 330, 430),
             0.95,
@@ -660,8 +700,8 @@ def test_team_state_templates_do_not_match_other_team_states():
     root = Path(__file__).resolve().parents[1]
     engine = VisionEngine()
 
-    unteamed = load_image(root / "screenshots/ymjh_queue_127.0.0.1_16384_20260710_192949.png")
-    matching = load_image(root / "screenshots/team_report_02_created_jhxsh.png")
+    unteamed = load_image(fixture("ymjh_queue_127.0.0.1_16384_20260710_192949.png"))
+    matching = load_image(fixture("team_report_02_created_jhxsh.png"))
 
     cancel_on_unteamed = engine.match_template(
         unteamed,
@@ -685,91 +725,91 @@ def test_bangpai_templates_match_reference_screenshots():
     menke_prefix = "\u95e8\u5ba2\u8bbe\u5bb4"
     cases = [
         (
-            root / "screenshots" / "bangpai_debug_after_sidebar_click.png",
+            fixture("bangpai_debug_after_sidebar_click.png"),
             root / "src/ymjh_bot/templates/text_bangpai.png",
             (40, 135, 330, 430),
             0.9,
         ),
         (
-            root / "screenshots" / "bangpai_debug_after_sidebar_click.png",
+            fixture("bangpai_debug_after_sidebar_click.png"),
             root / "src/ymjh_bot/templates/route_stall.png",
             (720, 120, 480, 500),
             0.95,
         ),
         (
-            root / "screenshots" / "bangpai_debug_after_sidebar_click.png",
+            fixture("bangpai_debug_after_sidebar_click.png"),
             root / "src/ymjh_bot/templates/route_bangpai_warehouse.png",
             (720, 120, 480, 500),
             0.95,
         ),
         (
-            root / "screenshots" / f"{menke_prefix}13.png",
+            fixture(f"{menke_prefix}13.png"),
             root / "src/ymjh_bot/templates/btn_buy.png",
             (520, 440, 330, 120),
             0.95,
         ),
         (
-            root / "screenshots" / f"{menke_prefix}12.png",
+            fixture(f"{menke_prefix}12.png"),
             root / "src/ymjh_bot/templates/btn_view_all_server.png",
             (600, 440, 250, 100),
             0.95,
         ),
         (
-            root / "screenshots" / f"{menke_prefix}8-2.png",
+            fixture(f"{menke_prefix}8-2.png"),
             root / "src/ymjh_bot/templates/btn_warehouse_submit.png",
             (760, 530, 230, 115),
             0.95,
         ),
         (
-            root / "screenshots" / "bangpai_debug_current_after_loop_timeout.png",
+            fixture("bangpai_debug_current_after_loop_timeout.png"),
             root / "src/ymjh_bot/templates/btn_bangpai_one_key_submit.png",
             (900, 330, 340, 160),
             0.95,
         ),
         (
-            root / "screenshots" / "bangpai_debug_before_full_run.png",
+            fixture("bangpai_debug_before_full_run.png"),
             root / "src/ymjh_bot/templates/text_power_saving.png",
             (480, 470, 340, 140),
             0.95,
         ),
         (
-            root / "screenshots" / "bangpai_debug_task_complete.png",
+            fixture("bangpai_debug_task_complete.png"),
             root / "src/ymjh_bot/templates/text_bangpai_task_complete.png",
             (40, 570, 650, 90),
             0.95,
         ),
         (
-            root / "screenshots" / "bprw_sidebar_failure_20260713_013453.png",
+            fixture("bprw_sidebar_failure_20260713_013453.png"),
             root / "src/ymjh_bot/templates/text_task_panel_title.png",
             (190, 35, 180, 100),
             0.95,
         ),
         (
-            root / "screenshots" / "bprw_task_panel_available_20260713_013453.png",
+            fixture("bprw_task_panel_available_20260713_013453.png"),
             root / "src/ymjh_bot/templates/text_task_panel_title.png",
             (190, 35, 180, 100),
             0.95,
         ),
         (
-            root / "screenshots" / "bprw_task_panel_scrolled_20260713_013453.png",
+            fixture("bprw_task_panel_scrolled_20260713_013453.png"),
             root / "src/ymjh_bot/templates/text_task_panel_title.png",
             (190, 35, 180, 100),
             0.95,
         ),
         (
-            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_180549.png",
+            fixture("ymjh_queue_127.0.0.1_16416_20260709_180549.png"),
             root / "src/ymjh_bot/templates/text_bangpai_daily.png",
             (40, 135, 330, 430),
             0.95,
         ),
         (
-            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_194405.png",
+            fixture("ymjh_queue_127.0.0.1_16416_20260709_194405.png"),
             root / "src/ymjh_bot/templates/text_bangpai_daily.png",
             (40, 135, 330, 430),
             0.95,
         ),
         (
-            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_194405.png",
+            fixture("ymjh_queue_127.0.0.1_16416_20260709_194405.png"),
             root / "src/ymjh_bot/templates/btn_modal_ok.png",
             None,
             0.95,
@@ -784,7 +824,7 @@ def test_bangpai_templates_match_reference_screenshots():
         assert result.score >= threshold
 
     daily_result = engine.match_template(
-        load_image(root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_180549.png"),
+        load_image(fixture("ymjh_queue_127.0.0.1_16416_20260709_180549.png")),
         str(root / "src/ymjh_bot/templates/text_bangpai.png"),
         threshold=0.7,
         roi=(40, 135, 330, 430),
@@ -792,9 +832,9 @@ def test_bangpai_templates_match_reference_screenshots():
     assert daily_result.found is False
 
     task_panel_title_false_cases = [
-        root / "screenshots" / f"{menke_prefix}13.png",
-        root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260709_180549.png",
-        root / "screenshots" / "bangpai_debug_after_sidebar_click.png",
+        fixture(f"{menke_prefix}13.png"),
+        fixture("ymjh_queue_127.0.0.1_16416_20260709_180549.png"),
+        fixture("bangpai_debug_after_sidebar_click.png"),
     ]
     for screenshot_path in task_panel_title_false_cases:
         result = engine.match_template(
@@ -808,58 +848,58 @@ def test_bangpai_templates_match_reference_screenshots():
 
 def test_kyrw_templates_match_reference_screenshots():
     root = Path(__file__).resolve().parents[1]
-    kyrw_dir = root / "screenshots" / "kyrw_wuchan_20260707"
+    kyrw_dir = FIXTURES_DIR / "kyrw_wuchan_20260707"
     cases = [
         (
-            kyrw_dir / "01_activity_jianghu_wuchan_entry.png",
+            kyrw_dir / "01_activity_jianghu_wuchan_entry.webp",
             root / "src/ymjh_bot/templates/btn_kyrw_activity_wuchan_forward.png",
             (120, 210, 220, 115),
             0.95,
         ),
         (
-            kyrw_dir / "03_wuchan_detail_course_forward.png",
+            kyrw_dir / "03_wuchan_detail_course_forward.webp",
             root / "src/ymjh_bot/templates/btn_kyrw_panel_course_forward.png",
             (175, 440, 205, 110),
             0.95,
         ),
         (
-            kyrw_dir / "09_npc_puzhao_wuchan_button.png",
+            kyrw_dir / "09_npc_puzhao_wuchan_button.webp",
             root / "src/ymjh_bot/templates/btn_kyrw_npc_wuchan.png",
             (900, 400, 360, 130),
             0.95,
         ),
         (
-            kyrw_dir / "36_manual_accept_current_state.png",
+            kyrw_dir / "36_manual_accept_current_state.webp",
             root / "src/ymjh_bot/templates/text_kyrw_course_sidebar.png",
             (40, 135, 330, 430),
             0.95,
         ),
         (
-            kyrw_dir / "26_single_tap_wuchanchang_toast.png",
+            kyrw_dir / "26_single_tap_wuchanchang_toast.webp",
             root / "src/ymjh_bot/templates/text_kyrw_existing_course_toast.png",
             (450, 300, 420, 90),
             0.95,
         ),
         (
-            kyrw_dir / "46_stage_5_acquire_route_mall.png",
+            kyrw_dir / "46_stage_5_acquire_route_mall.webp",
             root / "src/ymjh_bot/templates/route_mall.png",
             (330, 120, 880, 520),
             0.95,
         ),
         (
-            kyrw_dir / "49_after_buy_18_humabing.png",
+            kyrw_dir / "49_after_buy_18_humabing.webp",
             root / "src/ymjh_bot/templates/btn_kyrw_one_key_submit.png",
             (900, 330, 340, 160),
             0.95,
         ),
         (
-            kyrw_dir / "51_course_complete_dialog.png",
+            kyrw_dir / "51_course_complete_dialog.webp",
             root / "src/ymjh_bot/templates/text_kyrw_complete.png",
             (350, 250, 600, 220),
             0.95,
         ),
         (
-            kyrw_dir / "40_course_path_or_dialog.png",
+            kyrw_dir / "40_course_path_or_dialog.webp",
             root / "src/ymjh_bot/templates/btn_dialog_next.png",
             (1180, 640, 100, 80),
             0.95,
@@ -876,28 +916,28 @@ def test_kyrw_templates_match_reference_screenshots():
 
 def test_zgwx_templates_match_reference_screenshots():
     root = Path(__file__).resolve().parents[1]
-    zgwx_dir = root / "screenshots" / "zgwx"
+    zgwx_dir = FIXTURES_DIR / "zgwx"
     cases = [
         (
-            zgwx_dir / "zgwx_02_activity_youli_panel.png",
+            zgwx_dir / "zgwx_02_activity_youli_panel.webp",
             root / "src/ymjh_bot/templates/btn_activity_forward.png",
             (120, 250, 220, 120),
             0.95,
         ),
         (
-            zgwx_dir / "zgwx_04_auto_path_wait_1.png",
+            zgwx_dir / "zgwx_04_auto_path_wait_1.webp",
             root / "src/ymjh_bot/templates/icon_zgwx_meditating.png",
             None,
             0.95,
         ),
         (
-            zgwx_dir / "zgwx_05_meditation_wait_min_1.png",
+            zgwx_dir / "zgwx_05_meditation_wait_min_1.webp",
             root / "src/ymjh_bot/templates/icon_zgwx_meditating.png",
             None,
             0.9,
         ),
         (
-            root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260712_153537.png",
+            fixture("ymjh_queue_127.0.0.1_16416_20260712_153537.png"),
             root / "src/ymjh_bot/templates/icon_zgwx_meditating.png",
             None,
             0.9,
@@ -914,22 +954,22 @@ def test_zgwx_templates_match_reference_screenshots():
 
 def test_zgwx_templates_avoid_completion_false_positives():
     root = Path(__file__).resolve().parents[1]
-    zgwx_dir = root / "screenshots" / "zgwx"
+    zgwx_dir = FIXTURES_DIR / "zgwx"
     cases = [
         (
-            zgwx_dir / "zgwx_08_activity_youli_verify_complete.png",
+            zgwx_dir / "zgwx_08_activity_youli_verify_complete.webp",
             root / "src/ymjh_bot/templates/btn_activity_forward.png",
             (120, 250, 220, 120),
             0.8,
         ),
         (
-            zgwx_dir / "zgwx_03_after_activity_forward.png",
+            zgwx_dir / "zgwx_03_after_activity_forward.webp",
             root / "src/ymjh_bot/templates/icon_zgwx_meditating.png",
             None,
             0.9,
         ),
         (
-            zgwx_dir / "zgwx_06_after_meditation_complete.png",
+            zgwx_dir / "zgwx_06_after_meditation_complete.webp",
             root / "src/ymjh_bot/templates/icon_zgwx_meditating.png",
             None,
             0.9,
@@ -945,26 +985,26 @@ def test_zgwx_templates_avoid_completion_false_positives():
 
 def test_common_route_templates_match_task_screenshots():
     root = Path(__file__).resolve().parents[1]
-    kyrw_dir = root / "screenshots" / "kyrw_wuchan_20260707"
+    kyrw_dir = FIXTURES_DIR / "kyrw_wuchan_20260707"
     menke_prefix = "\u95e8\u5ba2\u8bbe\u5bb4"
     cases = [
         (
-            root / "screenshots" / f"{menke_prefix}10.png",
+            fixture(f"{menke_prefix}10.png"),
             root / "src/ymjh_bot/templates/route_mall.png",
             (560, 70, 660, 480),
         ),
         (
-            kyrw_dir / "46_stage_5_acquire_route_mall.png",
+            kyrw_dir / "46_stage_5_acquire_route_mall.webp",
             root / "src/ymjh_bot/templates/route_mall.png",
             (330, 120, 880, 520),
         ),
         (
-            root / "screenshots" / f"{menke_prefix}8.png",
+            fixture(f"{menke_prefix}8.png"),
             root / "src/ymjh_bot/templates/route_stall.png",
             (560, 70, 660, 480),
         ),
         (
-            root / "screenshots" / "bangpai_debug_after_sidebar_click.png",
+            fixture("bangpai_debug_after_sidebar_click.png"),
             root / "src/ymjh_bot/templates/route_stall.png",
             (720, 120, 480, 500),
         ),
@@ -982,7 +1022,7 @@ def test_mryg_smzb_template_matches_reference_screenshot():
     root = Path(__file__).resolve().parents[1]
     engine = VisionEngine()
     result = engine.match_template(
-        load_image(root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260711_222110.png"),
+        load_image(fixture("ymjh_queue_127.0.0.1_16416_20260711_222110.png")),
         str(root / "src/ymjh_bot/templates/btn_MRYG_SMZB.png"),
         threshold=0.95,
         roi=(900, 340, 370, 180),
@@ -996,7 +1036,7 @@ def test_mryg_ttym_still_matches_left_entry_on_result_panel():
     root = Path(__file__).resolve().parents[1]
     engine = VisionEngine()
     result = engine.match_template(
-        load_image(root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260711_231344.png"),
+        load_image(fixture("ymjh_queue_127.0.0.1_16416_20260711_231344.png")),
         str(root / "src/ymjh_bot/templates/btn_MRYG_TTYM.png"),
         threshold=0.95,
         roi=(240, 500, 180, 130),
@@ -1010,7 +1050,7 @@ def test_mryg_jsgx_template_matches_result_panel_bottom_button():
     root = Path(__file__).resolve().parents[1]
     engine = VisionEngine()
     result = engine.match_template(
-        load_image(root / "screenshots" / "ymjh_queue_127.0.0.1_16416_20260711_231344.png"),
+        load_image(fixture("ymjh_queue_127.0.0.1_16416_20260711_231344.png")),
         str(root / "src/ymjh_bot/templates/btn_MRYG_JSGX.png"),
         threshold=0.95,
         roi=(420, 560, 430, 120),

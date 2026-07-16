@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Any
-
-import cv2
 
 from botCore import step
 
@@ -37,9 +34,7 @@ class HSLJTask(YmGameTask):
     BTN_HSLJ_MATCH_EXIT_3V3 = str(YmGameTask.TEMPLATES_DIR / "btn_hslj_match_exit_3v3.png")
     BTN_HSLJ_MATCH_TEMPLATES = [BTN_HSLJ_MATCH, BTN_HSLJ_MATCH_3V3]
     BTN_HSLJ_MATCH_EXIT_TEMPLATES = [BTN_HSLJ_MATCH_EXIT, BTN_HSLJ_MATCH_EXIT_3V3]
-    BTN_HSLJ_READY = str(YmGameTask.TEMPLATES_DIR / "btn_hslj_ready.png")
-    BTN_HSLJ_READY_BATTLE = str(YmGameTask.TEMPLATES_DIR / "btn_hslj_ready_battle.png")
-    BTN_HSLJ_READY_TEMPLATES = [BTN_HSLJ_READY, BTN_HSLJ_READY_BATTLE]
+    BTN_HSLJ_READY_TEMPLATES = [str(YmGameTask.TEMPLATES_DIR / "text_ready.png")]
     ICON_HSLJ_FIRST_WIN = str(YmGameTask.TEMPLATES_DIR / "icon_hslj_first_win.png")
     ICON_HSLJ_FIRST_WIN_READY = str(YmGameTask.TEMPLATES_DIR / "icon_hslj_first_win_ready.png")
     ICON_HSLJ_FIRST_WIN_CHEST = str(YmGameTask.TEMPLATES_DIR / "icon_hslj_first_win_chest.png")
@@ -730,7 +725,7 @@ class HSLJTask(YmGameTask):
 
             now = time.perf_counter()
             if last_heartbeat_at <= 0 or (now - last_heartbeat_at) * 1000 >= self.MATCH_WAIT_HEARTBEAT_MS:
-                self._log(f"华山论剑 {mode} 第 {match_index} 场匹配/准备等待中...")
+                self._debug(f"华山论剑 {mode} 第 {match_index} 场匹配/准备等待中...")
                 last_heartbeat_at = now
             self.wait(self.MATCH_WAIT_POLL_INTERVAL_MS)
 
@@ -956,14 +951,6 @@ class HSLJTask(YmGameTask):
             break
 
         return closed
-
-    def save_debug_screenshot(self, prefix: str) -> str:
-        """Save the current screen for post-run debugging."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        path = self.TEMPLATES_DIR.parents[2] / "screenshots" / f"{prefix}_{timestamp}.png"
-        cv2.imwrite(str(path), self.screenshot())
-        self._log(f"已保存调试截图：{path}")
-        return str(path)
 
     def _tab_mode_target(self, mode: str) -> tuple[str, tuple[int, int], str]:
         targets = {

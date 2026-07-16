@@ -5,14 +5,12 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import cv2
 import numpy as np
 
-from botCore import GameTask, StepStopException, VisionEngine
+from botCore import GameTask, RunLogger, StepStopException, VisionEngine
 from botCore.coords import apply_random_offset
 
 
@@ -58,6 +56,9 @@ class YmGameTask(GameTask):
     BTN_CLOSE = str(TEMPLATES_DIR / "btn_close.png")
     BTN_PANE_CLOSE = str(TEMPLATES_DIR / "btn_pane_close.png")
     BTN_MODAL_OK = str(TEMPLATES_DIR / "btn_modal_ok.png")
+    BTN_QUICK_MENU_FLOWER = str(TEMPLATES_DIR / "btn_quick_menu_flower.png")
+    BTN_QUICK_MENU_FLOWER_NEW = str(TEMPLATES_DIR / "btn_quick_menu_flower_new.png")
+    BTN_ESCAPE_STUCK = str(TEMPLATES_DIR / "btn_escape_stuck.png")
     BTN_WELCOME_CLOSE = str(TEMPLATES_DIR / "btn_welcome_close.png")
     BTN_ROLE_CONFIRM = str(TEMPLATES_DIR / "btn_role_confirm.png")
     BTN_HD = str(TEMPLATES_DIR / "btn_HD.png")
@@ -154,6 +155,9 @@ class YmGameTask(GameTask):
     ROI_CHAT_SEND_BUTTON = (500, 640, 160, 80)
     ROI_POWER_SAVING = (480, 470, 340, 140)
     ROI_CENTER_MODAL_OK = (730, 440, 250, 120)
+    ROI_ACTIVITY_CATEGORY_TABS = (40, 630, 930, 90)
+    ROI_QUICK_MENU_BUTTON = (0, 600, 120, 120)
+    ROI_ESCAPE_STUCK_ITEM = (220, 450, 150, 110)
     ROI_MAP_WORLD_BUTTON = (1160, 610, 120, 110)
     ROI_MAP_REGION_BUTTON = (1160, 610, 120, 110)
     ROI_MAP_WORLD_JINLING = (850, 120, 120, 170)
@@ -192,6 +196,16 @@ class YmGameTask(GameTask):
     HEALTH_RED_MIN_DELTA = 45
     HEALTH_BAR_ANCHOR_THRESHOLD = 0.80
     EMOTION_MEDITATE_THRESHOLD = 0.90
+    ESCAPE_STUCK_MENU_THRESHOLD = 0.90
+    ESCAPE_STUCK_ITEM_THRESHOLD = 0.90
+    ESCAPE_STUCK_CONFIRM_THRESHOLD = 0.95
+    ESCAPE_STUCK_MENU_TIMEOUT_MS = 1500
+    ESCAPE_STUCK_ITEM_TIMEOUT_MS = 2500
+    ESCAPE_STUCK_CONFIRM_TIMEOUT_MS = 3000
+    ESCAPE_STUCK_POLL_INTERVAL_MS = 300
+    ESCAPE_STUCK_MENU_OPEN_WAIT_MS = 500
+    ESCAPE_STUCK_CLEANUP_TIMEOUT_MS = 1000
+    ESCAPE_STUCK_COMPLETE_WAIT_MS = 8000
     ACTIVITY_CATEGORY_POINTS = {
         "江湖": POINT_HUODONG_JIANGHU,
         "帮派": POINT_HUODONG_BANGPAI,
@@ -208,6 +222,11 @@ class YmGameTask(GameTask):
         "游历": ACTIVITY_TAB_YOULI_ACTIVE,
         "社交": ACTIVITY_TAB_SHEJIAO_ACTIVE,
     }
+    ACTIVITY_PANEL_TEMPLATES = list(ACTIVITY_CATEGORY_TEMPLATES.values())
+    ACTIVITY_PANEL_OPEN_ATTEMPTS = 2
+    ACTIVITY_ENTRY_FIND_TIMEOUT_MS = 5000
+    ACTIVITY_PANEL_VERIFY_TIMEOUT_MS = 3000
+    ACTIVITY_OPERATION_TIMEOUT_MS = 30000
     ACTIVITY_CATEGORY_VERIFY_TIMEOUT_MS = 1500
     ACTIVITY_CATEGORY_VERIFY_THRESHOLD = 0.85
     MAP_TEMPLATE_THRESHOLD = 0.9
@@ -345,6 +364,102 @@ class YmGameTask(GameTask):
         """Run shared Yi Meng Jiang Hu guards before each task step."""
         super().before_step(step_name, step_meta)
         self.recover_health_if_needed()
+
+    def before_retry(
+        self,
+        retry_scope: str,
+        failure: Exception | str | None = None,
+    ) -> None:
+        """Try image-only stuck recovery before an abnormal retry starts."""
+        super().before_retry(retry_scope, failure)
+        scope_name = "步骤" if retry_scope == "step" else "任务"
+        self._log(f"{scope_name}异常即将重试，尝试脱离卡死")
+        if not self.try_escape_stuck():
+            self._log("脱离卡死未完成，保持原异常并继续正常重试")
+
+    def try_escape_stuck(self) -> bool:
+        """Try the strict image-only escape flow twice with one cleanup between attempts."""
+        for attempt in range(1, 3):
+            try:
+                if self._try_escape_stuck_once(attempt):
+                    return True
+            except StepStopException:
+                raise
+            except Exception as exc:
+                self._log(f"第 {attempt}/2 次脱离卡死识图流程异常：{exc}")
+
+            if attempt == 1:
+                self._log("首次脱离卡死识别未完成，关闭面板后再完整尝试一次")
+                try:
+                    self.close_all_panels(timeout_ms=self.ESCAPE_STUCK_CLEANUP_TIMEOUT_MS)
+                except StepStopException:
+                    raise
+                except Exception as exc:
+                    self._log(f"脱离卡死重试前关闭面板失败：{exc}")
+
+        return False
+
+    def _try_escape_stuck_once(self, attempt: int) -> bool:
+        menu_templates = [self.BTN_QUICK_MENU_FLOWER, self.BTN_QUICK_MENU_FLOWER_NEW]
+        if not self.wait_find_image_in_roi(
+            menu_templates,
+            self.ROI_QUICK_MENU_BUTTON,
+            timeout_ms=self.ESCAPE_STUCK_MENU_TIMEOUT_MS,
+            description="右下角菜单按钮",
+            threshold=self.ESCAPE_STUCK_MENU_THRESHOLD,
+            interval_ms=self.ESCAPE_STUCK_POLL_INTERVAL_MS,
+        ):
+            self._log(f"第 {attempt}/2 次未识别到菜单按钮，不执行任何兜底点击")
+            return False
+
+        if not self.find_image(
+            self.BTN_ESCAPE_STUCK,
+            threshold=self.ESCAPE_STUCK_ITEM_THRESHOLD,
+            roi=self.scale_roi(self.ROI_ESCAPE_STUCK_ITEM),
+        ):
+            if not self.wait_find_image_in_roi(
+                menu_templates,
+                self.ROI_QUICK_MENU_BUTTON,
+                timeout_ms=self.ESCAPE_STUCK_MENU_TIMEOUT_MS,
+                description="右下角菜单按钮复核",
+                threshold=self.ESCAPE_STUCK_MENU_THRESHOLD,
+                interval_ms=self.ESCAPE_STUCK_POLL_INTERVAL_MS,
+            ):
+                self._log(f"第 {attempt}/2 次菜单按钮复核失败，不执行点击")
+                return False
+
+            self._log("识别到菜单按钮，点击模板中心打开功能面板")
+            self.click(offset=0)
+            self.wait(self.ESCAPE_STUCK_MENU_OPEN_WAIT_MS)
+            if not self.wait_find_image_in_roi(
+                self.BTN_ESCAPE_STUCK,
+                self.ROI_ESCAPE_STUCK_ITEM,
+                timeout_ms=self.ESCAPE_STUCK_ITEM_TIMEOUT_MS,
+                description="脱离卡死菜单项",
+                threshold=self.ESCAPE_STUCK_ITEM_THRESHOLD,
+                interval_ms=self.ESCAPE_STUCK_POLL_INTERVAL_MS,
+            ):
+                self._log(f"第 {attempt}/2 次未识别到脱离卡死，不执行任何兜底点击")
+                return False
+
+        self._log("识别到脱离卡死，点击模板中心")
+        self.click(offset=0)
+        if not self.wait_find_image_in_roi(
+            self.BTN_MODAL_OK,
+            self.ROI_CENTER_MODAL_OK,
+            timeout_ms=self.ESCAPE_STUCK_CONFIRM_TIMEOUT_MS,
+            description="脱离卡死确认按钮",
+            threshold=self.ESCAPE_STUCK_CONFIRM_THRESHOLD,
+            interval_ms=self.ESCAPE_STUCK_POLL_INTERVAL_MS,
+        ):
+            self._log(f"第 {attempt}/2 次未识别到脱离卡死确认按钮，不执行任何兜底点击")
+            return False
+
+        self._log("识别到脱离卡死确认按钮，点击模板中心")
+        self.click(offset=0)
+        self.wait(self.ESCAPE_STUCK_COMPLETE_WAIT_MS)
+        self._log("脱离卡死完成")
+        return True
 
     def is_power_saving_mode(self) -> bool:
         """Return whether the current game view is the power-saving overlay."""
@@ -1105,11 +1220,20 @@ class YmGameTask(GameTask):
 
     def save_debug_screenshot(self, prefix: str) -> str:
         """Save the current screen for debugging."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        path = self.TEMPLATES_DIR.parents[2] / "screenshots" / f"{prefix}_{timestamp}.png"
-        cv2.imwrite(str(path), self.screenshot())
+        logger = self._logger
+        if logger is None:
+            logger = getattr(self, "_fallback_debug_logger", None)
+        if logger is None:
+            serial = str(getattr(getattr(self, "_adb", None), "serial", "debug") or "debug")
+            safe_serial = re.sub(r"[^\w.-]+", "_", serial, flags=re.UNICODE).strip("._")
+            logger = RunLogger(
+                base_dir=self.TEMPLATES_DIR.parents[2] / "logs" / (safe_serial or "debug")
+            )
+            self._fallback_debug_logger = logger
+
+        path = logger.save_screenshot(self.screenshot(), prefix=prefix)
         self._log(f"已保存调试截图：{path}")
-        return str(path)
+        return path
 
     def find_image_once(
         self,
@@ -1127,12 +1251,12 @@ class YmGameTask(GameTask):
         if match.found and match.center:
             self._last_match_center = match.center
             if log_found:
-                self._log(f"Found image: {template} (score={match.score:.3f})")
+                self._debug(f"Found image: {template} (score={match.score:.3f})")
             return True
 
         self._last_match_center = None
         if log_missing:
-            self._log(f"Image not found: {template} (score={match.score:.3f})")
+            self._debug(f"Image not found: {template} (score={match.score:.3f})")
         return False
 
     def confirm_match_leave_team_dialog_if_needed(
@@ -1507,27 +1631,52 @@ class YmGameTask(GameTask):
         wait_after_open_ms: int = 2000,
         wait_after_category_ms: int = 0,
     ) -> None:
-        """Open the activity panel and optionally switch to a category tab."""
-        self.wait_image_appear(self.BTN_HD, timeout_ms=timeout_ms)
-        self.click_activity_entry()
-        self.wait(wait_after_open_ms)
-        self._log("已打开活动界面")
+        """Open and verify the activity panel before any category coordinate is tapped."""
+        deadline = self._make_deadline(timeout_ms)
+        self._ensure_activity_panel_open(
+            deadline=deadline,
+            wait_after_open_ms=wait_after_open_ms,
+        )
 
         if category is None:
             return
 
         if isinstance(category, str):
-            self.open_activity_category(
+            self._open_activity_category(
                 category,
+                max_attempts=3,
                 wait_after_click_ms=wait_after_category_ms or 1500,
+                deadline=deadline,
             )
             return
 
+        if not self._is_activity_panel_open():
+            self._raise_activity_error(
+                "activity_coordinate_precondition_failed",
+                "活动页状态丢失，禁止点击活动分类坐标",
+            )
+
         self.click_point(category[0], category[1], offset=0)
         if wait_after_category_ms > 0:
-            self.wait(wait_after_category_ms)
-        if category_name:
+            self._wait_with_deadline(wait_after_category_ms, deadline)
+
+        template = self.ACTIVITY_CATEGORY_TEMPLATES.get(category_name or "")
+        if template is not None:
+            if not self._wait_activity_category_active(template, deadline=deadline):
+                self._raise_activity_error(
+                    "activity_coordinate_category_failed",
+                    f"未能确认活动 - {category_name}界面",
+                )
             self._log(f"已打开活动 - {category_name}界面")
+            return
+
+        if not self._wait_activity_panel_open(deadline=deadline):
+            self._raise_activity_error(
+                "activity_coordinate_panel_lost",
+                "点击活动分类坐标后活动页状态丢失",
+            )
+        if category_name:
+            self._log(f"已点击活动分类坐标 - {category_name}")
 
     def click_activity_entry(self) -> None:
         """Click the matched activity entry slightly above the template center."""
@@ -1543,25 +1692,169 @@ class YmGameTask(GameTask):
         max_attempts: int = 3,
         wait_after_click_ms: int = 1500,
     ) -> None:
+        deadline = self._make_deadline(self.ACTIVITY_OPERATION_TIMEOUT_MS)
+        self._open_activity_category(
+            category_name,
+            max_attempts=max_attempts,
+            wait_after_click_ms=wait_after_click_ms,
+            deadline=deadline,
+        )
+
+    def _open_activity_category(
+        self,
+        category_name: str,
+        *,
+        max_attempts: int,
+        wait_after_click_ms: int,
+        deadline: float | None,
+    ) -> None:
         point = self.ACTIVITY_CATEGORY_POINTS.get(category_name)
         template = self.ACTIVITY_CATEGORY_TEMPLATES.get(category_name)
         if point is None or template is None:
             raise ValueError(f"Unsupported activity category: {category_name}")
 
+        if self._is_activity_category_active(template):
+            self._log(f"已打开活动 - {category_name}界面")
+            return
+
         for attempt in range(1, max_attempts + 1):
+            if self._is_deadline_expired(deadline):
+                break
+
+            if not self._is_activity_panel_open():
+                self._log(f"活动页状态丢失，重新打开后再切换到{category_name}")
+                self._ensure_activity_panel_open(
+                    deadline=deadline,
+                    wait_after_open_ms=self.ACTIVITY_PANEL_VERIFY_TIMEOUT_MS,
+                )
+
+            if self._is_activity_category_active(template):
+                self._log(f"已打开活动 - {category_name}界面")
+                return
+
             self.click_point(point[0], point[1], offset=0)
             if wait_after_click_ms > 0:
-                self.wait(wait_after_click_ms)
-            if self.wait_image_appear(
-                template,
-                timeout_ms=self.ACTIVITY_CATEGORY_VERIFY_TIMEOUT_MS,
-                threshold=self.ACTIVITY_CATEGORY_VERIFY_THRESHOLD,
-            ):
+                self._wait_with_deadline(wait_after_click_ms, deadline)
+            if self._wait_activity_category_active(template, deadline=deadline):
                 self._log(f"已打开活动 - {category_name}界面")
                 return
             self._log(f"活动 - {category_name}界面未确认，重试 {attempt}/{max_attempts}")
 
-        raise RuntimeError(f"未能切换到活动 - {category_name}界面")
+        self._raise_activity_error(
+            "activity_category_switch_failed",
+            f"未能切换到活动 - {category_name}界面",
+        )
+
+    def _ensure_activity_panel_open(
+        self,
+        *,
+        deadline: float | None,
+        wait_after_open_ms: int,
+    ) -> None:
+        if self._is_activity_panel_open():
+            self._log("已打开活动界面")
+            return
+
+        for attempt in range(1, self.ACTIVITY_PANEL_OPEN_ATTEMPTS + 1):
+            if self._is_deadline_expired(deadline):
+                break
+
+            collapse_wait_ms = self._bounded_timeout_ms(deadline, 800)
+            self.collapse_chat_if_open(wait_after_click_ms=collapse_wait_ms)
+
+            entry_timeout_ms = self._bounded_timeout_ms(deadline, self.ACTIVITY_ENTRY_FIND_TIMEOUT_MS)
+            if entry_timeout_ms <= 0:
+                break
+            if not self.wait_image_appear(self.BTN_HD, timeout_ms=entry_timeout_ms):
+                self._log(f"未找到活动入口，重试打开活动界面 {attempt}/{self.ACTIVITY_PANEL_OPEN_ATTEMPTS}")
+                continue
+
+            self.click_activity_entry()
+            verify_timeout_ms = max(wait_after_open_ms, self.ACTIVITY_PANEL_VERIFY_TIMEOUT_MS)
+            if self._wait_activity_panel_open(
+                deadline=deadline,
+                timeout_ms=verify_timeout_ms,
+            ):
+                self._log("已打开活动界面")
+                return
+
+            self._log(f"活动入口点击后界面未确认，重试 {attempt}/{self.ACTIVITY_PANEL_OPEN_ATTEMPTS}")
+
+        self._raise_activity_error(
+            "activity_panel_open_failed",
+            "未能确认活动界面已打开",
+        )
+
+    def _is_activity_panel_open(self) -> bool:
+        return self.find_image_once(
+            self.ACTIVITY_PANEL_TEMPLATES,
+            threshold=self.ACTIVITY_CATEGORY_VERIFY_THRESHOLD,
+            roi=self.scale_roi(self.ROI_ACTIVITY_CATEGORY_TABS),
+        )
+
+    def _wait_activity_panel_open(
+        self,
+        *,
+        deadline: float | None,
+        timeout_ms: int | None = None,
+    ) -> bool:
+        effective_timeout_ms = self._bounded_timeout_ms(
+            deadline,
+            timeout_ms or self.ACTIVITY_PANEL_VERIFY_TIMEOUT_MS,
+        )
+        if effective_timeout_ms <= 0:
+            return False
+        return self.wait_find_image_in_roi(
+            self.ACTIVITY_PANEL_TEMPLATES,
+            self.ROI_ACTIVITY_CATEGORY_TABS,
+            timeout_ms=effective_timeout_ms,
+            description="活动页底部分栏",
+            threshold=self.ACTIVITY_CATEGORY_VERIFY_THRESHOLD,
+            interval_ms=300,
+        )
+
+    def _is_activity_category_active(self, template: str) -> bool:
+        return self.find_image_once(
+            template,
+            threshold=self.ACTIVITY_CATEGORY_VERIFY_THRESHOLD,
+            roi=self.scale_roi(self.ROI_ACTIVITY_CATEGORY_TABS),
+        )
+
+    def _wait_activity_category_active(
+        self,
+        template: str,
+        *,
+        deadline: float | None,
+    ) -> bool:
+        timeout_ms = self._bounded_timeout_ms(deadline, self.ACTIVITY_CATEGORY_VERIFY_TIMEOUT_MS)
+        if timeout_ms <= 0:
+            return False
+        return self.wait_find_image_in_roi(
+            template,
+            self.ROI_ACTIVITY_CATEGORY_TABS,
+            timeout_ms=timeout_ms,
+            description="活动分类激活状态",
+            threshold=self.ACTIVITY_CATEGORY_VERIFY_THRESHOLD,
+            interval_ms=300,
+        )
+
+    def _wait_with_deadline(self, wait_ms: int, deadline: float | None) -> None:
+        bounded_wait_ms = self._bounded_timeout_ms(deadline, wait_ms)
+        if bounded_wait_ms > 0:
+            self.wait(bounded_wait_ms)
+
+    def _bounded_timeout_ms(self, deadline: float | None, requested_ms: int) -> int:
+        if deadline is None:
+            return max(0, requested_ms)
+        return max(0, min(requested_ms, self._remaining_ms(deadline)))
+
+    def _raise_activity_error(self, screenshot_prefix: str, message: str) -> None:
+        try:
+            debug_path = self.save_debug_screenshot(screenshot_prefix)
+        except Exception as exc:
+            self._log(f"活动界面异常截图保存失败：{exc}")
+            raise RuntimeError(message) from exc
+        raise RuntimeError(f"{message}，已保存截图：{debug_path}")
 
     def switch_task_panel(
         self,
@@ -1622,7 +1915,7 @@ class YmGameTask(GameTask):
             timeout_ms=timeout_ms,
             threshold=threshold,
             missing_threshold=missing_threshold,
-            callback=lambda found, count: self._log("自动寻路中..."),
+            callback=lambda found, count: self._debug("自动寻路中..."),
         )
 
     def require_image(

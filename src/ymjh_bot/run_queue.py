@@ -96,6 +96,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Clear saved progress before starting while preserving queue order and settings.",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable detailed template, coordinate, and polling logs.",
+    )
     return parser.parse_args(argv)
 
 
@@ -156,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
             logger=logger,
             event_callback=_print,
             progress_callback=save_progress,
+            verbose=args.debug,
         )
         progress = state.get("progress")
         if isinstance(progress, dict):

@@ -51,6 +51,7 @@ class RunnerWorker(QObject):
                 vision=vision,
                 logger=logger,
                 event_callback=self.progress.emit,
+                verbose=True,
             )
             self.runner.run()
             self.finished.emit()
@@ -228,7 +229,7 @@ class MainWindow(QMainWindow):
             screenshot = adb.screenshot()
 
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            default_dir = Path.cwd() / "screenshots"
+            default_dir = Path.cwd() / "logs" / "manual_screenshots"
             default_dir.mkdir(parents=True, exist_ok=True)
             default_path = default_dir / f"screenshot_{timestamp}.png"
 

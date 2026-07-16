@@ -206,15 +206,15 @@ def test_on_start_returns_to_safe_zone_and_leaves_team():
 
 
 def test_open_hangdang_activity_uses_hangdang_tab():
-    task = FakeJypyTask(image_results=[True])
+    task = FakeJypyTask()
 
     task.open_hangdang_activity()
 
-    assert task.image_calls == [(task.BTN_HD, 3000, 0.4, 500)]
-    assert task.taps == [(920, 53)]
-    assert task.click_offsets == []
-    assert task.clicked_points == [(task.POINT_HUODONG_HANGDANG[0], task.POINT_HUODONG_HANGDANG[1], 0)]
-    assert task.wait_calls == [2500, 1500]
+    assert task.open_activity_calls == [("行当", None, 30000, 2500, 1500)]
+    assert task.image_calls == []
+    assert task.taps == []
+    assert task.clicked_points == []
+    assert task.wait_calls == []
 
 
 def test_start_auto_pathfinding_clicks_activity_forward():

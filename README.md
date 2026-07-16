@@ -25,10 +25,11 @@ Start the development debugger:
 uv run --no-sync python launch_gui.py
 ```
 
-Run a Python DSL task from the CLI:
+Run a Python DSL task from the CLI. Add `--debug` only when raw template,
+coordinate, and polling logs are needed:
 
 ```powershell
-uv run --no-sync python -m game_bot.run --task src/ymjh_bot/task/QDYX_task.py
+uv run --no-sync python -m game_bot.run --task src/ymjh_bot/task/QDYX_task.py [--debug]
 ```
 
 ## DSL Example
@@ -50,15 +51,21 @@ class MyTask(GameTask):
 
 ## Logs
 
-Runtime logs are written to `logs/run_YYYYMMDD_HHMMSS`:
+Runtime logs are written below `logs/` and retained for seven days by default:
 
 - `events.jsonl`: structured events
 - `shots/*.png`: optional annotated screenshots
 
-## Tests
+INFO is the default. Detailed template matches, coordinates, and polling output
+are emitted only in DEBUG mode. Preview expired artifacts before deleting them:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe tools/cleanup_debug_artifacts.py
+.\.venv\Scripts\python.exe tools/cleanup_debug_artifacts.py --apply
 ```
 
-Integration tests that touch a real emulator are skipped unless `ADB_SERIAL` is set.
+## Tests
+
+The previous test scripts were removed during the debug-artifact cleanup. New
+tests should use the curated real-device frames under `tests/fixtures/ymjh/`
+instead of writing captures to the repository root.

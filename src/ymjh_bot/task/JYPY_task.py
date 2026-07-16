@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime
-
-import cv2
 
 from botCore import step
 
@@ -33,7 +30,6 @@ class JYPYTask(YmGameTask):
     POINT_NPC_DIALOG_CONFIRM = (1096, 466)
     POINT_NPC_QUICK_TEAM = (1096, 390)
     POINT_TEAM_AUTO_MATCH = (990, 669)
-    POINT_TOP_ACTIVITY = (887, 40)
     POINT_TASK_LIST_SCROLL_START = (190, 520)
     POINT_TASK_LIST_SCROLL_END = (190, 220)
 
@@ -150,17 +146,12 @@ class JYPYTask(YmGameTask):
             self._log(f"退队检查未完成，按未组队继续：{exc}")
 
     def open_hangdang_activity_panel(self, *, wait_after_category_ms: int = 1500) -> None:
-        """Open Activity - Hangdang with a fixed-coordinate fallback for chat-heavy scenes."""
-        if self.wait_image_appear(self.BTN_HD, timeout_ms=3000, threshold=0.4):
-            self.click_activity_entry()
-        else:
-            self._log("未稳定识别活动图标，使用顶部活动固定坐标")
-            self.click_point(self.POINT_TOP_ACTIVITY[0], self.POINT_TOP_ACTIVITY[1], offset=0)
-        self.wait(2500)
-        self.click_point(self.POINT_HUODONG_HANGDANG[0], self.POINT_HUODONG_HANGDANG[1], offset=0)
-        if wait_after_category_ms > 0:
-            self.wait(wait_after_category_ms)
-        self._log("已打开活动 - 行当界面")
+        """Open and verify Activity - Hangdang through the shared safe flow."""
+        self.open_activity_panel(
+            "行当",
+            wait_after_open_ms=2500,
+            wait_after_category_ms=wait_after_category_ms,
+        )
 
     def is_activity_forward_visible(self, *, timeout_ms: int) -> bool:
         """Return whether the JYPY forward button is visible in Activity - Hangdang."""
@@ -230,7 +221,7 @@ class JYPYTask(YmGameTask):
 
             now = time.perf_counter()
             if last_heartbeat_at <= 0 or (now - last_heartbeat_at) * 1000 >= self.MATCH_WAIT_HEARTBEAT_MS:
-                self._log("聚义平冤匹配入队等待中...")
+                self._debug("聚义平冤匹配入队等待中...")
                 last_heartbeat_at = now
             self.wait(self.MATCH_WAIT_POLL_INTERVAL_MS)
 
@@ -293,14 +284,6 @@ class JYPYTask(YmGameTask):
             roi=self.ROI_DIALOG_NEXT,
             wait_after_click_ms=1200,
         )
-
-    def save_debug_screenshot(self, prefix: str) -> str:
-        """Save the current screen for post-run debugging."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        path = self.TEMPLATES_DIR.parents[2] / "screenshots" / f"{prefix}_{timestamp}.png"
-        cv2.imwrite(str(path), self.screenshot())
-        self._log(f"已保存调试截图：{path}")
-        return str(path)
 
     def on_finish(self, results: list) -> None:
         """任务结束处理。"""

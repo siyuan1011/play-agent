@@ -3,6 +3,7 @@ from pathlib import Path
 import time
 
 import numpy as np
+import pytest
 
 from botCore import StepStopException
 from botCore.vision import load_image
@@ -14,6 +15,12 @@ from ymjh_bot.ym_game_task import LoginState, YmGameTask
 
 GAME_WINDOW = "mCurrentFocus=Window{abc u0 com.netease.wyclx/com.netease.MainActivity}"
 HOME_WINDOW = "mCurrentFocus=Window{abc u0 app.lawnchair/app.lawnchair.LawnchairLauncher}"
+
+
+FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "ymjh"
+
+def fixture(path: str | Path) -> Path:
+    return (FIXTURES_DIR / path).with_suffix(".webp")
 
 
 class ScriptedLoginTask(YmGameTask):
@@ -352,34 +359,96 @@ class FakeFixedCoordinateTask(YmGameTask):
 
 
 class FakeActivityPanelTask(YmGameTask):
-    def __init__(self, image_results: list[bool]):
+    def __init__(
+        self,
+        *,
+        entry_results: list[bool] | None = None,
+        panel_once_results: list[bool] | None = None,
+        panel_wait_results: list[bool] | None = None,
+        category_once_results: list[bool] | None = None,
+        category_wait_results: list[bool] | None = None,
+        chat_results: list[bool] | None = None,
+    ):
         super().__init__()
-        self.image_results = image_results
+        self.entry_results = entry_results or []
+        self.panel_once_results = panel_once_results or []
+        self.panel_wait_results = panel_wait_results or []
+        self.category_once_results = category_once_results or []
+        self.category_wait_results = category_wait_results or []
+        self.chat_results = chat_results or []
         self.image_calls = []
+        self.find_once_calls = []
+        self.roi_calls = []
         self.click_offsets = []
         self.taps = []
         self.clicked_points = []
         self.wait_calls = []
+        self.collapse_chat_calls = []
+        self.saved_screenshots = []
+        self.actions = []
         self.logs = []
 
     def wait_image_appear(self, template, timeout_ms=10000, threshold=0.8, callback=None, interval_ms=500):
         self.image_calls.append((template, timeout_ms, threshold))
-        result = self.image_results.pop(0) if self.image_results else False
+        result = self.entry_results.pop(0) if self.entry_results else False
         if result and template == self.BTN_HD:
             self._last_match_center = (920, 63)
         return result
+
+    def find_image_once(
+        self,
+        template,
+        *,
+        threshold=0.8,
+        roi=None,
+        log_found=False,
+        log_missing=False,
+    ):
+        self.find_once_calls.append((template, threshold, roi))
+        if isinstance(template, list):
+            return self.panel_once_results.pop(0) if self.panel_once_results else False
+        return self.category_once_results.pop(0) if self.category_once_results else False
+
+    def wait_find_image_in_roi(
+        self,
+        template,
+        roi,
+        *,
+        timeout_ms,
+        description,
+        threshold=0.8,
+        interval_ms=500,
+    ):
+        self.roi_calls.append((template, roi, timeout_ms, description, threshold, interval_ms))
+        if isinstance(template, list):
+            result = self.panel_wait_results.pop(0) if self.panel_wait_results else False
+            self.actions.append(("panel_wait", result))
+            return result
+        result = self.category_wait_results.pop(0) if self.category_wait_results else False
+        self.actions.append(("category_wait", result))
+        return result
+
+    def collapse_chat_if_open(self, wait_after_click_ms: int = 800) -> bool:
+        self.collapse_chat_calls.append(wait_after_click_ms)
+        return self.chat_results.pop(0) if self.chat_results else False
 
     def click(self, offset: int = 3) -> None:
         self.click_offsets.append(offset)
 
     def tap(self, x=None, y=None):
         self.taps.append((x, y))
+        self.actions.append(("tap", x, y))
 
     def click_point(self, x: int, y: int, offset: int = 3) -> None:
         self.clicked_points.append((x, y, offset))
+        self.actions.append(("point", x, y, offset))
 
     def wait(self, ms):
         self.wait_calls.append(ms)
+
+    def save_debug_screenshot(self, prefix: str) -> str:
+        self.saved_screenshots.append(prefix)
+        return f"screenshots/{prefix}.png"
 
     def _log(self, message: str) -> None:
         self.logs.append(message)
@@ -850,10 +919,10 @@ def test_start_task_step_metadata_uses_single_long_running_attempt():
 def test_detect_health_ratio_reads_reference_screenshots():
     root = Path(__file__).resolve().parents[1]
 
-    low_ratio = HealthScreenshotTask(load_image(root / "screenshots" / "1.png")).detect_health_ratio()
-    full_ratio = HealthScreenshotTask(load_image(root / "screenshots" / "5.png")).detect_health_ratio()
+    low_ratio = HealthScreenshotTask(load_image(fixture("1.png"))).detect_health_ratio()
+    full_ratio = HealthScreenshotTask(load_image(fixture("5.png"))).detect_health_ratio()
     chat_overlay_ratio = HealthScreenshotTask(
-        load_image(root / "screenshots" / "hslj_debug_current_1v1.png")
+        load_image(fixture("hslj_debug_current_1v1.png"))
     ).detect_health_ratio()
 
     assert low_ratio is not None
@@ -1593,22 +1662,113 @@ def test_fixed_click_point_and_roi_ignore_runtime_resolution():
     assert task.scale_roi((10, 20, 30, 40)) == (10, 20, 30, 40)
 
 
-def test_open_activity_panel_uses_category_mapping_and_retries_verification():
-    task = FakeActivityPanelTask([True, False, True])
+@pytest.mark.parametrize(
+    ("category", "point", "template"),
+    [
+        ("江湖", (192, 680), YmGameTask.ACTIVITY_TAB_JIANGHU_ACTIVE),
+        ("帮派", (332, 680), YmGameTask.ACTIVITY_TAB_BANGPAI_ACTIVE),
+        ("纷争", (462, 680), YmGameTask.ACTIVITY_TAB_FENZHENG_ACTIVE),
+        ("行当", (612, 680), YmGameTask.ACTIVITY_TAB_HANGDANG_ACTIVE),
+        ("游历", (756, 680), YmGameTask.ACTIVITY_TAB_YOULI_ACTIVE),
+        ("社交", (882, 680), YmGameTask.ACTIVITY_TAB_SHEJIAO_ACTIVE),
+    ],
+)
+def test_open_activity_panel_guards_all_category_coordinates(category, point, template):
+    task = FakeActivityPanelTask(
+        panel_once_results=[True, True],
+        category_once_results=[False, False],
+        category_wait_results=[True],
+    )
 
-    task.open_activity_panel("纷争", wait_after_open_ms=2500, wait_after_category_ms=1500)
+    task.open_activity_panel(category, wait_after_category_ms=1500)
 
-    assert task.taps == [(920, 53)]
-    assert task.click_offsets == []
+    assert task.clicked_points == [(point[0], point[1], 0)]
+    assert task.taps == []
+    assert any(call[0] == template for call in task.roi_calls)
+    assert f"已打开活动 - {category}界面" in task.logs
+
+
+def test_open_activity_panel_reopens_once_before_clicking_category():
+    task = FakeActivityPanelTask(
+        entry_results=[True, True],
+        panel_once_results=[False, True],
+        panel_wait_results=[False, True],
+        category_once_results=[False, False],
+        category_wait_results=[True],
+    )
+
+    task.open_activity_panel("游历", wait_after_open_ms=2500, wait_after_category_ms=1500)
+
+    assert task.taps == [(920, 53), (920, 53)]
+    assert task.clicked_points == [(756, 680, 0)]
+    confirmed_panel_index = max(index for index, action in enumerate(task.actions) if action == ("panel_wait", True))
+    category_click_index = task.actions.index(("point", 756, 680, 0))
+    assert category_click_index > confirmed_panel_index
+
+
+def test_open_activity_panel_does_not_click_category_when_entry_is_missing():
+    task = FakeActivityPanelTask(
+        entry_results=[False, False],
+        panel_once_results=[False],
+    )
+
+    with pytest.raises(RuntimeError, match="未能确认活动界面已打开"):
+        task.open_activity_panel("纷争")
+
+    assert task.clicked_points == []
+    assert task.saved_screenshots == ["activity_panel_open_failed"]
+
+
+def test_open_activity_panel_does_not_click_tuple_when_panel_is_missing():
+    task = FakeActivityPanelTask(
+        entry_results=[False, False],
+        panel_once_results=[False],
+    )
+
+    with pytest.raises(RuntimeError, match="未能确认活动界面已打开"):
+        task.open_activity_panel((612, 680), "行当")
+
+    assert task.clicked_points == []
+
+
+def test_open_activity_category_skips_click_when_target_is_already_active():
+    task = FakeActivityPanelTask(
+        panel_once_results=[True],
+        category_once_results=[True],
+    )
+
+    task.open_activity_panel("帮派")
+
+    assert task.clicked_points == []
+    assert "已打开活动 - 帮派界面" in task.logs
+
+
+def test_open_activity_category_retries_only_while_panel_is_confirmed():
+    task = FakeActivityPanelTask(
+        panel_once_results=[True, True, True],
+        category_once_results=[False, False, False],
+        category_wait_results=[False, True],
+    )
+
+    task.open_activity_panel("纷争", wait_after_category_ms=1500)
+
     assert task.clicked_points == [(462, 680, 0), (462, 680, 0)]
-    assert task.wait_calls == [2500, 1500, 1500]
-    assert task.image_calls == [
-        (task.BTN_HD, 30000, 0.8),
-        (task.ACTIVITY_TAB_FENZHENG_ACTIVE, 1500, 0.85),
-        (task.ACTIVITY_TAB_FENZHENG_ACTIVE, 1500, 0.85),
-    ]
     assert "活动 - 纷争界面未确认，重试 1/3" in task.logs
-    assert "已打开活动 - 纷争界面" in task.logs
+
+
+def test_open_activity_category_stops_clicking_when_panel_disappears():
+    task = FakeActivityPanelTask(
+        entry_results=[False, False],
+        panel_once_results=[True, True, False, False],
+        category_once_results=[False, False],
+        category_wait_results=[False],
+    )
+
+    with pytest.raises(RuntimeError, match="未能确认活动界面已打开"):
+        task.open_activity_panel("纷争", wait_after_category_ms=1500)
+
+    assert task.clicked_points == [(462, 680, 0)]
+    assert task.saved_screenshots == ["activity_panel_open_failed"]
 
 
 def test_walk_rejects_movement_when_main_scene_is_not_clean():
@@ -1838,7 +1998,7 @@ def test_team_panel_and_team_state_use_title_and_quick_button():
 def test_team_member_count_uses_empty_slots_from_one_screenshot():
     root = Path(__file__).resolve().parents[1]
     task = YmGameTask()
-    screen = load_image(root / "screenshots/team_report_02_created_jhxsh.png")
+    screen = load_image(fixture("team_report_02_created_jhxsh.png"))
 
     assert task.count_team_members(screen) == 1
 
@@ -1854,7 +2014,7 @@ def test_click_team_shout_uses_detected_speaker_center():
 
     root = Path(__file__).resolve().parents[1]
     task = TeamShoutTask()
-    screen = load_image(root / "screenshots/team_report_02_created_jhxsh.png")
+    screen = load_image(fixture("team_report_02_created_jhxsh.png"))
 
     task.click_team_shout(screen)
 

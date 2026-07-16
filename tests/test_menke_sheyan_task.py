@@ -9,6 +9,12 @@ from ymjh_bot.task.MKSY_task import MenkeSheyanTask
 from ymjh_bot.ui.task_queue_window import is_visible_task_class
 
 
+FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "ymjh"
+
+def fixture(path: str | Path) -> Path:
+    return (FIXTURES_DIR / path).with_suffix(".webp")
+
+
 class FakeMenkeSheyanTask(MenkeSheyanTask):
     def __init__(
         self,
@@ -410,8 +416,8 @@ def test_start_banquet_enabled_uses_brightness_not_template_only():
     root = Path(__file__).resolve().parents[1]
     prefix = "\u95e8\u5ba2\u8bbe\u5bb4"
 
-    disabled = ScreenshotMenkeSheyanTask(root / "screenshots" / f"{prefix}7.png")
-    enabled = ScreenshotMenkeSheyanTask(root / "screenshots" / f"{prefix}7-1.png")
+    disabled = ScreenshotMenkeSheyanTask(fixture(f"{prefix}7.png"))
+    enabled = ScreenshotMenkeSheyanTask(fixture(f"{prefix}7-1.png"))
 
     assert not disabled.is_start_banquet_enabled()
     assert enabled.is_start_banquet_enabled()

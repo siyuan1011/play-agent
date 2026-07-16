@@ -671,6 +671,7 @@ def test_hslj_task_loads_and_is_visible():
     assert is_visible_task_class(task_cls)
     assert task_cls.task_key == "HSLJ"
     assert task_cls.task_name == "华山论剑"
+    assert [Path(template).name for template in task_cls.BTN_HSLJ_READY_TEMPLATES] == ["text_ready.png"]
 
 
 def test_hslj_activity_open_button_uses_detail_panel_template():

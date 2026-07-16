@@ -320,6 +320,7 @@ def test_jhyxb_task_loads_and_is_visible():
     assert is_visible_task_class(task_cls)
     assert task_cls.task_key == "JHYXB"
     assert task_cls.task_name == "江湖英雄榜"
+    assert Path(task_cls.BTN_JHYXB_READY).name == "text_ready.png"
 
 
 def test_jhyxb_step_order():

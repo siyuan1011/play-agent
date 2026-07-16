@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime
-
-import cv2
 
 from botCore import step
 
@@ -31,7 +28,7 @@ class JianghuYingxiongbangTask(YmGameTask):
     ICON_JHYXB_FIRST_WIN_READY = str(YmGameTask.TEMPLATES_DIR / "icon_jhyxb_first_win_ready.png")
     ICON_JHYXB_FIRST_WIN_CHEST = str(YmGameTask.TEMPLATES_DIR / "icon_jhyxb_first_win_chest.png")
     TEXT_JHYXB_CHALLENGE_ZERO = str(YmGameTask.TEMPLATES_DIR / "text_jhyxb_challenge_zero.png")
-    BTN_JHYXB_READY = str(YmGameTask.TEMPLATES_DIR / "btn_jhyxb_ready.png")
+    BTN_JHYXB_READY = str(YmGameTask.TEMPLATES_DIR / "text_ready.png")
     BTN_JHYXB_RESULT_EXIT: str | None = None
 
     # 固定坐标点 (设计分辨率 1280x720 下)
@@ -347,7 +344,7 @@ class JianghuYingxiongbangTask(YmGameTask):
 
             now = time.perf_counter()
             if last_heartbeat_at <= 0 or (now - last_heartbeat_at) * 1000 >= self.MATCH_WAIT_HEARTBEAT_MS:
-                self._log(f"第 {match_index} 次江湖英雄榜匹配/准备等待中...")
+                self._debug(f"第 {match_index} 次江湖英雄榜匹配/准备等待中...")
                 last_heartbeat_at = now
             self.wait(self.MATCH_WAIT_POLL_INTERVAL_MS)
 
@@ -487,14 +484,6 @@ class JianghuYingxiongbangTask(YmGameTask):
             break
 
         return closed
-
-    def save_debug_screenshot(self, prefix: str) -> str:
-        """Save the current screen for post-run debugging."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = self.TEMPLATES_DIR.parents[2] / "screenshots" / f"{prefix}_{timestamp}.png"
-        cv2.imwrite(str(path), self.screenshot())
-        self._log(f"已保存调试截图：{path}")
-        return str(path)
 
     def on_finish(self, results: list) -> None:
         """任务结束处理。"""
