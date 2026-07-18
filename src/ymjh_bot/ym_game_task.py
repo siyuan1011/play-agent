@@ -5,12 +5,14 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass
+from math import hypot
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 
-from botCore import GameTask, RunLogger, StepStopException, VisionEngine
+from botCore import GameTask, ImageMatchResult, RunLogger, StepStopException, VisionEngine
 from botCore.coords import apply_random_offset
 
 
@@ -26,6 +28,22 @@ class LoginState:
     score: float
     center: tuple[int, int] | None
     template_path: str | None = None
+
+
+class TaskSidebarStateError(RuntimeError):
+    """Raised when the compact task sidebar state cannot be verified safely."""
+
+
+@dataclass(slots=True)
+class TaskSidebarSnapshot:
+    """Visual state collected from one task-sidebar screenshot."""
+
+    image: np.ndarray
+    active_panel: str | None
+    active_matches: dict[str, ImageMatchResult]
+    entry_match: ImageMatchResult
+    expand_match: ImageMatchResult
+    fullscreen_match: ImageMatchResult
 
 
 class YmGameTask(GameTask):
@@ -48,6 +66,16 @@ class YmGameTask(GameTask):
     LEAVE_TEAM_ON_START = False
     STARTUP_CLOSE_SETTLE_WAIT_MS = 0
     STARTUP_FINAL_CLOSE_TIMEOUT_MS = 3000
+    CLOSE_ALL_MAX_ATTEMPTS = 8
+    CLOSE_MATCH_THRESHOLD = 0.8
+    CLOSE_CANDIDATE_MERGE_RADIUS_PX = 18
+    CLOSE_STATE_CENTER_TOLERANCE_PX = 10
+    CLOSE_NO_CHANGE_LIMIT = 3
+    CLOSE_EMPTY_RECHECK_WAIT_MS = 500
+    CLOSE_STRUCTURE_SIZE = (160, 90)
+    CLOSE_STRUCTURE_BLUR_SIZE = (5, 5)
+    CLOSE_STRUCTURE_PIXEL_DIFF = 20
+    CLOSE_STRUCTURE_CHANGE_RATIO = 0.05
     SAFE_ZONE_RETURN_FAILURE_LOG = "返回安全区未完成，保持当前主界面继续：{error}"
 
     TEMPLATES_DIR = TEMPLATES_DIR
@@ -69,10 +97,12 @@ class YmGameTask(GameTask):
     BTN_CHAT_SEND = str(TEMPLATES_DIR / "btn_chat_send.png")
     BTN_EMOTION_MEDITATE = str(TEMPLATES_DIR / "btn_emotion_meditate.png")
     HEALTH_BAR_ANCHOR = str(TEMPLATES_DIR / "health_bar_anchor.png")
-    ICON_TASK_ACTIVE = str(TEMPLATES_DIR / "icon_task_active.png")
     ICON_TASK_RW = str(TEMPLATES_DIR / "icon_task_rw.png")
     ICON_TASK_JH = str(TEMPLATES_DIR / "icon_task_jh.png")
     ICON_TASK_QY = str(TEMPLATES_DIR / "icon_task_qy.png")
+    TASK_SIDEBAR_ENTRY_V2 = str(TEMPLATES_DIR / "task_sidebar_entry_v2.png")
+    TASK_SIDEBAR_EXPAND_V2 = str(TEMPLATES_DIR / "task_sidebar_expand_v2.png")
+    TASK_FULLSCREEN_PANEL_V2 = str(TEMPLATES_DIR / "task_fullscreen_panel_v2.png")
     TEXT_TASK_PANEL_TITLE = str(TEMPLATES_DIR / "text_task_panel_title.png")
     TEXT_AUTO_PATH = str(TEMPLATES_DIR / "text_zidongxunlu.png")
     TEXT_POWER_SAVING = str(TEMPLATES_DIR / "text_power_saving.png")
@@ -114,7 +144,6 @@ class YmGameTask(GameTask):
     POINT_HUODONG_HANGDANG = (612, 680)
     POINT_HUODONG_YOULI = (756, 680)
     POINT_HUODONG_SHEJIAO = (882, 680)
-    POINT_MAIN_TASK = (22, 160)
     POINT_MAIN_TEAM = (22, 276)
     POINT_MAIN_TEAM_WHEN_TASK_PANEL_OPEN = (22, 420)
     POINT_MINIMAP = (1260, 90)
@@ -124,13 +153,11 @@ class YmGameTask(GameTask):
     POINT_TEAM_LEAVE = (1106, 663)
     POINT_TEAM_START_MATCH = (295, 663)
     POINT_TEAM_SHOUT = (613, 116)
-    POINT_TASK_TAB_TASK = (88, 124)
-    POINT_TASK_TAB_JIANGHU = (174, 124)
-    POINT_TASK_TAB_QIYU = (258, 124)
     POINT_EMOTION_SINGLE_TAB = (405, 505)
     POINT_EMOTION_COLLAPSE = (934, 503)
     POINT_LIGHTNESS = (1240, 420)
     POINT_CHAT_COLLAPSE_ARROW = (680, 356)
+    POINT_TASK_SIDEBAR_WAKE = (22, 218)
     POINT_DIRECTION_JOYSTICK_CENTER = (105, 455)
     POINT_BATTLE_NORMAL_ATTACK = (1135, 553)
     POINT_RIGHT_JOYSTICK_CENTER = POINT_BATTLE_NORMAL_ATTACK
@@ -165,6 +192,9 @@ class YmGameTask(GameTask):
     ROI_MAP_SAFE_POINT = (440, 0, 130, 80)
     ROI_MAP_CLOSE = (1180, 0, 100, 95)
     ROI_TASK_PANEL_TITLE = (190, 35, 180, 100)
+    ROI_TASK_SIDEBAR_ENTRY = (0, 90, 60, 310)
+    ROI_TASK_SIDEBAR_TABS = (40, 90, 270, 70)
+    ROI_TASK_FULLSCREEN_V2 = (0, 0, 140, 330)
     ROI_TEAM_PANEL_TITLE = (35, 0, 170, 65)
     ROI_TEAM_PANEL_BOTTOM_RIGHT = (1010, 600, 220, 115)
     ROI_TEAM_QUICK_ACTIONS = (880, 620, 370, 90)
@@ -237,8 +267,29 @@ class YmGameTask(GameTask):
     SAFE_ZONE_RETURN_MAX_ATTEMPTS = 3
     TEAM_RECRUIT_INTERVAL_MS = 10000
     TEAM_TEMPLATE_THRESHOLD = 0.9
-    TASK_PANEL_ACTIVE_WAIT_MS = 3000
+    TASK_PANEL_ACTIVE_WAIT_MS = 6000
     TASK_PANEL_TITLE_THRESHOLD = 0.9
+    TASK_SIDEBAR_THRESHOLD = 0.85
+    TASK_TAB_ACTIVE_THRESHOLD = 0.90
+    TASK_SIDEBAR_POLL_INTERVAL_MS = 300
+    TASK_SIDEBAR_UNKNOWN_FRAME_LIMIT = 2
+    TASK_SIDEBAR_FULLSCREEN_RECOVERY_LIMIT = 1
+    TASK_SIDEBAR_EXPAND_CLICK_LIMIT = 1
+    TASK_SIDEBAR_ACTIVATION_CLICK_LIMIT = 1
+    TASK_TAB_ORDER = ("任务", "江湖", "奇遇")
+    TASK_TAB_PITCH_PX = 84
+    TASK_TAB_TEMPLATE_SIZE = (85, 36)
+    TASK_TAB_SEARCH_MARGIN_PX = 3
+    TASK_TAB_SLOT_CENTERS = {
+        "任务": (49, 34),
+        "江湖": (133, 34),
+        "奇遇": (217, 34),
+    }
+    TASK_PANEL_ACTIVE_TEMPLATES = {
+        "任务": ICON_TASK_RW,
+        "江湖": ICON_TASK_JH,
+        "奇遇": ICON_TASK_QY,
+    }
     MAP_CLOSE_TEMPLATES = [BTN_CLOSE, BTN_WELCOME_CLOSE, BTN_PANE_CLOSE]
     ICON_SAFE_POINT_TEMPLATES = [ICON_SAFE_POINT, ICON_SAFE_POINT_CURRENT]
 
@@ -1002,37 +1053,295 @@ class YmGameTask(GameTask):
         wait_after_click_ms: int = 500,
         max_attempts: int | None = None,
     ) -> None:
-        """Close visible panels by repeatedly tapping known close buttons."""
+        """Close stacked panels by trying and verifying every visible close candidate."""
         targets = templates or [self.BTN_CLOSE, self.BTN_PANE_CLOSE, self.BTN_WELCOME_CLOSE]
+        targets = [targets] if isinstance(targets, str) else targets
         effective_max_attempts = max_attempts
         if effective_max_attempts is None:
             effective_max_attempts = getattr(self, "CLOSE_ALL_MAX_ATTEMPTS", None)
-        close_purchase_dialog = getattr(self, "close_purchase_dialog_if_needed", None)
+        if effective_max_attempts is None:
+            raise RuntimeError("关闭弹窗必须设置有限的最大尝试次数")
+        if effective_max_attempts <= 0:
+            raise ValueError("max_attempts 必须大于 0")
+        if timeout_ms < 0:
+            raise ValueError("timeout_ms 不能小于 0")
+
         attempts = 0
-        reached_limit = False
+        consecutive_no_change = 0
+        tried_centers: list[tuple[int, int]] = []
+        self._log(f"开始关闭可识别弹窗，最多尝试 {effective_max_attempts} 次")
         self.collapse_chat_if_open()
+
+        current_image, current_candidates = self._wait_for_initial_close_candidates(
+            targets,
+            timeout_ms=timeout_ms,
+        )
+        if not current_candidates:
+            self.collapse_chat_if_open()
+            self._log("已关闭所有弹窗")
+            return
 
         while True:
-            if effective_max_attempts is not None and attempts >= effective_max_attempts:
-                reached_limit = True
-                break
+            self._log(f"当前识别到 {len(current_candidates)} 个关闭候选")
+            self._debug_close_candidates(current_candidates)
 
-            if callable(close_purchase_dialog) and close_purchase_dialog():
-                attempts += 1
+            if not current_candidates:
+                self.wait(self.CLOSE_EMPTY_RECHECK_WAIT_MS)
+                confirm_image, confirm_candidates = self._capture_close_candidates(targets)
+                if not confirm_candidates:
+                    self.collapse_chat_if_open()
+                    self._log("已关闭所有弹窗")
+                    return
+                current_image = confirm_image
+                current_candidates = confirm_candidates
+                tried_centers.clear()
+                consecutive_no_change = 0
                 continue
 
-            if not self.wait_image_appear(targets, timeout_ms=timeout_ms):
-                break
+            if attempts >= effective_max_attempts:
+                self._raise_close_panels_error(
+                    "关闭弹窗达到总点击上限",
+                    current_image,
+                    current_candidates,
+                )
 
-            self.click()
-            self.wait(wait_after_click_ms)
+            candidate = self._next_untried_close_candidate(current_candidates, tried_centers)
+            if candidate is None:
+                # Every candidate in this unchanged state has been tried.  Allow
+                # another highest-score attempt while preserving the consecutive
+                # no-change count.
+                refreshed_image, refreshed_candidates = self._capture_close_candidates(targets)
+                refreshed_structure_change = self._close_structure_change_ratio(
+                    current_image,
+                    refreshed_image,
+                )
+                if (
+                    not self._same_close_candidate_centers(
+                        current_candidates,
+                        refreshed_candidates,
+                    )
+                    or refreshed_structure_change >= self.CLOSE_STRUCTURE_CHANGE_RATIO
+                ):
+                    consecutive_no_change = 0
+                    self._debug(
+                        "候选轮次重置时检测到页面状态变化，清空连续无效计数："
+                        f"structure_change={refreshed_structure_change:.4%}"
+                    )
+                current_image = refreshed_image
+                current_candidates = refreshed_candidates
+                tried_centers.clear()
+                continue
+
             attempts += 1
+            candidate_index = current_candidates.index(candidate) + 1
+            self._log(
+                f"关闭弹窗尝试 {attempts}/{effective_max_attempts}，"
+                f"选择候选 {candidate_index}/{len(current_candidates)}"
+            )
+            self._debug(
+                f"点击关闭候选 center={candidate.center}, score={candidate.score:.3f}, "
+                f"template={candidate.template_path}"
+            )
+            self._last_match_center = candidate.center
+            self._last_match_score = candidate.score
+            self.click(offset=0)
+            self.wait(wait_after_click_ms)
+            next_image, next_candidates = self._capture_close_candidates(targets)
 
-        self.collapse_chat_if_open()
-        if reached_limit:
-            self._log(f"关闭弹窗达到上限 {effective_max_attempts} 次，继续后续流程")
-        else:
-            self._log("已关闭所有弹窗")
+            same_candidates = self._same_close_candidate_centers(
+                current_candidates,
+                next_candidates,
+            )
+            structure_change = self._close_structure_change_ratio(current_image, next_image)
+            changed = not same_candidates or structure_change >= self.CLOSE_STRUCTURE_CHANGE_RATIO
+            self._debug(
+                f"关闭点击状态校验：candidate_set_changed={not same_candidates}, "
+                f"structure_change={structure_change:.4%}"
+            )
+
+            if changed:
+                self._log(f"第 {attempts} 次关闭点击已生效，重新扫描当前页面")
+                tried_centers.clear()
+                consecutive_no_change = 0
+            else:
+                consecutive_no_change += 1
+                if candidate.center is not None:
+                    tried_centers.append(candidate.center)
+                self._log(
+                    f"第 {attempts} 次关闭点击未改变界面，"
+                    f"连续无效 {consecutive_no_change}/{self.CLOSE_NO_CHANGE_LIMIT}"
+                )
+                if consecutive_no_change >= self.CLOSE_NO_CHANGE_LIMIT:
+                    self._raise_close_panels_error(
+                        "连续三次关闭点击未改变界面",
+                        next_image,
+                        next_candidates,
+                    )
+
+            current_image = next_image
+            current_candidates = next_candidates
+
+    def _wait_for_initial_close_candidates(
+        self,
+        targets: list[str],
+        *,
+        timeout_ms: int,
+    ) -> tuple[np.ndarray, list[ImageMatchResult]]:
+        """Preserve the old initial wait window while requiring two empty frames."""
+        deadline = time.perf_counter() + timeout_ms / 1000.0
+        missing_frames = 0
+        while True:
+            image, candidates = self._capture_close_candidates(targets)
+            if candidates:
+                return image, candidates
+            missing_frames += 1
+
+            remaining_ms = max(0, int((deadline - time.perf_counter()) * 1000))
+            if remaining_ms <= 0:
+                if missing_frames >= 2:
+                    return image, candidates
+                self.wait(min(self.CLOSE_EMPTY_RECHECK_WAIT_MS, timeout_ms))
+                continue
+            self.wait(min(self.CLOSE_EMPTY_RECHECK_WAIT_MS, remaining_ms))
+
+    def _capture_close_candidates(
+        self,
+        targets: list[str],
+    ) -> tuple[np.ndarray, list[ImageMatchResult]]:
+        image = self.screenshot()
+        matches = self._vision.match_all_templates(
+            image,
+            targets,
+            threshold=self.CLOSE_MATCH_THRESHOLD,
+        )
+        return image, self._merge_close_candidates(matches)
+
+    def _merge_close_candidates(
+        self,
+        candidates: list[ImageMatchResult],
+    ) -> list[ImageMatchResult]:
+        """Merge matches from different templates that describe the same close button."""
+        merged: list[ImageMatchResult] = []
+        for candidate in sorted(candidates, key=lambda item: item.score, reverse=True):
+            if candidate.center is None:
+                continue
+            if any(
+                self._centers_within(
+                    candidate.center,
+                    existing.center,
+                    self.CLOSE_CANDIDATE_MERGE_RADIUS_PX,
+                )
+                for existing in merged
+                if existing.center is not None
+            ):
+                continue
+            merged.append(candidate)
+        return merged
+
+    def _next_untried_close_candidate(
+        self,
+        candidates: list[ImageMatchResult],
+        tried_centers: list[tuple[int, int]],
+    ) -> ImageMatchResult | None:
+        for candidate in candidates:
+            if candidate.center is None:
+                continue
+            if not any(
+                self._centers_within(
+                    candidate.center,
+                    tried,
+                    self.CLOSE_STATE_CENTER_TOLERANCE_PX,
+                )
+                for tried in tried_centers
+            ):
+                return candidate
+        return None
+
+    def _same_close_candidate_centers(
+        self,
+        before: list[ImageMatchResult],
+        after: list[ImageMatchResult],
+    ) -> bool:
+        """Compare coordinate sets using one-to-one matching with a 10 px tolerance."""
+        before_centers = [item.center for item in before if item.center is not None]
+        after_centers = [item.center for item in after if item.center is not None]
+        if len(before_centers) != len(after_centers):
+            return False
+
+        before_owner: list[int | None] = [None] * len(before_centers)
+
+        def assign(after_index: int, visited: set[int]) -> bool:
+            center = after_centers[after_index]
+            for before_index, before_center in enumerate(before_centers):
+                if before_index in visited or not self._centers_within(
+                    center,
+                    before_center,
+                    self.CLOSE_STATE_CENTER_TOLERANCE_PX,
+                ):
+                    continue
+                visited.add(before_index)
+                owner = before_owner[before_index]
+                if owner is None or assign(owner, visited):
+                    before_owner[before_index] = after_index
+                    return True
+            return False
+
+        return all(assign(index, set()) for index in range(len(after_centers)))
+
+    @staticmethod
+    def _centers_within(
+        first: tuple[int, int],
+        second: tuple[int, int],
+        tolerance_px: int,
+    ) -> bool:
+        return hypot(first[0] - second[0], first[1] - second[1]) <= tolerance_px
+
+    def _close_structure_change_ratio(self, before: np.ndarray, after: np.ndarray) -> float:
+        before_gray = self._prepare_close_structure_image(before)
+        after_gray = self._prepare_close_structure_image(after)
+        changed = cv2.absdiff(before_gray, after_gray) > self.CLOSE_STRUCTURE_PIXEL_DIFF
+        return float(np.count_nonzero(changed) / changed.size)
+
+    def _prepare_close_structure_image(self, image: np.ndarray) -> np.ndarray:
+        gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        resized = cv2.resize(gray, self.CLOSE_STRUCTURE_SIZE, interpolation=cv2.INTER_AREA)
+        return cv2.GaussianBlur(resized, self.CLOSE_STRUCTURE_BLUR_SIZE, 0)
+
+    def _debug_close_candidates(self, candidates: list[ImageMatchResult]) -> None:
+        for index, candidate in enumerate(candidates, start=1):
+            self._debug(
+                f"关闭候选 {index}: center={candidate.center}, score={candidate.score:.3f}, "
+                f"template={candidate.template_path}"
+            )
+
+    def _raise_close_panels_error(
+        self,
+        reason: str,
+        image: np.ndarray,
+        candidates: list[ImageMatchResult],
+    ) -> None:
+        canvas = image.copy()
+        for index, candidate in enumerate(candidates, start=1):
+            if candidate.bbox is not None:
+                x1, y1, x2, y2 = candidate.bbox
+                cv2.rectangle(canvas, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            if candidate.center is not None:
+                cv2.circle(canvas, candidate.center, 6, (0, 255, 255), 2)
+                cv2.putText(
+                    canvas,
+                    f"#{index} {candidate.score:.3f}",
+                    (candidate.center[0] + 8, max(18, candidate.center[1] - 8)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 255, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
+
+        logger = self._get_debug_logger()
+        path = logger.save_screenshot(canvas, prefix="close_panels_failed", label=reason)
+        self._log(f"{reason}，已保存候选标注截图：{path}")
+        raise RuntimeError(f"{reason}，已保存截图：{path}")
 
     def return_to_safe_zone(
         self,
@@ -1220,6 +1529,13 @@ class YmGameTask(GameTask):
 
     def save_debug_screenshot(self, prefix: str) -> str:
         """Save the current screen for debugging."""
+        logger = self._get_debug_logger()
+        path = logger.save_screenshot(self.screenshot(), prefix=prefix)
+        self._log(f"已保存调试截图：{path}")
+        return path
+
+    def _get_debug_logger(self) -> RunLogger:
+        """Return the run logger used for diagnostic screenshots."""
         logger = self._logger
         if logger is None:
             logger = getattr(self, "_fallback_debug_logger", None)
@@ -1230,10 +1546,7 @@ class YmGameTask(GameTask):
                 base_dir=self.TEMPLATES_DIR.parents[2] / "logs" / (safe_serial or "debug")
             )
             self._fallback_debug_logger = logger
-
-        path = logger.save_screenshot(self.screenshot(), prefix=prefix)
-        self._log(f"已保存调试截图：{path}")
-        return path
+        return logger
 
     def find_image_once(
         self,
@@ -1856,51 +2169,624 @@ class YmGameTask(GameTask):
             raise RuntimeError(message) from exc
         raise RuntimeError(f"{message}，已保存截图：{debug_path}")
 
+    def ensure_task_sidebar_open(
+        self,
+        *,
+        timeout_ms: int = 6000,
+        threshold: float = 0.85,
+        wait_after_click_ms: int = 500,
+    ) -> str:
+        """Open and verify the compact task sidebar without choosing a tab."""
+        deadline, effective_threshold = self._prepare_task_sidebar_operation(
+            timeout_ms=timeout_ms,
+            threshold=threshold,
+        )
+        snapshot, _ = self._ensure_task_sidebar_open(
+            deadline=deadline,
+            threshold=effective_threshold,
+            wait_after_click_ms=wait_after_click_ms,
+            fullscreen_recoveries=0,
+        )
+        self._log("已确认任务侧栏打开")
+        return snapshot.active_panel or ""
+
     def switch_task_panel(
         self,
         panel: str,
         *,
-        timeout_ms: int = 3000,
+        timeout_ms: int = 6000,
         threshold: float = 0.8,
         wait_after_click_ms: int = 500,
     ) -> None:
-        """Open the task sidebar and switch to the requested task panel tab."""
-        panel_targets = {
-            "任务": (self.POINT_TASK_TAB_TASK, self.ICON_TASK_RW),
-            "江湖": (self.POINT_TASK_TAB_JIANGHU, self.ICON_TASK_JH),
-            "奇遇": (self.POINT_TASK_TAB_QIYU, self.ICON_TASK_QY),
-        }
-        if panel not in panel_targets:
+        """Open the task sidebar and switch tabs using verified template centers."""
+        if panel not in self.TASK_PANEL_ACTIVE_TEMPLATES:
             raise ValueError(f"Unsupported task panel: {panel}")
 
-        if not self.wait_image_appear(self.ICON_TASK_ACTIVE, timeout_ms=timeout_ms, threshold=threshold):
-            self._log("任务侧栏未激活，点击任务栏")
-            self.click_point(self.POINT_MAIN_TASK[0], self.POINT_MAIN_TASK[1])
-            self.wait(wait_after_click_ms)
+        deadline, effective_threshold = self._prepare_task_sidebar_operation(
+            timeout_ms=timeout_ms,
+            threshold=threshold,
+        )
+        snapshot, fullscreen_recoveries = self._ensure_task_sidebar_open(
+            deadline=deadline,
+            threshold=effective_threshold,
+            wait_after_click_ms=wait_after_click_ms,
+            fullscreen_recoveries=0,
+        )
 
-            if not self.wait_image_appear(
-                self.ICON_TASK_ACTIVE,
-                timeout_ms=self.TASK_PANEL_ACTIVE_WAIT_MS,
-                threshold=threshold,
+        tab_switch_attempts = 0
+        while True:
+            if snapshot.active_panel == panel:
+                self._log(f"任务侧栏页签已激活：{panel}")
+                return
+            if self._is_deadline_expired(deadline):
+                self._raise_task_sidebar_state_error(
+                    f"切换到任务面板 {panel} 前总超时已耗尽",
+                    snapshot.image,
+                    self._task_sidebar_snapshot_matches(snapshot),
+                )
+
+            target_center = self._task_tab_target_center(snapshot, panel)
+            tab_switch_attempts += 1
+            self._log(f"切换任务侧栏页签：{panel}")
+            self._debug(
+                f"根据 active 锚点点击任务页签 center={target_center}, "
+                f"source={snapshot.active_panel}, target={panel}"
+            )
+            active_match = snapshot.active_matches[snapshot.active_panel or ""]
+            self._last_match_center = target_center
+            self._last_match_score = active_match.score
+            self.click(offset=0)
+            self._wait_with_deadline(wait_after_click_ms, deadline)
+
+            status, snapshot = self._wait_for_task_panel_active(
+                panel,
+                deadline=deadline,
+                threshold=effective_threshold,
+            )
+            if status == "active":
+                self._log(f"已切换到任务面板：{panel}")
+                return
+
+            if (
+                status == "fullscreen"
+                and fullscreen_recoveries < self.TASK_SIDEBAR_FULLSCREEN_RECOVERY_LIMIT
+                and tab_switch_attempts < 2
             ):
-                if not self.find_image(
-                    self.TEXT_TASK_PANEL_TITLE,
-                    threshold=self.TASK_PANEL_TITLE_THRESHOLD,
-                    roi=self.scale_roi(self.ROI_TASK_PANEL_TITLE),
-                ):
-                    raise RuntimeError("未能打开任务侧栏")
+                self._log("任务页签点击意外进入全屏任务面板，关闭后重试一次")
+                recovered_snapshot = self._close_task_fullscreen_with_deadline(
+                    deadline=deadline,
+                    wait_after_click_ms=wait_after_click_ms,
+                )
+                fullscreen_recoveries += 1
+                recovered_active_count = sum(
+                    match.found for match in recovered_snapshot.active_matches.values()
+                )
+                if recovered_active_count == 1 and recovered_snapshot.active_panel is not None:
+                    snapshot = recovered_snapshot
+                else:
+                    snapshot, fullscreen_recoveries = self._ensure_task_sidebar_open(
+                        deadline=deadline,
+                        threshold=effective_threshold,
+                        wait_after_click_ms=wait_after_click_ms,
+                        fullscreen_recoveries=fullscreen_recoveries,
+                    )
+                continue
 
-                self._log("点击任务栏后打开全屏任务面板，关闭面板并恢复任务侧栏")
-                self.close_all_panels()
+            reason = {
+                "fullscreen": "任务页签切换再次进入全屏任务面板",
+                "unknown": "任务页签切换后侧栏状态无法确认",
+                "timeout": f"切换到任务面板 {panel} 超时",
+            }.get(status, f"未能切换到任务面板：{panel}")
+            self._raise_task_sidebar_state_error(
+                reason,
+                snapshot.image,
+                self._task_sidebar_snapshot_matches(snapshot),
+            )
 
-        tab_point, active_template = panel_targets[panel]
-        self.click_point(tab_point[0], tab_point[1])
-        self.wait(wait_after_click_ms)
+    def _prepare_task_sidebar_operation(
+        self,
+        *,
+        timeout_ms: int | None,
+        threshold: float,
+    ) -> tuple[float, float]:
+        effective_timeout_ms = self.TASK_PANEL_ACTIVE_WAIT_MS if timeout_ms is None else timeout_ms
+        if effective_timeout_ms <= 0:
+            raise ValueError("任务侧栏操作 timeout_ms 必须大于 0")
 
-        if not self.wait_image_appear(active_template, timeout_ms=timeout_ms, threshold=threshold):
-            raise RuntimeError(f"未能切换到任务面板：{panel}")
+        effective_threshold = max(self.TASK_SIDEBAR_THRESHOLD, threshold)
+        if effective_threshold != threshold:
+            self._debug(
+                f"任务侧栏阈值从 {threshold:.3f} 提升到安全下限 {effective_threshold:.3f}"
+            )
 
-        self._log(f"已切换到任务面板：{panel}")
+        deadline = self._make_deadline(effective_timeout_ms)
+        assert deadline is not None
+        missing_templates = self._missing_task_sidebar_templates()
+        if missing_templates:
+            self._debug(f"任务侧栏模板缺失：{missing_templates}")
+            self._raise_task_sidebar_state_error(
+                "任务侧栏视觉模板缺失",
+                self.screenshot(),
+                [],
+            )
+
+        if self.is_chat_open():
+            if self._is_deadline_expired(deadline):
+                self._raise_task_sidebar_state_error(
+                    "收起聊天框前总超时已耗尽",
+                    self.screenshot(),
+                    [],
+                )
+            self._log("检测到聊天框展开，点击箭头收起")
+            self.click_point(
+                self.POINT_CHAT_COLLAPSE_ARROW[0],
+                self.POINT_CHAT_COLLAPSE_ARROW[1],
+                offset=0,
+            )
+            self._wait_with_deadline(800, deadline)
+            if self.is_chat_open():
+                self._raise_task_sidebar_state_error(
+                    "聊天框收起后仍可识别，禁止继续操作任务侧栏",
+                    self.screenshot(),
+                    [],
+                )
+        return deadline, effective_threshold
+
+    def _missing_task_sidebar_templates(self) -> list[str]:
+        templates = [
+            self.TASK_SIDEBAR_ENTRY_V2,
+            self.TASK_SIDEBAR_EXPAND_V2,
+            self.BTN_CHAT_SEND,
+            self.TEXT_TASK_PANEL_TITLE,
+            self.TASK_FULLSCREEN_PANEL_V2,
+        ]
+        templates.extend(self.TASK_PANEL_ACTIVE_TEMPLATES.values())
+        return [template for template in dict.fromkeys(templates) if not Path(template).is_file()]
+
+    def _ensure_task_sidebar_open(
+        self,
+        *,
+        deadline: float,
+        threshold: float,
+        wait_after_click_ms: int,
+        fullscreen_recoveries: int,
+    ) -> tuple[TaskSidebarSnapshot, int]:
+        expand_clicks = 0
+        activation_clicks = 0
+        unknown_frames = 0
+        last_snapshot: TaskSidebarSnapshot | None = None
+
+        while not self._is_deadline_expired(deadline):
+            snapshot = self._capture_task_sidebar_snapshot(threshold)
+            last_snapshot = snapshot
+            active_count = sum(match.found for match in snapshot.active_matches.values())
+            if active_count > 1:
+                self._raise_task_sidebar_state_error(
+                    "同时识别到多个任务侧栏激活页签",
+                    snapshot.image,
+                    self._task_sidebar_snapshot_matches(snapshot),
+                )
+            if snapshot.active_panel is not None:
+                return snapshot, fullscreen_recoveries
+            if self._is_deadline_expired(deadline):
+                break
+
+            if snapshot.fullscreen_match.found:
+                if fullscreen_recoveries >= self.TASK_SIDEBAR_FULLSCREEN_RECOVERY_LIMIT:
+                    self._raise_task_sidebar_state_error(
+                        "全屏任务面板恢复后再次出现",
+                        snapshot.image,
+                        self._task_sidebar_snapshot_matches(snapshot),
+                    )
+                self._log("检测到全屏任务面板，使用通用关闭叉关闭后重试一次")
+                recovered_snapshot = self._close_task_fullscreen_with_deadline(
+                    deadline=deadline,
+                    wait_after_click_ms=wait_after_click_ms,
+                )
+                fullscreen_recoveries += 1
+                recovered_active_count = sum(
+                    match.found for match in recovered_snapshot.active_matches.values()
+                )
+                if recovered_active_count == 1 and recovered_snapshot.active_panel is not None:
+                    return recovered_snapshot, fullscreen_recoveries
+                if activation_clicks:
+                    self._raise_task_sidebar_state_error(
+                        "任务图标激活打开全屏面板，但关闭后仍未确认 active 页签",
+                        recovered_snapshot.image,
+                        self._task_sidebar_snapshot_matches(recovered_snapshot),
+                    )
+                unknown_frames = 0
+                continue
+
+            if snapshot.expand_match.found and snapshot.expand_match.center is not None:
+                if expand_clicks >= self.TASK_SIDEBAR_EXPAND_CLICK_LIMIT:
+                    self._raise_task_sidebar_state_error(
+                        "任务侧栏展开箭头点击后仍未出现可确认状态",
+                        snapshot.image,
+                        self._task_sidebar_snapshot_matches(snapshot),
+                    )
+                expand_clicks += 1
+                self._log("点击视觉识别到的任务侧栏展开箭头")
+                self._debug(
+                    f"点击任务侧栏展开箭头 center={snapshot.expand_match.center}, "
+                    f"score={snapshot.expand_match.score:.3f}"
+                )
+                self._last_match_center = snapshot.expand_match.center
+                self._last_match_score = snapshot.expand_match.score
+                self.click(offset=0)
+                self._wait_with_deadline(wait_after_click_ms, deadline)
+                unknown_frames = 0
+                continue
+
+            if snapshot.entry_match.found and snapshot.entry_match.center is not None:
+                if activation_clicks >= self.TASK_SIDEBAR_ACTIVATION_CLICK_LIMIT:
+                    self._raise_task_sidebar_state_error(
+                        "任务侧栏入口激活后仍未出现可确认状态",
+                        snapshot.image,
+                        self._task_sidebar_snapshot_matches(snapshot),
+                    )
+                activation_clicks += 1
+                self._log("点击视觉识别到的任务侧栏入口")
+                self._debug(
+                    f"点击任务侧栏入口 center={snapshot.entry_match.center}, "
+                    f"score={snapshot.entry_match.score:.3f}, "
+                    f"template={snapshot.entry_match.template_path}"
+                )
+                self._last_match_center = snapshot.entry_match.center
+                self._last_match_score = snapshot.entry_match.score
+                self.click(offset=0)
+                self._wait_with_deadline(wait_after_click_ms, deadline)
+                unknown_frames = 0
+                continue
+
+            unknown_frames += 1
+            if unknown_frames >= self.TASK_SIDEBAR_UNKNOWN_FRAME_LIMIT:
+                if activation_clicks >= self.TASK_SIDEBAR_ACTIVATION_CLICK_LIMIT:
+                    self._raise_task_sidebar_state_error(
+                        "单次任务图标激活后页面无变化或状态未知",
+                        snapshot.image,
+                        self._task_sidebar_snapshot_matches(snapshot),
+                    )
+                self._verify_default_task_sidebar_activation_gate(snapshot, deadline)
+                activation_clicks += 1
+                self._log("任务侧栏沉寂，执行一次新版任务图标默认激活")
+                self._debug(f"点击任务侧栏默认激活坐标：{self.POINT_TASK_SIDEBAR_WAKE}")
+                self.click_point(
+                    self.POINT_TASK_SIDEBAR_WAKE[0],
+                    self.POINT_TASK_SIDEBAR_WAKE[1],
+                    offset=0,
+                )
+                self._wait_with_deadline(wait_after_click_ms, deadline)
+                unknown_frames = 0
+                continue
+            self._wait_with_deadline(self.TASK_SIDEBAR_POLL_INTERVAL_MS, deadline)
+
+        if last_snapshot is None:
+            last_snapshot = self._capture_task_sidebar_snapshot(threshold)
+        active_count = sum(match.found for match in last_snapshot.active_matches.values())
+        if active_count == 1 and last_snapshot.active_panel is not None:
+            return last_snapshot, fullscreen_recoveries
+        self._raise_task_sidebar_state_error(
+            "打开任务侧栏超时",
+            last_snapshot.image,
+            self._task_sidebar_snapshot_matches(last_snapshot),
+        )
+
+    def _wait_for_task_panel_active(
+        self,
+        panel: str,
+        *,
+        deadline: float,
+        threshold: float,
+    ) -> tuple[str, TaskSidebarSnapshot]:
+        unknown_frames = 0
+        last_snapshot: TaskSidebarSnapshot | None = None
+        while not self._is_deadline_expired(deadline):
+            snapshot = self._capture_task_sidebar_snapshot(threshold)
+            last_snapshot = snapshot
+            active_count = sum(match.found for match in snapshot.active_matches.values())
+            if active_count > 1:
+                return "unknown", snapshot
+            if snapshot.active_panel == panel:
+                return "active", snapshot
+            if snapshot.fullscreen_match.found:
+                return "fullscreen", snapshot
+            if snapshot.active_panel is not None:
+                unknown_frames = 0
+            else:
+                unknown_frames += 1
+                if unknown_frames >= self.TASK_SIDEBAR_UNKNOWN_FRAME_LIMIT:
+                    return "unknown", snapshot
+            self._wait_with_deadline(self.TASK_SIDEBAR_POLL_INTERVAL_MS, deadline)
+
+        if last_snapshot is None:
+            last_snapshot = self._capture_task_sidebar_snapshot(threshold)
+        if last_snapshot.active_panel == panel:
+            return "active", last_snapshot
+        if last_snapshot.fullscreen_match.found:
+            return "fullscreen", last_snapshot
+        return "timeout", last_snapshot
+
+    def _task_tab_target_center(
+        self,
+        snapshot: TaskSidebarSnapshot,
+        target_panel: str,
+    ) -> tuple[int, int]:
+        source_panel = snapshot.active_panel
+        if source_panel is None or source_panel not in self.TASK_TAB_ORDER:
+            self._raise_task_sidebar_state_error(
+                "无法根据 active 页签确定相对点击锚点",
+                snapshot.image,
+                self._task_sidebar_snapshot_matches(snapshot),
+            )
+        if target_panel not in self.TASK_TAB_ORDER:
+            raise ValueError(f"Unsupported task panel: {target_panel}")
+
+        active_match = snapshot.active_matches[source_panel]
+        if not active_match.found or active_match.center is None:
+            self._raise_task_sidebar_state_error(
+                "active 页签缺少可用中心坐标",
+                snapshot.image,
+                self._task_sidebar_snapshot_matches(snapshot),
+            )
+
+        tab_roi = self.scale_roi(self.ROI_TASK_SIDEBAR_TABS)
+        scaled_pitch = max(
+            1,
+            int(round(self.TASK_TAB_PITCH_PX * tab_roi[2] / self.ROI_TASK_SIDEBAR_TABS[2])),
+        )
+        index_delta = self.TASK_TAB_ORDER.index(target_panel) - self.TASK_TAB_ORDER.index(
+            source_panel
+        )
+        target_center = (
+            active_match.center[0] + index_delta * scaled_pitch,
+            active_match.center[1],
+        )
+        target_roi = self._task_tab_search_roi(target_panel)
+        x, y, width, height = target_roi
+        if not (
+            x <= target_center[0] < x + width
+            and y <= target_center[1] < y + height
+        ):
+            self._raise_task_sidebar_state_error(
+                f"根据 active 锚点推导出的{target_panel}页签坐标越界：{target_center}",
+                snapshot.image,
+                self._task_sidebar_snapshot_matches(snapshot),
+            )
+        return target_center
+
+    def _task_tab_search_roi(self, panel: str) -> tuple[int, int, int, int]:
+        if panel not in self.TASK_TAB_SLOT_CENTERS:
+            raise ValueError(f"Unsupported task panel: {panel}")
+        tabs_x, tabs_y, _, _ = self.ROI_TASK_SIDEBAR_TABS
+        center_x, center_y = self.TASK_TAB_SLOT_CENTERS[panel]
+        template_width, template_height = self.TASK_TAB_TEMPLATE_SIZE
+        margin = self.TASK_TAB_SEARCH_MARGIN_PX
+        return self.scale_roi(
+            (
+                tabs_x + center_x - template_width // 2 - margin,
+                tabs_y + center_y - template_height // 2 - margin,
+                template_width + margin * 2,
+                template_height + margin * 2,
+            )
+        )
+
+    def _verify_default_task_sidebar_activation_gate(
+        self,
+        snapshot: TaskSidebarSnapshot,
+        deadline: float,
+    ) -> None:
+        if snapshot.fullscreen_match.found:
+            self._raise_task_sidebar_state_error(
+                "全屏任务面板存在，禁止执行任务图标默认激活",
+                snapshot.image,
+                self._task_sidebar_snapshot_matches(snapshot),
+            )
+        if self.is_power_saving_mode():
+            self._raise_task_sidebar_state_error(
+                "省电状态下禁止执行任务图标默认激活",
+                snapshot.image,
+                self._task_sidebar_snapshot_matches(snapshot),
+            )
+        if self._is_activity_panel_open():
+            self._raise_task_sidebar_state_error(
+                "活动页存在，禁止执行任务图标默认激活",
+                snapshot.image,
+                self._task_sidebar_snapshot_matches(snapshot),
+            )
+
+        main_ready_timeout_ms = min(2000, self._remaining_ms(deadline))
+        if main_ready_timeout_ms <= 0 or not self.is_game_main_ready(
+            timeout_ms=main_ready_timeout_ms,
+            threshold=0.8,
+        ):
+            self._raise_task_sidebar_state_error(
+                "未确认干净主场景，禁止执行任务图标默认激活",
+                snapshot.image,
+                self._task_sidebar_snapshot_matches(snapshot),
+            )
+
+    def _capture_task_sidebar_snapshot(self, threshold: float) -> TaskSidebarSnapshot:
+        image = self.screenshot()
+        entry_roi = self.scale_roi(self.ROI_TASK_SIDEBAR_ENTRY)
+        active_matches = {
+            panel: self._vision.match_binary_template(
+                image,
+                template,
+                mode="otsu_dark",
+                threshold=max(self.TASK_TAB_ACTIVE_THRESHOLD, threshold),
+                roi=self._task_tab_search_roi(panel),
+            )
+            for panel, template in self.TASK_PANEL_ACTIVE_TEMPLATES.items()
+        }
+        for panel, match in active_matches.items():
+            self._debug_task_sidebar_match(f"{panel}激活页签", match)
+
+        found_active = [
+            (panel, match)
+            for panel, match in active_matches.items()
+            if match.found
+        ]
+        active_panel = None
+        if len(found_active) == 1:
+            active_panel = found_active[0][0]
+
+        entry_match = self._vision.match_binary_template(
+            image,
+            self.TASK_SIDEBAR_ENTRY_V2,
+            mode="light_foreground",
+            threshold=threshold,
+            roi=entry_roi,
+        )
+        expand_match = self._vision.match_binary_template(
+            image,
+            self.TASK_SIDEBAR_EXPAND_V2,
+            mode="light_foreground",
+            threshold=threshold,
+            roi=entry_roi,
+        )
+        fullscreen_match = self._match_task_fullscreen_panel(image)
+        self._debug_task_sidebar_match("任务侧栏入口", entry_match)
+        self._debug_task_sidebar_match("任务侧栏展开箭头", expand_match)
+        self._debug_task_sidebar_match("全屏任务面板", fullscreen_match)
+        return TaskSidebarSnapshot(
+            image=image,
+            active_panel=active_panel,
+            active_matches=active_matches,
+            entry_match=entry_match,
+            expand_match=expand_match,
+            fullscreen_match=fullscreen_match,
+        )
+
+    def _match_task_fullscreen_panel(self, image: np.ndarray) -> ImageMatchResult:
+        legacy_match = self._vision.match_template(
+            image,
+            self.TEXT_TASK_PANEL_TITLE,
+            threshold=self.TASK_PANEL_TITLE_THRESHOLD,
+            roi=self.scale_roi(self.ROI_TASK_PANEL_TITLE),
+        )
+        current_match = self._vision.match_template(
+            image,
+            self.TASK_FULLSCREEN_PANEL_V2,
+            threshold=self.TASK_SIDEBAR_THRESHOLD,
+            roi=self.scale_roi(self.ROI_TASK_FULLSCREEN_V2),
+        )
+        found = [match for match in (legacy_match, current_match) if match.found]
+        if found:
+            return max(found, key=lambda match: match.score)
+        return max((legacy_match, current_match), key=lambda match: match.score)
+
+    def _close_task_fullscreen_with_deadline(
+        self,
+        *,
+        deadline: float,
+        wait_after_click_ms: int,
+    ) -> TaskSidebarSnapshot:
+        targets = [self.BTN_CLOSE, self.BTN_PANE_CLOSE, self.BTN_WELCOME_CLOSE]
+        image, candidates = self._capture_close_candidates(targets)
+        tried_centers: list[tuple[int, int]] = []
+        last_snapshot: TaskSidebarSnapshot | None = None
+
+        for attempt in range(1, self.CLOSE_NO_CHANGE_LIMIT + 1):
+            if self._remaining_ms(deadline) <= 0:
+                break
+            candidate = self._next_untried_close_candidate(candidates, tried_centers)
+            if candidate is None or candidate.center is None:
+                self._raise_task_sidebar_state_error(
+                    "全屏任务面板未找到可用的通用关闭叉候选",
+                    image,
+                    candidates,
+                )
+
+            self._log(f"关闭全屏任务面板，尝试通用关闭候选 {attempt}/{self.CLOSE_NO_CHANGE_LIMIT}")
+            self._debug(
+                f"点击全屏任务关闭候选 center={candidate.center}, "
+                f"score={candidate.score:.3f}, template={candidate.template_path}"
+            )
+            self._last_match_center = candidate.center
+            self._last_match_score = candidate.score
+            self.click(offset=0)
+            self._wait_with_deadline(wait_after_click_ms, deadline)
+
+            snapshot = self._capture_task_sidebar_snapshot(self.TASK_SIDEBAR_THRESHOLD)
+            last_snapshot = snapshot
+            if not snapshot.fullscreen_match.found:
+                self._log("全屏任务面板已关闭")
+                return snapshot
+
+            tried_centers.append(candidate.center)
+            image = snapshot.image
+            candidates = self._merge_close_candidates(
+                self._vision.match_all_templates(
+                    image,
+                    targets,
+                    threshold=self.CLOSE_MATCH_THRESHOLD,
+                )
+            )
+
+        if last_snapshot is None:
+            last_snapshot = self._capture_task_sidebar_snapshot(self.TASK_SIDEBAR_THRESHOLD)
+        self._raise_task_sidebar_state_error(
+            "全屏任务面板在总超时或三次关闭尝试内未关闭",
+            last_snapshot.image,
+            [
+                *self._task_sidebar_snapshot_matches(last_snapshot),
+                *candidates,
+            ],
+        )
+
+    @staticmethod
+    def _task_sidebar_snapshot_matches(snapshot: TaskSidebarSnapshot) -> list[ImageMatchResult]:
+        return [
+            *snapshot.active_matches.values(),
+            snapshot.entry_match,
+            snapshot.expand_match,
+            snapshot.fullscreen_match,
+        ]
+
+    def _debug_task_sidebar_match(self, description: str, match: ImageMatchResult) -> None:
+        self._debug(
+            f"{description}: found={match.found}, score={match.score:.3f}, "
+            f"center={match.center}, template={match.template_path}"
+        )
+
+    def _raise_task_sidebar_state_error(
+        self,
+        reason: str,
+        image: np.ndarray,
+        matches: list[ImageMatchResult],
+    ) -> None:
+        canvas = image.copy()
+        for roi, color in (
+            (self.ROI_TASK_SIDEBAR_ENTRY, (255, 180, 0)),
+            (self.ROI_TASK_SIDEBAR_TABS, (0, 220, 0)),
+            (self.ROI_TASK_PANEL_TITLE, (220, 0, 220)),
+            (self.ROI_TASK_FULLSCREEN_V2, (220, 0, 220)),
+        ):
+            x, y, width, height = self.scale_roi(roi)
+            cv2.rectangle(canvas, (x, y), (x + width, y + height), color, 2)
+
+        for index, match in enumerate(matches, start=1):
+            if match.bbox is not None:
+                x1, y1, x2, y2 = match.bbox
+                color = (0, 0, 255) if match.found else (120, 120, 120)
+                cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 1)
+            if match.center is not None:
+                cv2.putText(
+                    canvas,
+                    f"#{index} {match.score:.3f}",
+                    (match.center[0] + 5, max(16, match.center[1] - 5)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.42,
+                    (0, 255, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
+
+        logger = self._get_debug_logger()
+        path = logger.save_screenshot(canvas, prefix="task_sidebar_state_failed", label=reason)
+        self._log(f"任务侧栏状态失败：{reason}，已保存标注截图：{path}")
+        raise TaskSidebarStateError(f"{reason}，已保存截图：{path}")
 
     def wait_auto_pathfinding(
         self,

@@ -6,7 +6,7 @@ import time
 
 from botCore import step
 
-from ymjh_bot.ym_game_task import YmGameTask
+from ymjh_bot.ym_game_task import TaskSidebarStateError, YmGameTask
 
 
 class JYPYTask(YmGameTask):
@@ -243,11 +243,13 @@ class JYPYTask(YmGameTask):
     def find_jypy_task_in_sidebar(self, max_scrolls: int = 5) -> bool:
         """Find the JYPY tracker in task/sidebar tabs, scrolling if needed."""
         self.collapse_chat_if_open()
+        panel_errors: list[TaskSidebarStateError] = []
         for panel in ("任务", "江湖"):
             try:
-                self.switch_task_panel(panel, timeout_ms=2500, threshold=0.8)
-            except Exception as exc:
+                self.switch_task_panel(panel, timeout_ms=6000, threshold=0.8)
+            except TaskSidebarStateError as exc:
                 self._log(f"切换任务面板 {panel} 失败：{exc}")
+                panel_errors.append(exc)
                 continue
 
             for attempt in range(max_scrolls + 1):
@@ -265,6 +267,10 @@ class JYPYTask(YmGameTask):
                     self._log(f"任务栏未找到聚义平冤追踪，向下翻页 {attempt + 1}/{max_scrolls}")
                     self.scroll_task_list_down()
 
+        if panel_errors:
+            raise TaskSidebarStateError(
+                "聚义平冤任务不存在前置检查不完整：至少一个任务页签未成功确认并扫描"
+            ) from panel_errors[0]
         return False
 
     def scroll_task_list_down(self) -> None:

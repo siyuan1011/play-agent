@@ -212,11 +212,7 @@ class RichangFubenTask(YmGameTask):
     def find_dungeon_task_in_sidebar(self, max_scrolls: int = 2) -> bool:
         """Find the daily dungeon tracker in the task Jianghu tab, scrolling if needed."""
         self.collapse_chat_if_open()
-        try:
-            self.switch_task_panel("江湖", timeout_ms=2500, threshold=0.8)
-        except Exception as exc:
-            self._log(f"切换任务面板江湖失败：{exc}")
-            return False
+        self.switch_task_panel("江湖", timeout_ms=6000, threshold=0.8)
 
         for attempt in range(max_scrolls + 1):
             if self.find_dungeon_task_candidate():

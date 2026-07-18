@@ -5,6 +5,14 @@ from __future__ import annotations
 from ymjh_bot.ym_game_task import YmGameTask
 
 
+class StallPurchaseConfirmationError(RuntimeError):
+    """Raised when a stall purchase cannot be confirmed safely."""
+
+
+class StallPurchaseCancelError(RuntimeError):
+    """Raised when a stuck stall-purchase prompt cannot be cancelled."""
+
+
 class BanquetAcquireMixin:
     """Reusable item-acquisition flow for banquet tasks."""
 
@@ -15,11 +23,17 @@ class BanquetAcquireMixin:
     BTN_MENKE_VIEW_ALL_SERVER = str(YmGameTask.TEMPLATES_DIR / "btn_view_all_server.png")
     BTN_MENKE_MALL_BUY_AREA = str(YmGameTask.TEMPLATES_DIR / "btn_mall_buy_area.png")
     BTN_BUY = str(YmGameTask.TEMPLATES_DIR / "btn_buy.png")
+    BTN_MODAL_CANCEL = str(YmGameTask.TEMPLATES_DIR / "btn_modal_cancel.png")
 
     ROI_ROUTE_PANEL = (560, 70, 660, 480)
     ROI_WAREHOUSE_SUBMIT = (760, 530, 230, 115)
     ROI_TRADE_ACTION = (520, 440, 330, 120)
     ROI_MALL_BUY = (800, 610, 290, 100)
+    ROI_STALL_PURCHASE_CANCEL = (300, 440, 250, 120)
+
+    STALL_PURCHASE_DIALOG_THRESHOLD = 0.85
+    STALL_PURCHASE_DIALOG_APPEAR_TIMEOUT_MS = 3000
+    STALL_PURCHASE_FINAL_RECHECK_MS = 100
 
     START_BANQUET_BRIGHTNESS_THRESHOLD = 150.0
     BANQUET_NAME = "设宴"
@@ -200,7 +214,7 @@ class BanquetAcquireMixin:
             threshold=0.85,
             wait_after_click_ms=1500,
         ):
-            self.confirm_purchase_if_needed()
+            self.confirm_stall_purchase()
             self.return_to_banquet_panel()
             return True
 
@@ -224,13 +238,88 @@ class BanquetAcquireMixin:
             threshold=0.85,
             wait_after_click_ms=1500,
         ):
-            self.confirm_purchase_if_needed()
+            self.confirm_stall_purchase()
             self.return_to_banquet_panel()
             return True
 
         self._log("全服摆摊仍未找到可购买商品")
         self.return_to_banquet_panel()
         return False
+
+    def confirm_stall_purchase(
+        self,
+        max_attempts: int = 3,
+        retry_interval_ms: int = 3000,
+    ) -> bool:
+        """Confirm one stall purchase and require its prompt to disappear."""
+        if max_attempts <= 0:
+            raise ValueError("max_attempts 必须大于 0")
+        if retry_interval_ms <= 0:
+            raise ValueError("retry_interval_ms 必须大于 0")
+
+        if not self.wait_image_appear(
+            self.BTN_MODAL_OK,
+            timeout_ms=self.STALL_PURCHASE_DIALOG_APPEAR_TIMEOUT_MS,
+            threshold=self.STALL_PURCHASE_DIALOG_THRESHOLD,
+        ):
+            debug_path = self.save_debug_screenshot("stall_purchase_unconfirmed")
+            raise StallPurchaseConfirmationError(
+                f"点击摆摊购买后未确认购买弹窗，已保存截图：{debug_path}"
+            )
+
+        attempts = 0
+
+        def click_confirm_if_visible(found: bool, _missing_count: int) -> None:
+            nonlocal attempts
+            if not found or attempts >= max_attempts:
+                return
+            attempts += 1
+            self._log(f"点击摆摊购买确认按钮 {attempts}/{max_attempts}")
+            self.click(offset=0)
+
+        if self.wait_image_missing(
+            self.BTN_MODAL_OK,
+            timeout_ms=(max_attempts * retry_interval_ms) + self.STALL_PURCHASE_FINAL_RECHECK_MS,
+            threshold=self.STALL_PURCHASE_DIALOG_THRESHOLD,
+            missing_threshold=1,
+            callback=click_confirm_if_visible,
+            interval_ms=retry_interval_ms,
+        ):
+            self._log(f"第 {attempts} 次确认后购买弹窗已消失")
+            return True
+
+        stuck_path = self.save_debug_screenshot("stall_purchase_confirm_stuck")
+        if not self.find_image(
+            self.BTN_MODAL_CANCEL,
+            threshold=self.STALL_PURCHASE_DIALOG_THRESHOLD,
+            roi=self.scale_roi(self.ROI_STALL_PURCHASE_CANCEL),
+        ):
+            cancel_path = self.save_debug_screenshot("stall_purchase_cancel_failed")
+            raise StallPurchaseCancelError(
+                f"摆摊购买确认连续 {max_attempts} 次未生效，且未找到取消按钮；"
+                f"确认截图：{stuck_path}，取消截图：{cancel_path}"
+            )
+
+        self._log(f"摆摊购买确认连续 {max_attempts} 次未生效，点击取消")
+        self.click(offset=0)
+
+        if self.wait_image_missing(
+            self.BTN_MODAL_OK,
+            timeout_ms=retry_interval_ms,
+            threshold=self.STALL_PURCHASE_DIALOG_THRESHOLD,
+            missing_threshold=1,
+            interval_ms=300,
+        ):
+            raise StallPurchaseConfirmationError(
+                f"摆摊购买确认连续 {max_attempts} 次未生效，已取消本次购买；"
+                f"已保存截图：{stuck_path}"
+            )
+
+        cancel_path = self.save_debug_screenshot("stall_purchase_cancel_failed")
+        raise StallPurchaseCancelError(
+            f"摆摊购买确认连续 {max_attempts} 次未生效，取消购买也未生效；"
+            f"确认截图：{stuck_path}，取消截图：{cancel_path}"
+        )
 
     def confirm_purchase_if_needed(self) -> bool:
         """Confirm the secondary purchase prompt if the game shows one."""

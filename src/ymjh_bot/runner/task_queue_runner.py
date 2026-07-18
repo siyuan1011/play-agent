@@ -338,6 +338,7 @@ class TaskQueueRunner:
                     self.current_step_index = step_index
                     continue
 
+                self._emit(f"    [{step_name}] 开始")
                 result = self._execute_step(step_name, step_func, step_meta)
 
                 if self._paused or self._stop_requested:
@@ -393,7 +394,9 @@ class TaskQueueRunner:
         # 调用 on_finish
         if hasattr(task, "on_finish") and not self._paused and not self._stop_requested:
             try:
+                self._emit(f">>> {task_name} 开始收尾")
                 task.on_finish(results)
+                self._emit(f">>> {task_name} 收尾完成")
             except Exception as exc:
                 return self._handle_lifecycle_failure(
                     results,
@@ -436,6 +439,8 @@ class TaskQueueRunner:
         """发送事件消息。"""
         if self.event_callback:
             self.event_callback(message)
+        if self.logger:
+            self.logger.log_event({"message": message, "level": "INFO", "source": "runner"})
 
     def _emit_progress(self) -> None:
         """Send the current progress snapshot to the UI/state layer."""

@@ -2,7 +2,7 @@
 
 from botCore import step
 
-from ymjh_bot.ym_game_task import YmGameTask
+from ymjh_bot.ym_game_task import TaskSidebarStateError, YmGameTask
 
 
 class KyrwTask(YmGameTask):
@@ -311,11 +311,13 @@ class KyrwTask(YmGameTask):
     def find_course_task_in_sidebar(self, *, max_scrolls: int, panels: tuple[str, ...]) -> bool:
         """Find the course task text in any supported task panel."""
         self.ensure_left_task_sidebar_visible()
+        panel_errors: list[TaskSidebarStateError] = []
         for panel in panels:
             try:
-                self.switch_task_panel(panel, timeout_ms=2500, threshold=0.8)
-            except Exception as exc:
+                self.switch_task_panel(panel, timeout_ms=6000, threshold=0.8)
+            except TaskSidebarStateError as exc:
                 self._log(f"切换任务面板 {panel} 失败：{exc}")
+                panel_errors.append(exc)
                 continue
 
             for attempt in range(max_scrolls + 1):
@@ -333,16 +335,15 @@ class KyrwTask(YmGameTask):
                     self._log(f"任务栏未找到课业任务，向下翻页 {attempt + 1}/{max_scrolls}")
                     self.scroll_task_list_down()
 
+        if panel_errors:
+            raise TaskSidebarStateError(
+                "课业任务不存在前置检查不完整：至少一个任务页签未成功确认并扫描"
+            ) from panel_errors[0]
         return False
 
     def ensure_left_task_sidebar_visible(self) -> None:
-        """Open only the compact left task sidebar without changing panels."""
-        if self.find_image(self.ICON_TASK_ACTIVE, threshold=0.8):
-            return
-
-        self._log("左侧任务栏未展开，点击主界面任务栏")
-        self.click_point(self.POINT_MAIN_TASK[0], self.POINT_MAIN_TASK[1])
-        self.wait(800)
+        """Compatibility wrapper around the shared verified sidebar opener."""
+        self.ensure_task_sidebar_open(timeout_ms=6000, threshold=0.85)
 
     def scroll_task_list_down(self) -> None:
         """Scroll the task list down to reveal lower entries."""

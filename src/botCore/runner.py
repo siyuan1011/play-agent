@@ -93,6 +93,7 @@ class DSLTaskRunner:
                     step_index += 1
                     continue
 
+                self._emit(f"[{step_name}] 开始")
                 result = self._execute_step(step_name, step_func, step_meta)
                 results.append(result)
 
@@ -123,7 +124,9 @@ class DSLTaskRunner:
                     time.sleep(interval_ms / 1000.0)
 
         if hasattr(self.task, "on_finish"):
+            self._emit(f">>> {self.task.__class__.__name__} 开始收尾")
             self.task.on_finish(results)
+            self._emit(f">>> {self.task.__class__.__name__} 收尾完成")
 
         return results
 
@@ -138,3 +141,5 @@ class DSLTaskRunner:
     def _emit(self, message: str) -> None:
         if self.event_callback:
             self.event_callback(message)
+        if self.logger:
+            self.logger.log_event({"message": message, "level": "INFO", "source": "runner"})

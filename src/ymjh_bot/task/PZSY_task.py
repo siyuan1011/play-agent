@@ -134,19 +134,12 @@ class PozhenSheyanTask(BanquetAcquireMixin, YmGameTask):
 
     @step(retry=1, timeout_ms=240000)
     def process_banquet_items(self) -> None:
-        """默认按提交 6 道菜逐个处理设宴面板中的任务物品。"""
-        self.select_submit_six_dishes()
+        """逐个处理破阵设宴面板中的八个任务物品。"""
         super().process_banquet_items()
 
     @step(retry=1, timeout_ms=30000)
     def start_banquet_if_ready(self) -> None:
-        """如果开始设宴按钮已可用，则提交任务；否则回退提交 5 道菜重试。"""
-        if self.try_start_banquet_once():
-            self._started_banquet = True
-            return
-
-        self._log("提交6道菜暂不可开始，切换提交5道菜重试")
-        self.select_submit_five_dishes()
+        """处理八个槽位后，检查开始设宴按钮是否可用。"""
         if self.try_start_banquet_once():
             self._started_banquet = True
             return
@@ -200,18 +193,6 @@ class PozhenSheyanTask(BanquetAcquireMixin, YmGameTask):
             return
 
         self._log("完成验证：未发现可继续邀约的破阵设宴")
-
-    def select_submit_six_dishes(self) -> None:
-        """Select the 6-dish banquet tier."""
-        self._log("选择提交6道菜")
-        self.click_point(self.POINT_SUBMIT_6_TAB[0], self.POINT_SUBMIT_6_TAB[1], offset=0)
-        self.wait(800)
-
-    def select_submit_five_dishes(self) -> None:
-        """Select the 5-dish banquet tier."""
-        self._log("选择提交5道菜")
-        self.click_point(self.POINT_SUBMIT_5_TAB[0], self.POINT_SUBMIT_5_TAB[1], offset=0)
-        self.wait(800)
 
     def is_banquet_panel_visible(self) -> bool:
         """Return whether the main Pozhen banquet item panel is visible."""
