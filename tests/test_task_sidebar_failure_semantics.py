@@ -13,12 +13,12 @@ def raise_sidebar_error(*args, **kwargs) -> None:
     raise TaskSidebarStateError("侧栏状态未知")
 
 
-def test_bprw_does_not_treat_sidebar_error_as_missing_task(monkeypatch) -> None:
+def test_bprw_initial_sidebar_error_is_not_treated_as_missing_task(monkeypatch) -> None:
     task = BPRWTask()
     monkeypatch.setattr(task, "switch_task_panel", raise_sidebar_error)
 
     with pytest.raises(TaskSidebarStateError, match="侧栏状态未知"):
-        task.find_bangpai_task_in_sidebar(max_scrolls=0)
+        task.resume_existing_task()
 
 
 def test_rcfb_does_not_treat_sidebar_error_as_missing_task(monkeypatch) -> None:

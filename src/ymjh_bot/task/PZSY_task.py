@@ -6,7 +6,7 @@ from ymjh_bot.task.banquet import BanquetAcquireMixin
 from ymjh_bot.ym_game_task import YmGameTask
 
 
-class PozhenSheyanTask(BanquetAcquireMixin, YmGameTask):
+class PZSYTask(BanquetAcquireMixin, YmGameTask):
     """一梦江湖破阵设宴任务。"""
 
     task_key = "PZSY"

@@ -105,6 +105,9 @@ class YmGameTask(GameTask):
     TASK_FULLSCREEN_PANEL_V2 = str(TEMPLATES_DIR / "task_fullscreen_panel_v2.png")
     TEXT_TASK_PANEL_TITLE = str(TEMPLATES_DIR / "text_task_panel_title.png")
     TEXT_AUTO_PATH = str(TEMPLATES_DIR / "text_zidongxunlu.png")
+    TEXT_SCENE_LOADING_LOGO1 = str(TEMPLATES_DIR / "text_scene_loading_logo1.png")
+    TEXT_SCENE_LOADING_LOGO2 = str(TEMPLATES_DIR / "text_scene_loading_logo2.png")
+    SCENE_LOADING_LOGO_TEMPLATES = [TEXT_SCENE_LOADING_LOGO1, TEXT_SCENE_LOADING_LOGO2]
     TEXT_POWER_SAVING = str(TEMPLATES_DIR / "text_power_saving.png")
     ACTIVITY_TAB_JIANGHU_ACTIVE = str(TEMPLATES_DIR / "activity_tab_jianghu_active.png")
     ACTIVITY_TAB_BANGPAI_ACTIVE = str(TEMPLATES_DIR / "activity_tab_bangpai_active.png")
@@ -226,8 +229,8 @@ class YmGameTask(GameTask):
     HEALTH_RED_MIN_DELTA = 45
     HEALTH_BAR_ANCHOR_THRESHOLD = 0.80
     EMOTION_MEDITATE_THRESHOLD = 0.90
-    ESCAPE_STUCK_MENU_THRESHOLD = 0.90
-    ESCAPE_STUCK_ITEM_THRESHOLD = 0.90
+    ESCAPE_STUCK_MENU_THRESHOLD = 0.80
+    ESCAPE_STUCK_ITEM_THRESHOLD = 0.80
     ESCAPE_STUCK_CONFIRM_THRESHOLD = 0.95
     ESCAPE_STUCK_MENU_TIMEOUT_MS = 1500
     ESCAPE_STUCK_ITEM_TIMEOUT_MS = 2500
@@ -264,6 +267,9 @@ class YmGameTask(GameTask):
     MAP_SWITCH_TIMEOUT_MS = 5000
     MAP_STATE_POLL_INTERVAL_MS = 300
     AUTO_PATH_START_TIMEOUT_MS = 5000
+    AUTO_PATH_POLL_INTERVAL_MS = 500
+    SCENE_LOADING_THRESHOLD = 0.8
+    ROI_SCENE_LOADING_LOGO = (0, 0, 430, 170)
     SAFE_ZONE_RETURN_MAX_ATTEMPTS = 3
     TEAM_RECRUIT_INTERVAL_MS = 10000
     TEAM_TEMPLATE_THRESHOLD = 0.9
@@ -2794,15 +2800,59 @@ class YmGameTask(GameTask):
         timeout_ms: int | None = None,
         threshold: float = 0.8,
         missing_threshold: int = 3,
-    ) -> None:
-        """Wait until the auto-pathfinding indicator disappears."""
-        self.wait_image_missing(
-            self.TEXT_AUTO_PATH,
-            timeout_ms=timeout_ms,
-            threshold=threshold,
-            missing_threshold=missing_threshold,
-            callback=lambda found, count: self._debug("自动寻路中..."),
-        )
+    ) -> bool:
+        """Wait until auto-pathfinding and any following scene loading both settle."""
+        deadline = self._make_deadline(timeout_ms)
+        consecutive_inactive = 0
+        last_busy_labels: tuple[str, ...] = ()
+        loading_roi = self.scale_roi(self.ROI_SCENE_LOADING_LOGO)
+
+        while not self._is_deadline_expired(deadline):
+            if self._stop_requested:
+                raise StepStopException("Stop requested")
+
+            screenshot = self.screenshot()
+            auto_path_match = self._vision.match_template(
+                screenshot,
+                self.TEXT_AUTO_PATH,
+                threshold=threshold,
+            )
+            scene_loading_match = self._vision.match_template(
+                screenshot,
+                self.SCENE_LOADING_LOGO_TEMPLATES,
+                threshold=self.SCENE_LOADING_THRESHOLD,
+                roi=loading_roi,
+            )
+            self._last_match_score = max(auto_path_match.score, scene_loading_match.score)
+            self._last_match_center = None
+
+            busy_labels: list[str] = []
+            if auto_path_match.found:
+                busy_labels.append("自动寻路")
+            if scene_loading_match.found:
+                busy_labels.append("过图")
+
+            if busy_labels:
+                consecutive_inactive = 0
+                last_busy_labels = tuple(busy_labels)
+                self._debug(f"任务过渡中：{'、'.join(busy_labels)}...")
+            else:
+                consecutive_inactive += 1
+                self._debug(
+                    f"自动寻路与过图均未出现 ({consecutive_inactive}/{missing_threshold})"
+                )
+                if consecutive_inactive >= missing_threshold:
+                    return True
+
+            wait_ms = self.AUTO_PATH_POLL_INTERVAL_MS
+            if deadline is not None:
+                wait_ms = min(wait_ms, self._remaining_ms(deadline))
+            if wait_ms > 0:
+                self.wait(wait_ms)
+
+        state = "、".join(last_busy_labels) if last_busy_labels else "任务过渡"
+        self._log(f"等待{state}稳定结束超时")
+        return False
 
     def require_image(
         self,

@@ -6,7 +6,7 @@ from ymjh_bot.task.banquet import BanquetAcquireMixin
 from ymjh_bot.ym_game_task import YmGameTask
 
 
-class MenkeSheyanTask(BanquetAcquireMixin, YmGameTask):
+class MKSYTask(BanquetAcquireMixin, YmGameTask):
     """一梦江湖门客设宴任务。"""
 
     task_key = "MKSY"

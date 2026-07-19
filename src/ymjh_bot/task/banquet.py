@@ -34,6 +34,8 @@ class BanquetAcquireMixin:
     STALL_PURCHASE_DIALOG_THRESHOLD = 0.85
     STALL_PURCHASE_DIALOG_APPEAR_TIMEOUT_MS = 3000
     STALL_PURCHASE_FINAL_RECHECK_MS = 100
+    PURCHASE_RESULT_CHECK_TIMEOUT_MS = 1500
+    PURCHASE_RETRY_LIMIT = 1
 
     START_BANQUET_BRIGHTNESS_THRESHOLD = 150.0
     BANQUET_NAME = "设宴"
@@ -112,18 +114,38 @@ class BanquetAcquireMixin:
         return True
 
     def acquire_selected_item(self, slot_index: int) -> None:
-        """Try every supported acquire path for the selected item at most once."""
+        """Acquire one item, retrying once when a purchase leaves the get button visible."""
         self._log(f"开始获取第 {slot_index} 个物品")
 
-        if self.try_recommended_warehouse_route():
-            return
-        if self.try_mall_route():
-            return
-        if self.try_stall_route():
-            return
+        for purchase_attempt in range(self.PURCHASE_RETRY_LIMIT + 1):
+            if self.try_recommended_warehouse_route():
+                return
 
-        self._log(f"第 {slot_index} 个物品未能通过支持的路径获取，跳过")
-        self.return_to_banquet_panel()
+            purchased = self.try_mall_route()
+            if not purchased:
+                purchased = self.try_stall_route()
+
+            if not purchased:
+                self._log(f"第 {slot_index} 个物品未能通过支持的路径获取，跳过")
+                self.return_to_banquet_panel()
+                return
+
+            if not self.wait_find_image_in_roi(
+                self.BTN_BANQUET_GET_ITEM,
+                self.ROI_BANQUET_ACTION,
+                timeout_ms=self.PURCHASE_RESULT_CHECK_TIMEOUT_MS,
+                description="购买后仍存在的获取按钮",
+                threshold=0.85,
+            ):
+                return
+
+            if purchase_attempt >= self.PURCHASE_RETRY_LIMIT:
+                self._log(f"第 {slot_index} 个物品再次获取后仍显示获取按钮，停止重试并继续后续槽位")
+                return
+
+            self._log(f"第 {slot_index} 个物品购买后仍显示获取按钮，判定购买异常，再次获取 1/1")
+            self.click()
+            self.wait(800)
 
     def try_recommended_warehouse_route(self) -> bool:
         """Use recommended gang warehouse if available."""
