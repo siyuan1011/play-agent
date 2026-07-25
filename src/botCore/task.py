@@ -228,20 +228,15 @@ class GameTask:
         threshold: float = 0.8,
         callback: Callable[[bool], None] | None = None,
         interval_ms: int = 500,
+        roi: tuple[int, int, int, int] | None = None,
     ) -> bool:
-        templates = [template] if isinstance(template, str) else template
         start = time.perf_counter()
         deadline = None if timeout_ms is None else start + timeout_ms / 1000.0
 
         while deadline is None or time.perf_counter() < deadline:
             if self._stop_requested:
                 raise StepStopException("Stop requested")
-            screenshot = self.screenshot()
-            match = self._vision.match_template(screenshot, templates, threshold=threshold)
-            self._last_match_score = match.score
-            if match.found and match.center:
-                self._last_match_center = match.center
-                self._debug(f"Found image: {template} (score={match.score:.3f})")
+            if self.find_image(template, threshold=threshold, roi=roi):
                 if callback:
                     callback(True)
                 return True

@@ -96,11 +96,11 @@ class YmGameTask(GameTask):
     BTN_BIAOQING = str(TEMPLATES_DIR / "btn_biaoqing.png")
     BTN_CHAT_SEND = str(TEMPLATES_DIR / "btn_chat_send.png")
     BTN_EMOTION_MEDITATE = str(TEMPLATES_DIR / "btn_emotion_meditate.png")
-    HEALTH_BAR_ANCHOR = str(TEMPLATES_DIR / "health_bar_anchor.png")
     ICON_TASK_RW = str(TEMPLATES_DIR / "icon_task_rw.png")
     ICON_TASK_JH = str(TEMPLATES_DIR / "icon_task_jh.png")
     ICON_TASK_QY = str(TEMPLATES_DIR / "icon_task_qy.png")
     TASK_SIDEBAR_ENTRY_V2 = str(TEMPLATES_DIR / "task_sidebar_entry_v2.png")
+    TASK_SIDEBAR_ENTRY_TEAM_V2 = str(TEMPLATES_DIR / "task_sidebar_entry_team_v2.png")
     TASK_SIDEBAR_EXPAND_V2 = str(TEMPLATES_DIR / "task_sidebar_expand_v2.png")
     TASK_FULLSCREEN_PANEL_V2 = str(TEMPLATES_DIR / "task_fullscreen_panel_v2.png")
     TEXT_TASK_PANEL_TITLE = str(TEMPLATES_DIR / "text_task_panel_title.png")
@@ -178,8 +178,7 @@ class YmGameTask(GameTask):
     BATTLE_SKILL_BUTTON_COUNT = 4
     BATTLE_SKILL_BUTTON_TAP_COUNT = 1
 
-    ROI_HEALTH_ANCHOR_SEARCH = (0, 0, 380, 90)
-    ROI_HEALTH_BAR_FROM_ANCHOR = (1, 3, 260, 20)
+    ROI_HEALTH_BAR = (74, 27, 260, 20)
     ROI_BIAOQING_BUTTON = (330, 650, 90, 70)
     ROI_EMOTION_PANEL = (250, 480, 730, 240)
     ROI_CHAT_SEND_BUTTON = (500, 640, 160, 80)
@@ -219,15 +218,15 @@ class YmGameTask(GameTask):
     )
     HEALTH_FULL_WIDTH = 255
     HEALTH_RECOVER_THRESHOLD = 0.80
-    HEALTH_FULL_THRESHOLD = 0.90
+    HEALTH_FULL_THRESHOLD = HEALTH_RECOVER_THRESHOLD
     HEALTH_COLUMN_MIN_FILL_RATIO = 0.30
     HEALTH_ANCHOR_START_COLUMN = 8
     HEALTH_ANCHOR_END_COLUMN = 26
-    HEALTH_RECOVER_TIMEOUT_MS = 300000
+    HEALTH_RECOVER_FALLBACK_MS = 90000
     HEALTH_RECOVER_POLL_INTERVAL_MS = 2000
+    HEALTH_UNRECOGNIZED_LOG_INTERVAL = 5
     HEALTH_RED_MIN_VALUE = 120
     HEALTH_RED_MIN_DELTA = 45
-    HEALTH_BAR_ANCHOR_THRESHOLD = 0.80
     EMOTION_MEDITATE_THRESHOLD = 0.90
     ESCAPE_STUCK_MENU_THRESHOLD = 0.80
     ESCAPE_STUCK_ITEM_THRESHOLD = 0.80
@@ -269,14 +268,14 @@ class YmGameTask(GameTask):
     AUTO_PATH_START_TIMEOUT_MS = 5000
     AUTO_PATH_POLL_INTERVAL_MS = 500
     SCENE_LOADING_THRESHOLD = 0.8
-    ROI_SCENE_LOADING_LOGO = (0, 0, 430, 170)
+    ROI_SCENE_LOADING_LOGO = (0, 0, 1280, 170)
     SAFE_ZONE_RETURN_MAX_ATTEMPTS = 3
     TEAM_RECRUIT_INTERVAL_MS = 10000
     TEAM_TEMPLATE_THRESHOLD = 0.9
     TASK_PANEL_ACTIVE_WAIT_MS = 6000
     TASK_PANEL_TITLE_THRESHOLD = 0.9
     TASK_SIDEBAR_THRESHOLD = 0.85
-    TASK_TAB_ACTIVE_THRESHOLD = 0.90
+    TASK_TAB_ACTIVE_THRESHOLD = 0.85
     TASK_SIDEBAR_POLL_INTERVAL_MS = 300
     TASK_SIDEBAR_UNKNOWN_FRAME_LIMIT = 2
     TASK_SIDEBAR_FULLSCREEN_RECOVERY_LIMIT = 1
@@ -371,13 +370,20 @@ class YmGameTask(GameTask):
     def __init__(self, default_interval_ms: int | None = None):
         super().__init__(default_interval_ms=default_interval_ms)
         self._recovering_health = False
+        self._health_recover_started_at: float | None = None
 
     def before_start(self) -> None:
         """Ensure the game is ready before task-specific setup runs."""
         if not self.auto_ensure_game_started:
             return
 
-        if self.DEFER_FOREGROUND_WAKE_TO_ON_START and self.is_game_foreground():
+        # Foreground ownership also includes login screens. Only the confirmed
+        # in-game power-saving overlay is safe to defer to on_start.
+        if (
+            self.DEFER_FOREGROUND_WAKE_TO_ON_START
+            and self.is_game_foreground()
+            and self.is_power_saving_mode()
+        ):
             self._log("检测到游戏已在前台，省电唤醒交给 on_start")
             return
 
@@ -427,9 +433,16 @@ class YmGameTask(GameTask):
         retry_scope: str,
         failure: Exception | str | None = None,
     ) -> None:
-        """Try image-only stuck recovery before an abnormal retry starts."""
+        """Wake power saving and try image-only stuck recovery before a retry."""
         super().before_retry(retry_scope, failure)
         scope_name = "步骤" if retry_scope == "step" else "任务"
+        try:
+            self.wake_from_power_saving_if_needed()
+        except StepStopException:
+            raise
+        except Exception as exc:
+            self._log(f"{scope_name}异常重试前省电唤醒检查失败，继续脱离卡死：{exc}")
+
         self._log(f"{scope_name}异常即将重试，尝试脱离卡死")
         if not self.try_escape_stuck():
             self._log("脱离卡死未完成，保持原异常并继续正常重试")
@@ -653,29 +666,15 @@ class YmGameTask(GameTask):
     def detect_health_ratio(self) -> float | None:
         """Return the visible HP bar fill ratio, or None when it cannot be read."""
         screenshot = self.screenshot()
-        if screenshot.ndim < 3 or screenshot.shape[2] < 3:
+        if (
+            not isinstance(screenshot, np.ndarray)
+            or screenshot.ndim < 3
+            or screenshot.shape[2] < 3
+        ):
             return None
 
         screen_height, screen_width = screenshot.shape[:2]
-        vision = getattr(self, "_vision", None)
-        if vision is None:
-            vision = VisionEngine()
-            self._vision = vision
-
-        anchor = vision.match_template(
-            screenshot,
-            self.HEALTH_BAR_ANCHOR,
-            threshold=self.HEALTH_BAR_ANCHOR_THRESHOLD,
-            roi=self.ROI_HEALTH_ANCHOR_SEARCH,
-        )
-        self._last_match_score = anchor.score
-        if not anchor.found or not anchor.bbox:
-            return None
-
-        anchor_x, anchor_y, _, _ = anchor.bbox
-        offset_x, offset_y, width, height = self.ROI_HEALTH_BAR_FROM_ANCHOR
-        x = anchor_x + offset_x
-        y = anchor_y + offset_y
+        x, y, width, height = self.ROI_HEALTH_BAR
         x2 = x + width
         y2 = y + height
         if x < 0 or y < 0 or x2 > screen_width or y2 > screen_height:
@@ -712,15 +711,17 @@ class YmGameTask(GameTask):
             self._log(f"血量检测失败，跳过自动打坐：{exc}")
             return
 
-        if health_ratio is None:
-            self._log("未能识别血条，跳过自动打坐")
-            return
-        if health_ratio >= self.HEALTH_RECOVER_THRESHOLD:
+        if health_ratio is not None and health_ratio >= self.HEALTH_RECOVER_THRESHOLD:
             return
 
         self._recovering_health = True
+        meditation_started = False
+        health_full = False
         try:
-            self._log(f"检测到血量较低：{health_ratio:.1%}，开始打坐恢复")
+            if health_ratio is None:
+                self._log("血量无法识别，按低血量处理，开始打坐恢复")
+            else:
+                self._log(f"检测到血量较低：{health_ratio:.1%}，开始打坐恢复")
             self.click(0)
             self.wait(800)
             self.click_point(self.POINT_EMOTION_SINGLE_TAB[0], self.POINT_EMOTION_SINGLE_TAB[1], offset=0)
@@ -731,32 +732,66 @@ class YmGameTask(GameTask):
                 description="打坐表情",
                 threshold=self.EMOTION_MEDITATE_THRESHOLD,
                 roi=self.ROI_EMOTION_PANEL,
-                wait_after_click_ms=1000,
+                wait_after_click_ms=0,
             ):
                 raise RuntimeError("未找到打坐表情")
+            meditation_started = True
+            self._health_recover_started_at = time.perf_counter()
+            self.wait(1000)
 
             if not self.wait_health_full():
-                raise RuntimeError("打坐回血超时：血量未回满")
-
-            self.click_point(self.POINT_EMOTION_COLLAPSE[0], self.POINT_EMOTION_COLLAPSE[1], offset=0)
-            self.wait(500)
-            self.click_point(self.POINT_LIGHTNESS[0], self.POINT_LIGHTNESS[1], offset=0)
-            self.wait(1000)
-            self._log("血量已回满，退出打坐")
+                raise RuntimeError("打坐回血未正常完成")
+            health_full = True
         finally:
-            self._recovering_health = False
+            try:
+                if meditation_started:
+                    try:
+                        self.click_point(
+                            self.POINT_EMOTION_COLLAPSE[0],
+                            self.POINT_EMOTION_COLLAPSE[1],
+                            offset=0,
+                        )
+                        self.wait(500)
+                    finally:
+                        self.click_point(
+                            self.POINT_LIGHTNESS[0],
+                            self.POINT_LIGHTNESS[1],
+                            offset=0,
+                        )
+                        self.wait(1000)
+            finally:
+                self._recovering_health = False
+                self._health_recover_started_at = None
+
+        if health_full:
+            self._log("血量已回满，退出打坐")
 
     def wait_health_full(self) -> bool:
         """Wait until HP reaches the configured full threshold."""
-        deadline = self._make_deadline(self.HEALTH_RECOVER_TIMEOUT_MS)
+        started_at = self._health_recover_started_at
+        if started_at is None:
+            started_at = time.perf_counter()
+        deadline = started_at + self.HEALTH_RECOVER_FALLBACK_MS / 1000.0
+        unrecognized_count = 0
         while not self._is_deadline_expired(deadline):
             health_ratio = self.detect_health_ratio()
             if health_ratio is not None and health_ratio >= self.HEALTH_FULL_THRESHOLD:
                 return True
-            if health_ratio is not None:
+            if health_ratio is None:
+                unrecognized_count += 1
+                if (
+                    unrecognized_count == 1
+                    or unrecognized_count % self.HEALTH_UNRECOGNIZED_LOG_INTERVAL == 0
+                ):
+                    self._log(f"打坐回血中：连续 {unrecognized_count} 次无法识别血量")
+            else:
+                unrecognized_count = 0
                 self._log(f"打坐回血中：{health_ratio:.1%}")
-            self.wait(self.HEALTH_RECOVER_POLL_INTERVAL_MS)
-        return False
+            remaining_ms = self._remaining_ms(deadline)
+            if remaining_ms > 0:
+                self.wait(min(self.HEALTH_RECOVER_POLL_INTERVAL_MS, remaining_ms))
+        self._log("打坐已满90秒，按回满处理")
+        return True
 
     def _red_health_columns(self, region: np.ndarray) -> np.ndarray:
         channels = region.astype(np.int16)
@@ -2341,6 +2376,7 @@ class YmGameTask(GameTask):
     def _missing_task_sidebar_templates(self) -> list[str]:
         templates = [
             self.TASK_SIDEBAR_ENTRY_V2,
+            self.TASK_SIDEBAR_ENTRY_TEAM_V2,
             self.TASK_SIDEBAR_EXPAND_V2,
             self.BTN_CHAT_SEND,
             self.TEXT_TASK_PANEL_TITLE,
@@ -2639,7 +2675,7 @@ class YmGameTask(GameTask):
 
         entry_match = self._vision.match_binary_template(
             image,
-            self.TASK_SIDEBAR_ENTRY_V2,
+            [self.TASK_SIDEBAR_ENTRY_V2, self.TASK_SIDEBAR_ENTRY_TEAM_V2],
             mode="light_foreground",
             threshold=threshold,
             roi=entry_roi,
@@ -2853,18 +2889,6 @@ class YmGameTask(GameTask):
         state = "、".join(last_busy_labels) if last_busy_labels else "任务过渡"
         self._log(f"等待{state}稳定结束超时")
         return False
-
-    def require_image(
-        self,
-        template: str | list[str],
-        *,
-        timeout_ms: int | None,
-        description: str,
-        threshold: float = 0.8,
-    ) -> None:
-        """Wait for an image and fail the step if it is not found."""
-        if not self.wait_image_appear(template, timeout_ms=timeout_ms, threshold=threshold):
-            raise RuntimeError(f"未找到{description}")
 
     def click_template_if_available(
         self,

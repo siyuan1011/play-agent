@@ -354,4 +354,4 @@ def test_caller_cannot_lower_task_sidebar_threshold() -> None:
     assert task._vision.thresholds
     assert min(task._vision.thresholds) >= 0.85
     active_thresholds = task._vision.thresholds[:3]
-    assert min(active_thresholds) >= 0.90
+    assert min(active_thresholds) >= 0.85

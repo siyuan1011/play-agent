@@ -22,7 +22,7 @@
 ## 关键证据
 
 - [茶馆座位流程修复后继续](assets/real_device/queue/cgss_after_seat_fix.webp)
-- [课业任务追踪与课程流程](assets/real_device/queue/kyrw_course_flow.webp)
+- [课业任务追踪与课程流程](assets/real_device/queue/kyrw_keye_flow.webp)
 - [完整队列结束画面](assets/real_device/queue/queue_completed.webp)
 
 原始 32 帧连续探针和 2026-07-09 的临时观察图已清理；以上三张分别保留关键修复、复杂流程和最终结果。

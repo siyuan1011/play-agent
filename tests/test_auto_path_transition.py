@@ -133,7 +133,7 @@ def test_scene_loading_logo_matches_real_loading_frames(
     [
         FIXTURES / "scene_login_splash.webp",
         FIXTURES / "bprw_sidebar_return.webp",
-        FIXTURES / "kyrw_wuchan_20260707" / "51_course_complete_dialog.webp",
+        FIXTURES / "kyrw_keye_20260707" / "51_keye_complete_dialog.webp",
         FIXTURES / "门客设宴6.webp",
     ],
 )

@@ -62,6 +62,7 @@ class MKSYTask(BanquetAcquireMixin, YmGameTask):
 
     def reset_startup_state(self) -> None:
         """Reset banquet state before the shared startup cleanup."""
+        super().reset_startup_state()
         self._started_banquet = False
 
     @step(retry=3, timeout_ms=30000)
@@ -108,29 +109,43 @@ class MKSYTask(BanquetAcquireMixin, YmGameTask):
             self.jump_to("verify_completion")
         self.click()
         self.wait(1500)
-
-    @step(retry=1, timeout_ms=None)
-    def auto_pathfinding(self) -> None:
-        """等待自动寻路结束。"""
+        self._log("门客前往邀约后等待自动寻路结束")
         self.wait_auto_pathfinding()
 
-    @step(retry=3, timeout_ms=180000)
+    @step(retry=0, timeout_ms=180000)
     def invite_banquet(self) -> None:
         """在 NPC 对话中点击邀请赴宴，并确认邀约。"""
-        self.require_image(self.BTN_MENKE_BANQUET_INVITE, timeout_ms=120000, description="NPC 邀请赴宴按钮")
+        if not self.wait_image_appear(
+            self.BTN_MENKE_BANQUET_INVITE,
+            timeout_ms=self.BANQUET_INVITE_TIMEOUT_MS,
+        ):
+            self._raise_banquet_invite_failure(
+                "未找到NPC 邀请赴宴按钮",
+                "invite_button_missing",
+            )
         self.click()
         self.wait(1500)
 
-        self.require_image(self.BTN_MENKE_CONFIRM_INVITE, timeout_ms=30000, description="确认邀约按钮")
+        if not self.wait_image_appear(
+            self.BTN_MENKE_CONFIRM_INVITE,
+            timeout_ms=self.BANQUET_CONFIRM_TIMEOUT_MS,
+        ):
+            self._raise_banquet_invite_failure(
+                "未找到确认邀约按钮",
+                "invite_confirm_missing",
+            )
         self.click()
         self.wait(1500)
 
         if not self.wait_image_appear(
             [self.BTN_MENKE_GET_ITEM, self.BTN_MENKE_ONE_KEY_SUBMIT, self.BTN_MENKE_START_ACTIVE],
-            timeout_ms=30000,
+            timeout_ms=self.BANQUET_PANEL_TIMEOUT_MS,
             threshold=0.8,
         ):
-            raise RuntimeError("未进入门客设宴物品面板")
+            self._raise_banquet_invite_failure(
+                "未进入门客设宴物品面板",
+                "item_panel_missing",
+            )
 
     @step(retry=1, timeout_ms=240000)
     def process_banquet_items(self) -> None:

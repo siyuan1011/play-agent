@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from ymjh_bot.task.BPRW_task import BPRWTask
+from ymjh_bot.ym_game_task import TaskSidebarStateError
 
 
 NORMAL_TASK_TITLES = (
@@ -279,6 +280,27 @@ def test_task_flow_waits_and_retries_when_sidebar_title_is_missing(monkeypatch) 
     task.run_task_flow()
 
     assert waits == [task.TASK_FLOW_RETRY_WAIT_MS]
+
+
+def test_task_flow_propagates_unavailable_sidebar_without_waiting(monkeypatch) -> None:
+    task = BPRWTask()
+    monkeypatch.setattr(task, "close_completion_dialog_if_visible", lambda: False)
+    monkeypatch.setattr(task, "handle_submit_panel_if_visible", lambda: False)
+    monkeypatch.setattr(task, "handle_trade_panel_if_visible", lambda: False)
+    monkeypatch.setattr(task, "handle_acquire_route_panel_if_visible", lambda: False)
+    monkeypatch.setattr(
+        task,
+        "click_bangpai_task_from_sidebar",
+        lambda **kwargs: (_ for _ in ()).throw(TaskSidebarStateError("活动日历覆盖任务侧栏")),
+    )
+    monkeypatch.setattr(
+        task,
+        "wait",
+        lambda ms: pytest.fail("侧栏状态异常应立即交给步骤重试，不应按任务缺失等待"),
+    )
+
+    with pytest.raises(TaskSidebarStateError, match="活动日历覆盖任务侧栏"):
+        task.run_task_flow()
 
 
 def test_bprw_keeps_merged_six_step_order() -> None:

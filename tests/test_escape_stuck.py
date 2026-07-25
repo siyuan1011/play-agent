@@ -5,7 +5,7 @@ from pathlib import Path
 import cv2
 import pytest
 
-from botCore import VisionEngine
+from botCore import StepStopException, VisionEngine
 from ymjh_bot.ym_game_task import YmGameTask
 
 
@@ -111,3 +111,73 @@ def test_escape_stuck_full_image_flow_uses_current_live_states(monkeypatch) -> N
     assert task._try_escape_stuck_once(attempt=1) is True
     assert state == ["done"]
     assert clicked_centers == [(59, 662), (296, 508), (854, 508)]
+
+
+@pytest.mark.parametrize("retry_scope", ["step", "task"])
+def test_before_retry_wakes_before_escape_without_back_key(monkeypatch, retry_scope: str) -> None:
+    task = YmGameTask()
+    events: list[str] = []
+    monkeypatch.setattr(
+        task,
+        "wake_from_power_saving_if_needed",
+        lambda: events.append("wake") or True,
+    )
+    monkeypatch.setattr(task, "try_escape_stuck", lambda: events.append("escape") or True)
+    monkeypatch.setattr(
+        task,
+        "shell",
+        lambda _command: pytest.fail("通用异常恢复不应发送 KEYCODE_BACK"),
+    )
+    monkeypatch.setattr(task, "_log", lambda _message: None)
+
+    task.before_retry(retry_scope, RuntimeError("测试异常"))
+
+    assert events == ["wake", "escape"]
+
+
+def test_before_retry_wake_failure_still_attempts_escape(monkeypatch) -> None:
+    task = YmGameTask()
+    events: list[str] = []
+    logs: list[str] = []
+
+    def fail_wake() -> bool:
+        events.append("wake")
+        raise RuntimeError("唤醒检测失败")
+
+    monkeypatch.setattr(task, "wake_from_power_saving_if_needed", fail_wake)
+    monkeypatch.setattr(task, "try_escape_stuck", lambda: events.append("escape") or True)
+    monkeypatch.setattr(task, "_log", logs.append)
+
+    task.before_retry("task", RuntimeError("原始任务异常"))
+
+    assert events == ["wake", "escape"]
+    assert "任务异常重试前省电唤醒检查失败，继续脱离卡死：唤醒检测失败" in logs
+
+
+def test_before_retry_propagates_stop_requested_during_wake(monkeypatch) -> None:
+    task = YmGameTask()
+
+    def stop_wake() -> bool:
+        raise StepStopException("Stop requested")
+
+    monkeypatch.setattr(task, "wake_from_power_saving_if_needed", stop_wake)
+    monkeypatch.setattr(
+        task,
+        "try_escape_stuck",
+        lambda: pytest.fail("停止请求后不应继续脱离卡死"),
+    )
+
+    with pytest.raises(StepStopException, match="Stop requested"):
+        task.before_retry("task", RuntimeError("原始任务异常"))
+
+
+def test_before_retry_escape_failure_keeps_normal_retry_flow(monkeypatch) -> None:
+    task = YmGameTask()
+    logs: list[str] = []
+    monkeypatch.setattr(task, "wake_from_power_saving_if_needed", lambda: False)
+    monkeypatch.setattr(task, "try_escape_stuck", lambda: False)
+    monkeypatch.setattr(task, "_log", logs.append)
+
+    task.before_retry("step", RuntimeError("原始步骤异常"))
+
+    assert "脱离卡死未完成，保持原异常并继续正常重试" in logs

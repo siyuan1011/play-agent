@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from botCore import StepStopException
+
 from ymjh_bot.ym_game_task import YmGameTask
 
 
@@ -36,9 +38,23 @@ class BanquetAcquireMixin:
     STALL_PURCHASE_FINAL_RECHECK_MS = 100
     PURCHASE_RESULT_CHECK_TIMEOUT_MS = 1500
     PURCHASE_RETRY_LIMIT = 1
+    BANQUET_INVITE_TIMEOUT_MS = 60000
+    BANQUET_CONFIRM_TIMEOUT_MS = 10000
+    BANQUET_PANEL_TIMEOUT_MS = 30000
 
     START_BANQUET_BRIGHTNESS_THRESHOLD = 150.0
     BANQUET_NAME = "设宴"
+
+    def _raise_banquet_invite_failure(self, reason: str, stage: str) -> None:
+        """Preserve invite failure context for the next complete task retry."""
+        task_key = str(getattr(self, "task_key", "banquet")).lower()
+        try:
+            self.save_debug_screenshot(f"{task_key}_{stage}")
+        except StepStopException:
+            raise
+        except Exception as exc:
+            self._log(f"设宴邀约失败截图保存失败，保留原异常：{exc}")
+        raise RuntimeError(reason)
 
     def process_banquet_items(self) -> None:
         """Process every configured banquet item slot once."""

@@ -92,6 +92,14 @@ if self.find_image("btn.png", threshold=0.8):
 if self.wait_image_appear("btn_start.png", timeout_ms=5000):
     self.click()
 
+# 只在截图指定区域中等待图像出现，ROI 格式为 (x, y, width, height)
+if self.wait_image_appear(
+    "btn_confirm.png",
+    timeout_ms=5000,
+    roi=(900, 500, 300, 200),
+):
+    self.click()
+
 # 等待图像连续消失
 self.wait_image_missing("popup.png", missing_threshold=3)
 ```

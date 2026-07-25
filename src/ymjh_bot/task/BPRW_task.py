@@ -2,7 +2,7 @@
 
 from botCore import step
 
-from ymjh_bot.ym_game_task import YmGameTask
+from ymjh_bot.ym_game_task import TaskSidebarStateError, YmGameTask
 
 
 class BPRWTask(YmGameTask):
@@ -113,7 +113,6 @@ class BPRWTask(YmGameTask):
     @step(retry=3, timeout_ms=30000)
     def open_bangpai_activity(self) -> None:
         """打开活动界面、切换帮派页签并点击帮派任务前往按钮。"""
-        self.close_all_panels(timeout_ms=3000)
         self.open_activity_panel("帮派", wait_after_open_ms=3000)
         if not self.wait_find_image_in_roi(
             self.BTN_BANGPAI_TASK_ENTRY,
@@ -147,7 +146,11 @@ class BPRWTask(YmGameTask):
             self.jump_to_end()
 
         try:
-            self.require_image(self.BTN_BANGPAI_TASK_ACCEPT, timeout_ms=120000, description="NPC 帮派任务按钮")
+            if not self.wait_image_appear(
+                self.BTN_BANGPAI_TASK_ACCEPT,
+                timeout_ms=120000,
+            ):
+                raise RuntimeError("未找到NPC 帮派任务按钮")
         except RuntimeError:
             if self.is_bangpai_list_visible():
                 self._log("检测到当前未加入帮派，跳过帮派任务")
@@ -156,7 +159,8 @@ class BPRWTask(YmGameTask):
         self.click()
         self.wait(1500)
 
-        self.require_image(self.BTN_OK, timeout_ms=10000, description="帮派任务确认按钮")
+        if not self.wait_image_appear(self.BTN_OK, timeout_ms=10000):
+            raise RuntimeError("未找到帮派任务确认按钮")
         self.click()
         self.wait(1500)
 
@@ -202,7 +206,7 @@ class BPRWTask(YmGameTask):
             if task_title is not None:
                 self.handle_clicked_bangpai_task(task_title)
             else:
-                self._log("江湖任务栏暂未找到帮派任务，等待后重试")
+                self._log("有效江湖任务栏暂未找到帮派任务，等待后重试")
             self.wait(self.TASK_FLOW_RETRY_WAIT_MS)
 
         raise RuntimeError("帮派任务执行流程超时：未检测到完成对话或明确任务追踪消失")
@@ -227,8 +231,9 @@ class BPRWTask(YmGameTask):
         return task_title
 
     def find_bangpai_task_in_sidebar(self, max_scrolls: int = 5) -> str | None:
-        """在当前侧栏查找帮派任务；调用前必须已初始化为江湖页签。"""
+        """在已确认的江湖任务侧栏中查找帮派任务。"""
         for attempt in range(max_scrolls + 1):
+            self._ensure_bangpai_sidebar_ready()
             task_title = self.wait_bangpai_task_title_in_sidebar(
                 timeout_ms=1200,
                 threshold=0.8,
@@ -238,10 +243,22 @@ class BPRWTask(YmGameTask):
                 return task_title
 
             if attempt < max_scrolls:
-                self._log(f"任务栏未找到帮派任务，向下翻页 {attempt + 1}/{max_scrolls}")
+                self._ensure_bangpai_sidebar_ready()
+                self._log(
+                    "已确认江湖任务侧栏，本页未找到帮派任务，"
+                    f"向下翻页 {attempt + 1}/{max_scrolls}"
+                )
                 self.scroll_task_list_down()
 
         return None
+
+    def _ensure_bangpai_sidebar_ready(self) -> None:
+        """Confirm the Jianghu sidebar before any fixed-coordinate scan or scroll."""
+        try:
+            self.switch_task_panel("江湖", timeout_ms=6000, threshold=0.8)
+        except TaskSidebarStateError as exc:
+            self._log(f"帮派任务侧栏状态不可用，停止本轮扫描：{exc}")
+            raise
 
     def wait_bangpai_task_title_in_sidebar(
         self,
@@ -274,7 +291,7 @@ class BPRWTask(YmGameTask):
             self._last_match_center = None
             self.wait(interval_ms)
 
-        self._log("未找到任务栏帮派任务六标题")
+        self._log("已确认江湖任务侧栏，本页未找到帮派任务六标题")
         return None
 
     def handle_clicked_bangpai_task(self, task_title: str) -> bool:
