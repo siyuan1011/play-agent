@@ -1,8 +1,23 @@
 """课业任务 - Python DSL 实现。"""
 
-from botCore import step
+from dataclasses import dataclass
+
+import cv2
+import numpy as np
+
+from botCore import ImageMatchResult, step
 
 from ymjh_bot.ym_game_task import TaskSidebarStateError, YmGameTask
+
+
+@dataclass(frozen=True, slots=True)
+class _YinshiState:
+    """One screenshot-derived state of the keye poetry sorting panel."""
+
+    visible: bool
+    screenshot: np.ndarray
+    cards: tuple[ImageMatchResult, ...] = ()
+    correct_slots: frozenset[int] = frozenset()
 
 
 class KYRWTask(YmGameTask):
@@ -22,9 +37,11 @@ class KYRWTask(YmGameTask):
     BTN_KEYE_USE = str(YmGameTask.TEMPLATES_DIR / "btn_kyrw_shiyong.png")
     TEXT_KEYE_PREFIX = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_keye.png")
     TEXT_ZHISHA_PREFIX = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_zhisha.png")
+    TEXT_ZHUOJIAN_PREFIX = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_zhuojian.png")
     KEYE_SIDEBAR_TEMPLATES = [
         TEXT_KEYE_PREFIX,
         TEXT_ZHISHA_PREFIX,
+        TEXT_ZHUOJIAN_PREFIX,
     ]
     TEXT_EXISTING_KEYE_TOAST = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_existing_keye_toast.png")
     TEXT_KEYE_COMPLETE = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_complete.png")
@@ -35,6 +52,9 @@ class KYRWTask(YmGameTask):
     BTN_MALL_BUY_AREA = str(YmGameTask.TEMPLATES_DIR / "btn_mall_buy_area.png")
     BTN_BUY = str(YmGameTask.TEMPLATES_DIR / "btn_buy.png")
     BTN_MODAL_CANCEL = str(YmGameTask.TEMPLATES_DIR / "btn_modal_cancel.png")
+    TEXT_YINSHI_INSTRUCTION = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_yinshi_instruction.png")
+    ICON_YINSHI_CARD_TOP = str(YmGameTask.TEMPLATES_DIR / "icon_kyrw_yinshi_card_top.png")
+    ICON_YINSHI_CORRECT = str(YmGameTask.TEMPLATES_DIR / "icon_kyrw_yinshi_correct.png")
 
     # 固定坐标点 (设计分辨率 1280x720 下)
     POINT_KEYE_ACTIVITY_FORWARD = (215, 276)
@@ -42,30 +62,23 @@ class KYRWTask(YmGameTask):
     POINT_NPC_TALK = (1005, 465)
     POINT_NPC_ACTION = (1100, 465)
     POINT_KEYE_CARD_DEFAULT = (354, 265)
-    POINT_TASK_LIST_SCROLL_START = (190, 360)
-    POINT_TASK_LIST_SCROLL_END = (190, 170)
+    POINT_TASK_LIST_SCROLL_START = (190, 330)
+    POINT_TASK_LIST_SCROLL_END = (190, 190)
+    POINT_TASK_LIST_SCROLL_UP_START = (190, 190)
+    POINT_TASK_LIST_SCROLL_UP_END = (190, 330)
     POINT_DIALOG_NEXT = (1230, 690)
     POINT_MALL_BUY = (949, 663)
     POINT_COMPLETE_OK = (854, 508)
 
     ROI_KEYE_ACTIVITY_ENTRY = (120, 210, 220, 115)
-    ROI_KEYE_ENTRY = (175, 440, 205, 110)
-    ROI_NPC_ACTION = (900, 400, 360, 130)
-    ROI_TASK_LIST = (40, 135, 330, 430)
-    ROI_EXISTING_KEYE_TOAST = (450, 300, 420, 90)
-    ROI_DIALOG_NEXT = (1180, 640, 100, 80)
-    ROI_DIALOG_CONFIRM = (900, 400, 360, 120)
     ROI_ROUTE_PANEL = (330, 120, 880, 520)
     ROI_TRADE_ACTION = (520, 440, 330, 120)
-    ROI_MALL_BUY = (800, 610, 290, 100)
-    ROI_ONE_KEY_SUBMIT = (900, 330, 340, 240)
-    ROI_COMPLETE = (350, 250, 600, 220)
-    ROI_REFRESH_CANCEL = (300, 450, 250, 120)
+    ROI_YINSHI_INSTRUCTION = (20, 560, 900, 120)
+    ROI_YINSHI_CARD_TOPS = (250, 40, 900, 150)
+    ROI_YINSHI_CORRECT_MARKS = (250, 420, 900, 130)
 
     TASK_FLOW_TIMEOUT_MS = 900000
-    AUTO_PATHFIND_TO_NPC_TIMEOUT_MS = 120000
     AUTO_PATHFIND_TO_NPC_ATTEMPTS = 2
-    ENTER_KEYE_STEP_TIMEOUT_MS = 390000
     MAX_ITEM_ACQUIRE_ROUNDS = 60
     MAX_STALL_BUY_RETRIES = 2
     MAX_ALL_SERVER_BUY_RETRIES = 2
@@ -75,6 +88,21 @@ class KYRWTask(YmGameTask):
     KEYE_TASK_MISSING_CONFIRMATIONS = 3
     KEYE_FLOW_STATE_HANDLED = "handled"
     KEYE_FLOW_STATE_IDLE = "idle"
+    TASK_LIST_SCROLL_DURATION_MS = 1000
+    TASK_LIST_SCROLL_UP_DURATION_MS = 400
+    TASK_LIST_SCROLL_SETTLE_MS = 500
+    TASK_LIST_SCROLL_UP_COUNT = 2
+    YINSHI_INSTRUCTION_THRESHOLD = 0.9
+    YINSHI_CARD_THRESHOLD = 0.9
+    YINSHI_CORRECT_THRESHOLD = 0.85
+    YINSHI_CARD_DUPLICATE_DISTANCE = 60
+    YINSHI_CORRECT_MAX_CARD_WIDTH_RATIO = 0.75
+    YINSHI_CARD_FINGERPRINT_THRESHOLD = 0.85
+    YINSHI_DRAG_DURATION_MS = 200
+    YINSHI_DRAG_SETTLE_MS = 200
+    YINSHI_DRAG_RETRIES = 1
+    YINSHI_DRAG_Y_OFFSET_FROM_TOP_BOTTOM = 150
+    YINSHI_COMPLETE_WAIT_MS = 500
 
     def __init__(self, default_interval_ms: int | None = None):
         super().__init__(default_interval_ms=default_interval_ms)
@@ -124,14 +152,14 @@ class KYRWTask(YmGameTask):
             )
         self.wait(1500)
 
-    @step(retry=0, timeout_ms=ENTER_KEYE_STEP_TIMEOUT_MS)
+    @step(retry=0, timeout_ms=390000)
     def enter_keye_from_activity_panel(self) -> None:
         """在课业活动面板点击课业前往，并等待自动寻路结束。"""
         if self.wait_image_appear(
             self.BTN_KEYE_ENTRY_FORWARD,
             timeout_ms=10000,
             threshold=0.9,
-            roi=self.scale_roi(self.ROI_KEYE_ENTRY),
+            roi=self.scale_roi((175, 440, 205, 110)),
         ):
             self.click(offset=0)
         else:
@@ -145,7 +173,7 @@ class KYRWTask(YmGameTask):
 
         self._log("等待接取前自动寻路结束")
         for attempt in range(1, self.AUTO_PATHFIND_TO_NPC_ATTEMPTS + 1):
-            if self.wait_auto_pathfinding(timeout_ms=self.AUTO_PATHFIND_TO_NPC_TIMEOUT_MS):
+            if self.wait_auto_pathfinding(timeout_ms=120000):
                 self._log("接取前自动寻路已结束")
                 return
             if attempt < self.AUTO_PATHFIND_TO_NPC_ATTEMPTS:
@@ -211,7 +239,7 @@ class KYRWTask(YmGameTask):
             self.BTN_NPC_KEYE_ACTION_TEMPLATES,
             timeout_ms=timeout_ms,
             threshold=0.85,
-            roi=self.scale_roi(self.ROI_NPC_ACTION),
+            roi=self.scale_roi((900, 400, 360, 130)),
         ):
             return False
 
@@ -225,6 +253,8 @@ class KYRWTask(YmGameTask):
         if self.close_keye_completion_dialog_if_visible():
             return self.KEYE_FLOW_STATE_HANDLED
         if self.cancel_refresh_confirm_if_visible():
+            return self.KEYE_FLOW_STATE_HANDLED
+        if self.handle_yinshi_task_if_visible():
             return self.KEYE_FLOW_STATE_HANDLED
         if self.click_keye_use_if_visible():
             return self.KEYE_FLOW_STATE_HANDLED
@@ -241,6 +271,281 @@ class KYRWTask(YmGameTask):
         if self.click_dialog_next_if_visible():
             return self.KEYE_FLOW_STATE_HANDLED
         return self.KEYE_FLOW_STATE_IDLE
+
+    def handle_yinshi_task_if_visible(self) -> bool:
+        """Sort a visible poetry panel using only card positions and correct marks."""
+        state = self._read_yinshi_state()
+        if not state.visible:
+            return False
+        expected_count = len(state.cards)
+        if expected_count < 2:
+            self._raise_yinshi_error(
+                "检测到吟诗作对界面，但无法确认至少两张诗句卡片",
+                "kyrw_yinshi_cards_unconfirmed",
+            )
+
+        self._log(f"检测到吟诗作对任务，共识别到 {expected_count} 张诗句卡片")
+        for target_index in range(expected_count):
+            state = self._read_yinshi_state()
+            if not state.visible:
+                self._log("吟诗作对界面已退出，继续课业流程")
+                return True
+            self._validate_yinshi_card_count(state, expected_count)
+
+            if target_index in state.correct_slots:
+                self._log(f"吟诗作对槽位 {target_index + 1} 已正确，跳过拖动")
+                continue
+
+            target_correct = False
+            for source_index in range(target_index + 1, expected_count):
+                state = self._read_yinshi_state()
+                if not state.visible:
+                    self._log("吟诗作对界面已退出，继续课业流程")
+                    return True
+                self._validate_yinshi_card_count(state, expected_count)
+
+                if target_index in state.correct_slots:
+                    self._log(f"吟诗作对槽位 {target_index + 1} 已正确，停止尝试候选卡片")
+                    target_correct = True
+                    break
+
+                source_card = state.cards[source_index]
+                source_fingerprint = self._yinshi_card_fingerprint(state.screenshot, source_card)
+                moved = False
+                for drag_attempt in range(self.YINSHI_DRAG_RETRIES + 1):
+                    target_card = state.cards[target_index]
+                    self._log(
+                        f"吟诗作对：拖动槽位 {source_index + 1} 到槽位 {target_index + 1}"
+                    )
+                    self._drag_yinshi_card(source_card, target_card)
+
+                    updated = self._read_yinshi_state()
+                    if not updated.visible:
+                        self._log("吟诗作对界面已退出，继续课业流程")
+                        return True
+                    self._validate_yinshi_card_count(updated, expected_count)
+
+                    if target_index in updated.correct_slots:
+                        self._log(f"吟诗作对槽位 {target_index + 1} 排列正确")
+                        target_correct = True
+                        moved = True
+                        state = updated
+                        break
+
+                    target_fingerprint = self._yinshi_card_fingerprint(
+                        updated.screenshot,
+                        updated.cards[target_index],
+                    )
+                    similarity = self._yinshi_fingerprint_similarity(
+                        source_fingerprint,
+                        target_fingerprint,
+                    )
+                    if similarity >= self.YINSHI_CARD_FINGERPRINT_THRESHOLD:
+                        moved = True
+                        state = updated
+                        break
+
+                    if drag_attempt < self.YINSHI_DRAG_RETRIES:
+                        self._log(
+                            "吟诗作对拖动未生效，"
+                            f"重试 {drag_attempt + 1}/{self.YINSHI_DRAG_RETRIES}"
+                        )
+                        state = updated
+                        source_card = state.cards[source_index]
+
+                if not moved:
+                    self._raise_yinshi_error(
+                        f"吟诗作对槽位 {source_index + 1} 拖动到 "
+                        f"{target_index + 1} 后未生效",
+                        "kyrw_yinshi_drag_failed",
+                    )
+                if target_correct:
+                    break
+
+            if target_correct:
+                continue
+
+            state = self._read_yinshi_state()
+            if not state.visible:
+                self._log("吟诗作对界面已退出，继续课业流程")
+                return True
+            self._validate_yinshi_card_count(state, expected_count)
+            if target_index not in state.correct_slots:
+                self._raise_yinshi_error(
+                    f"吟诗作对槽位 {target_index + 1} 已尝试全部候选卡片仍未出现红勾",
+                    "kyrw_yinshi_no_correct_candidate",
+                )
+
+        final_state = self._read_yinshi_state()
+        if not final_state.visible:
+            self._log("吟诗作对排序完成，界面已退出")
+            return True
+        self._validate_yinshi_card_count(final_state, expected_count)
+        if len(final_state.correct_slots) != expected_count:
+            self._raise_yinshi_error(
+                "吟诗作对完成检查时仍存在未正确排列的槽位",
+                "kyrw_yinshi_incomplete",
+            )
+
+        self._log("吟诗作对所有槽位均已出现红勾，等待界面自行退出")
+        self.wait(self.YINSHI_COMPLETE_WAIT_MS)
+        return True
+
+    def _read_yinshi_state(self, screenshot: np.ndarray | None = None) -> _YinshiState:
+        """Read poetry panel visibility, dynamic card positions, and correct slots."""
+        frame = self.screenshot() if screenshot is None else screenshot
+        marker = self._vision.match_template(
+            frame,
+            self.TEXT_YINSHI_INSTRUCTION,
+            threshold=self.YINSHI_INSTRUCTION_THRESHOLD,
+            roi=self.scale_roi(self.ROI_YINSHI_INSTRUCTION),
+        )
+        if not marker.found:
+            return _YinshiState(visible=False, screenshot=frame)
+
+        card_matches = self._vision.match_all_templates(
+            frame,
+            self.ICON_YINSHI_CARD_TOP,
+            threshold=self.YINSHI_CARD_THRESHOLD,
+            roi=self.scale_roi(self.ROI_YINSHI_CARD_TOPS),
+        )
+        cards = tuple(self._merge_yinshi_card_matches(card_matches))
+        correct_matches = self._vision.match_all_templates(
+            frame,
+            self.ICON_YINSHI_CORRECT,
+            threshold=self.YINSHI_CORRECT_THRESHOLD,
+            roi=self.scale_roi(self.ROI_YINSHI_CORRECT_MARKS),
+        )
+        correct_slots = self._map_yinshi_correct_slots(cards, correct_matches)
+        return _YinshiState(
+            visible=True,
+            screenshot=frame,
+            cards=cards,
+            correct_slots=frozenset(correct_slots),
+        )
+
+    def _merge_yinshi_card_matches(
+        self,
+        matches: list[ImageMatchResult],
+    ) -> list[ImageMatchResult]:
+        """Merge duplicate peaks and return card matches ordered from left to right."""
+        selected: list[ImageMatchResult] = []
+        for match in sorted(matches, key=lambda item: item.score, reverse=True):
+            if match.center is None or match.bbox is None:
+                continue
+            if any(
+                abs(match.center[0] - existing.center[0]) < self.YINSHI_CARD_DUPLICATE_DISTANCE
+                for existing in selected
+                if existing.center is not None
+            ):
+                continue
+            selected.append(match)
+        return sorted(selected, key=lambda item: item.center[0] if item.center else -1)
+
+    def _map_yinshi_correct_slots(
+        self,
+        cards: tuple[ImageMatchResult, ...],
+        correct_matches: list[ImageMatchResult],
+    ) -> set[int]:
+        """Map each red correct mark to the nearest dynamically detected card."""
+        if not correct_matches:
+            return set()
+        if not cards:
+            self._raise_yinshi_error(
+                "识别到吟诗作对红勾，但未识别到诗句卡片",
+                "kyrw_yinshi_correct_without_cards",
+            )
+
+        correct_slots: set[int] = set()
+        for correct in correct_matches:
+            if correct.center is None:
+                continue
+            nearest_index = min(
+                range(len(cards)),
+                key=lambda index: abs(cards[index].center[0] - correct.center[0]),
+            )
+            card = cards[nearest_index]
+            if card.center is None or card.bbox is None:
+                continue
+            card_width = card.bbox[2] - card.bbox[0]
+            max_distance = max(
+                1,
+                int(card_width * self.YINSHI_CORRECT_MAX_CARD_WIDTH_RATIO),
+            )
+            if abs(card.center[0] - correct.center[0]) > max_distance:
+                self._raise_yinshi_error(
+                    "吟诗作对红勾无法映射到对应卡片",
+                    "kyrw_yinshi_correct_unmapped",
+                )
+            correct_slots.add(nearest_index)
+        return correct_slots
+
+    def _drag_yinshi_card(
+        self,
+        source: ImageMatchResult,
+        target: ImageMatchResult,
+    ) -> None:
+        """Drag one dynamically detected card into another card's slot."""
+        if source.center is None or source.bbox is None or target.center is None or target.bbox is None:
+            raise RuntimeError("吟诗作对卡片坐标不完整")
+        source_y = source.bbox[3] + self.YINSHI_DRAG_Y_OFFSET_FROM_TOP_BOTTOM
+        target_y = target.bbox[3] + self.YINSHI_DRAG_Y_OFFSET_FROM_TOP_BOTTOM
+        self.swipe(
+            source.center[0],
+            source_y,
+            target.center[0],
+            target_y,
+            duration_ms=self.YINSHI_DRAG_DURATION_MS,
+        )
+        self.wait(self.YINSHI_DRAG_SETTLE_MS)
+
+    @staticmethod
+    def _yinshi_card_fingerprint(
+        screenshot: np.ndarray,
+        card: ImageMatchResult,
+    ) -> np.ndarray:
+        """Extract a card's text-only visual fingerprint without recognizing text."""
+        if card.center is None or card.bbox is None:
+            return np.empty((0, 0), dtype=np.uint8)
+        height, width = screenshot.shape[:2]
+        center_x = card.center[0]
+        x1 = max(0, center_x - 32)
+        x2 = min(width, center_x + 32)
+        y1 = max(0, card.bbox[3] - 5)
+        y2 = min(height, card.bbox[3] + 280)
+        crop = screenshot[y1:y2, x1:x2]
+        if crop.size == 0:
+            return np.empty((0, 0), dtype=np.uint8)
+        return cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+
+    @staticmethod
+    def _yinshi_fingerprint_similarity(
+        expected: np.ndarray,
+        actual: np.ndarray,
+    ) -> float:
+        """Return normalized visual similarity between two card fingerprints."""
+        if expected.size == 0 or actual.size == 0:
+            return 0.0
+        if actual.shape != expected.shape:
+            actual = cv2.resize(actual, (expected.shape[1], expected.shape[0]))
+        if float(np.std(expected)) < 1e-6 or float(np.std(actual)) < 1e-6:
+            return 0.0
+        result = cv2.matchTemplate(actual, expected, cv2.TM_CCOEFF_NORMED)
+        return float(result[0, 0])
+
+    def _validate_yinshi_card_count(self, state: _YinshiState, expected_count: int) -> None:
+        """Reject a visible poetry panel whose card count changed unexpectedly."""
+        if len(state.cards) == expected_count:
+            return
+        self._raise_yinshi_error(
+            f"吟诗作对卡片数量异常：预期 {expected_count}，实际 {len(state.cards)}",
+            "kyrw_yinshi_card_count_changed",
+        )
+
+    def _raise_yinshi_error(self, message: str, screenshot_prefix: str) -> None:
+        """Save the current poetry panel before raising a clear failure."""
+        debug_path = self.save_debug_screenshot(screenshot_prefix)
+        raise RuntimeError(f"{message}，已保存截图：{debug_path}")
 
     @step(retry=1, timeout_ms=TASK_FLOW_TIMEOUT_MS)
     def run_keye_flow(self) -> None:
@@ -314,7 +619,7 @@ class KYRWTask(YmGameTask):
         if self.find_image_once(
             self.TEXT_EXISTING_KEYE_TOAST,
             threshold=0.85,
-            roi=self.scale_roi(self.ROI_EXISTING_KEYE_TOAST),
+            roi=self.scale_roi((450, 300, 420, 90)),
         ):
             self._log("检测到已有当前布置课业，关闭面板后继续执行")
             self.close_all_panels(timeout_ms=3000)
@@ -339,14 +644,16 @@ class KYRWTask(YmGameTask):
         """Find the keye task text in the Jianghu task panel."""
         self.ensure_left_task_sidebar_visible()
         self._confirm_keye_sidebar_jianghu()
+        for _ in range(self.TASK_LIST_SCROLL_UP_COUNT):
+            self.scroll_task_list_up()
+            self._confirm_keye_sidebar_jianghu()
 
         for attempt in range(max_scrolls + 1):
             if self.wait_image_appear(
                 self.KEYE_SIDEBAR_TEMPLATES,
-                timeout_ms=1000,
+                timeout_ms=1500,
                 threshold=0.85,
-                interval_ms=300,
-                roi=self.scale_roi(self.ROI_TASK_LIST),
+                roi=self.scale_roi((40, 135, 330, 430)),
             ):
                 return True
 
@@ -375,8 +682,27 @@ class KYRWTask(YmGameTask):
         """Scroll the task list down to reveal lower entries."""
         start = self.POINT_TASK_LIST_SCROLL_START
         end = self.POINT_TASK_LIST_SCROLL_END
-        self.swipe(start[0], start[1], end[0], end[1], duration_ms=350)
-        self.wait(800)
+        self.swipe(
+            start[0],
+            start[1],
+            end[0],
+            end[1],
+            duration_ms=self.TASK_LIST_SCROLL_DURATION_MS,
+        )
+        self.wait(self.TASK_LIST_SCROLL_SETTLE_MS)
+
+    def scroll_task_list_up(self) -> None:
+        """Scroll the task list up by one page while normalizing to its first page."""
+        start = self.POINT_TASK_LIST_SCROLL_UP_START
+        end = self.POINT_TASK_LIST_SCROLL_UP_END
+        self.swipe(
+            start[0],
+            start[1],
+            end[0],
+            end[1],
+            duration_ms=self.TASK_LIST_SCROLL_UP_DURATION_MS,
+        )
+        self.wait(self.TASK_LIST_SCROLL_SETTLE_MS)
 
     def handle_acquire_route_panel_if_visible(self) -> bool:
         """Handle supported item acquisition route panels."""
@@ -450,7 +776,7 @@ class KYRWTask(YmGameTask):
             self.BTN_MALL_BUY_AREA,
             timeout_ms=5000,
             description="商城默认数量购买按钮",
-            roi=self.ROI_MALL_BUY,
+            roi=(800, 610, 290, 100),
             threshold=0.85,
             wait_after_click_ms=1500,
         ):
@@ -556,7 +882,7 @@ class KYRWTask(YmGameTask):
             self.BTN_ONE_KEY_SUBMIT,
             timeout_ms=timeout_ms,
             description="课业一键提交按钮",
-            roi=self.ROI_ONE_KEY_SUBMIT,
+            roi=(900, 330, 340, 240),
             threshold=0.85,
             wait_after_click_ms=1500,
         ):
@@ -572,7 +898,7 @@ class KYRWTask(YmGameTask):
             self.BTN_OK,
             timeout_ms=600,
             description="课业剧情确定按钮",
-            roi=self.ROI_DIALOG_CONFIRM,
+            roi=(900, 400, 360, 120),
             threshold=0.85,
             wait_after_click_ms=1500,
         )
@@ -583,7 +909,7 @@ class KYRWTask(YmGameTask):
             self.BTN_DIALOG_NEXT,
             timeout_ms=600,
             description="剧情继续箭头",
-            roi=self.ROI_DIALOG_NEXT,
+            roi=(1180, 640, 100, 80),
             threshold=0.85,
             wait_after_click_ms=1500,
         ):
@@ -605,7 +931,7 @@ class KYRWTask(YmGameTask):
         if not self.find_image(
             self.TEXT_KEYE_COMPLETE,
             threshold=0.85,
-            roi=self.scale_roi(self.ROI_COMPLETE),
+            roi=self.scale_roi((350, 250, 600, 220)),
         ):
             return False
 
@@ -619,7 +945,7 @@ class KYRWTask(YmGameTask):
         if not self.find_image_once(
             self.BTN_MODAL_CANCEL,
             threshold=0.85,
-            roi=self.scale_roi(self.ROI_REFRESH_CANCEL),
+            roi=self.scale_roi((300, 450, 250, 120)),
         ):
             return False
 

@@ -5,7 +5,7 @@ from pathlib import Path
 import cv2
 import pytest
 
-from botCore import VisionEngine
+from botCore import StepStopException, VisionEngine
 from ymjh_bot.task.RCFB_task import RCFBTask
 from ymjh_bot.ym_game_task import TaskSidebarStateError
 
@@ -114,7 +114,7 @@ def test_exit_team_button_template_matches_only_left_modal_action() -> None:
         screenshot,
         RCFBTask.BTN_DUNGEON_EXIT_TEAM,
         threshold=RCFBTask.DUNGEON_EXIT_TEAM_THRESHOLD,
-        roi=RCFBTask.ROI_DUNGEON_EXIT_MODAL_ACTIONS,
+        roi=(300, 440, 700, 130),
     )
 
     assert match.found
@@ -140,7 +140,7 @@ def test_rcfb_step_sequence_merges_follow_wait_into_match() -> None:
     assert flow_meta["retry"] == 0
     assert flow_meta["timeout_ms"] == RCFBTask.TASK_FLOW_TIMEOUT_MS == 1800000
     assert exit_meta["retry"] == 0
-    assert exit_meta["timeout_ms"] == RCFBTask.DUNGEON_EXIT_STEP_TIMEOUT_MS == 90000
+    assert exit_meta["timeout_ms"] == 420000
 
 
 def test_start_daily_match_starts_follow_listener_immediately(monkeypatch) -> None:
@@ -414,7 +414,8 @@ def test_current_tracker_click_does_not_switch_or_scroll_sidebar(monkeypatch) ->
     )
 
     assert task.click_current_dungeon_task_if_visible()
-    assert events == ["click", 1500]
+    assert events == ["click", task.DUNGEON_TRACKER_CLICK_INTERVAL_MS]
+    assert task.DUNGEON_TRACKER_CLICK_INTERVAL_MS == 5000
 
 
 def test_raid_flow_prioritizes_completion_marker_over_visible_tracker(monkeypatch) -> None:
@@ -492,6 +493,7 @@ def test_leave_after_completion_clicks_exit_then_exit_team(monkeypatch) -> None:
         return True
 
     monkeypatch.setattr(task, "click_template_if_available", click_template)
+    monkeypatch.setattr(task, "click_visible_dungeon_exit_team_button", lambda: False)
     monkeypatch.setattr(
         task,
         "wait_for_dungeon_transfer_complete",
@@ -510,9 +512,140 @@ def test_leave_after_completion_clicks_exit_then_exit_team(monkeypatch) -> None:
         task.BTN_DUNGEON_EXIT_TEAM,
     ]
     assert clicks[0][1]["roi"] == task.ROI_DUNGEON_EXIT
-    assert clicks[1][1]["roi"] == task.ROI_DUNGEON_EXIT_MODAL_ACTIONS
+    assert clicks[1][1]["roi"] == (300, 440, 700, 130)
     assert clicks[1][1]["wait_after_click_ms"] == 0
-    assert transfers == [task.DUNGEON_TRANSFER_TIMEOUT_MS]
+    assert transfers == [60000]
+
+
+def test_leave_after_completion_clicks_already_open_exit_team_dialog(monkeypatch) -> None:
+    task = RCFBTask()
+    transfers: list[int] = []
+    monkeypatch.setattr(task, "click_visible_dungeon_exit_team_button", lambda: True)
+    monkeypatch.setattr(
+        task,
+        "click_template_if_available",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("弹框已打开时不应再次点击退出图标")
+        ),
+    )
+    monkeypatch.setattr(
+        task,
+        "wait_for_dungeon_transfer_complete",
+        lambda *, timeout_ms: transfers.append(timeout_ms),
+    )
+
+    task.leave_team_after_completion()
+
+    assert transfers == [60000]
+
+
+def test_leave_after_completion_retries_exit_locally_before_success(monkeypatch) -> None:
+    task = RCFBTask()
+    clicked_templates: list[str] = []
+    button_results = iter([False, True])
+    transfers: list[int] = []
+    monkeypatch.setattr(task, "click_visible_dungeon_exit_team_button", lambda: False)
+
+    def click_template(template: str, **kwargs) -> bool:
+        clicked_templates.append(template)
+        if template == task.ICON_DUNGEON_EXIT:
+            return True
+        return next(button_results)
+
+    monkeypatch.setattr(task, "click_template_if_available", click_template)
+    monkeypatch.setattr(
+        task,
+        "wait_for_dungeon_transfer_complete",
+        lambda *, timeout_ms: transfers.append(timeout_ms),
+    )
+    monkeypatch.setattr(
+        task,
+        "save_debug_screenshot",
+        lambda prefix: (_ for _ in ()).throw(
+            AssertionError("局部重试成功后不应保存失败截图")
+        ),
+    )
+
+    task.leave_team_after_completion()
+
+    assert clicked_templates == [
+        task.ICON_DUNGEON_EXIT,
+        task.BTN_DUNGEON_EXIT_TEAM,
+        task.ICON_DUNGEON_EXIT,
+        task.BTN_DUNGEON_EXIT_TEAM,
+    ]
+    assert transfers == [60000]
+
+
+def test_leave_after_completion_waits_for_auto_transfer_then_leaves_team(monkeypatch) -> None:
+    task = RCFBTask()
+    transfers: list[int] = []
+    leaves: list[bool] = []
+    screenshots: list[str] = []
+    monkeypatch.setattr(task, "click_visible_dungeon_exit_team_button", lambda: False)
+    monkeypatch.setattr(task, "click_template_if_available", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        task,
+        "save_debug_screenshot",
+        lambda prefix: screenshots.append(prefix) or "exit-missing.png",
+    )
+    monkeypatch.setattr(
+        task,
+        "wait_for_dungeon_transfer_complete",
+        lambda *, timeout_ms: transfers.append(timeout_ms),
+    )
+    monkeypatch.setattr(task, "leave_team_if_present", lambda: leaves.append(True))
+
+    task.leave_team_after_completion()
+
+    assert screenshots == ["rcfb_exit_team_button_missing"]
+    assert transfers == [task.DUNGEON_AUTO_TRANSFER_TIMEOUT_MS]
+    assert task.DUNGEON_AUTO_TRANSFER_TIMEOUT_MS == 330000
+    assert leaves == [True]
+
+
+@pytest.mark.parametrize("exit_team_clicked", [False, True])
+def test_leave_after_completion_transfer_timeout_does_not_rerun(
+    monkeypatch,
+    exit_team_clicked: bool,
+) -> None:
+    task = RCFBTask()
+    leaves: list[bool] = []
+    monkeypatch.setattr(
+        task,
+        "click_dungeon_exit_team_with_retries",
+        lambda: exit_team_clicked,
+    )
+    monkeypatch.setattr(task, "save_debug_screenshot", lambda prefix: "exit-missing.png")
+    monkeypatch.setattr(
+        task,
+        "wait_for_dungeon_transfer_complete",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("传送超时")),
+    )
+    monkeypatch.setattr(task, "leave_team_if_present", lambda: leaves.append(True))
+
+    task.leave_team_after_completion()
+
+    assert leaves == [True]
+
+
+def test_leave_after_completion_stop_interrupts_auto_transfer(monkeypatch) -> None:
+    task = RCFBTask()
+    monkeypatch.setattr(task, "click_dungeon_exit_team_with_retries", lambda: False)
+    monkeypatch.setattr(task, "save_debug_screenshot", lambda prefix: "exit-missing.png")
+    monkeypatch.setattr(
+        task,
+        "wait_for_dungeon_transfer_complete",
+        lambda **kwargs: (_ for _ in ()).throw(StepStopException("Stop requested")),
+    )
+    monkeypatch.setattr(
+        task,
+        "leave_team_if_present",
+        lambda: (_ for _ in ()).throw(AssertionError("停止后不应继续退队")),
+    )
+
+    with pytest.raises(StepStopException):
+        task.leave_team_after_completion()
 
 
 def test_transfer_wait_requires_three_stable_main_scene_frames(monkeypatch) -> None:
@@ -535,7 +668,7 @@ def test_transfer_wait_requires_three_stable_main_scene_frames(monkeypatch) -> N
     monkeypatch.setattr(task, "is_game_main_ready", main_ready)
     monkeypatch.setattr(task, "wait", waits.append)
 
-    task.wait_for_dungeon_transfer_complete(timeout_ms=task.DUNGEON_TRANSFER_TIMEOUT_MS)
+    task.wait_for_dungeon_transfer_complete(timeout_ms=60000)
 
     assert main_ready_calls == [{"timeout_ms": 0, "threshold": 0.8}] * 3
     assert waits == [task.DUNGEON_TRANSFER_POLL_INTERVAL_MS] * 3

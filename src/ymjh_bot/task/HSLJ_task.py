@@ -50,17 +50,11 @@ class HSLJTask(YmGameTask):
     POINT_FIRST_WIN_CHEST = (954, 498)
     POINT_HSLJ_READY = (640, 97)
 
-    ROI_ACTIVITY_HSLJ_CARD = (105, 170, 250, 190)
-    ROI_ACTIVITY_HSLJ_OPEN = (730, 410, 210, 105)
     ROI_PANEL_TITLE = (170, 45, 330, 80)
     ROI_SIDE_TABS = (1035, 115, 165, 285)
     ROI_MATCH_BUTTON = (850, 535, 220, 115)
-    ROI_MATCH_SUCCESS = (500, 360, 300, 120)
     ROI_FIRST_WIN_CHEST = (900, 450, 130, 100)
-    ROI_READY_BUTTON = (520, 35, 240, 120)
-    ROI_RESULT_EXIT_BUTTON = (380, 420, 520, 240)
     ROI_RESULT_EXIT_TEXT = (540, 630, 180, 80)
-    ROI_PURCHASE_DIALOG_CLOSE = (850, 130, 140, 100)
     ROI_HSLJ_TEMP_DIALOG_CLOSE = (1080, 210, 115, 100)
 
     DEFAULT_LUNJIAN_COUNT = 5
@@ -79,11 +73,7 @@ class HSLJTask(YmGameTask):
         MODE_3V3: {"strategy": STRATEGY_FIXED_COUNT, "count": DEFAULT_LUNJIAN_COUNT},
     }
     CLOSE_ALL_MAX_ATTEMPTS = 12
-    SINGLE_MATCH_TIMEOUT_MS = 480000
-    READY_TIMEOUT_MS = 300000
-    RESULT_TIMEOUT_MS = 420000
     MATCH_SETTLE_WAIT_MS = 2500
-    MATCH_READY_TIMEOUT_MS = READY_TIMEOUT_MS
     MATCH_WAIT_POLL_INTERVAL_MS = 3000
     MATCH_WAIT_HEARTBEAT_MS = 10000
     MODE_SWITCH_MAX_ATTEMPTS = 3
@@ -335,7 +325,7 @@ class HSLJTask(YmGameTask):
         """Click the Huashan activity icon/card, not the 1v1 or 3v3 buttons."""
         if self.wait_find_image_in_roi(
             self.BTN_HSLJ_ACTIVITY_1V1,
-            self.ROI_ACTIVITY_HSLJ_CARD,
+            (105, 170, 250, 190),
             timeout_ms=5000,
             description="活动页华山论剑卡片",
             threshold=0.85,
@@ -350,7 +340,7 @@ class HSLJTask(YmGameTask):
         """Click the Activity-page open button for Huashan Lunjian."""
         if self.wait_find_image_in_roi(
             self.BTN_HSLJ_ACTIVITY_OPEN,
-            self.ROI_ACTIVITY_HSLJ_OPEN,
+            (730, 410, 210, 105),
             timeout_ms=5000,
             description="活动页华山论剑打开按钮",
             threshold=0.85,
@@ -691,7 +681,7 @@ class HSLJTask(YmGameTask):
 
     def click_ready_button(self, mode: str, match_index: int) -> str:
         """Wait for ready, matching completion, or a returned panel."""
-        deadline = self._make_deadline(self.MATCH_READY_TIMEOUT_MS)
+        deadline = self._make_deadline(300000)
         last_heartbeat_at = 0.0
 
         while not self._is_deadline_expired(deadline):
@@ -765,7 +755,7 @@ class HSLJTask(YmGameTask):
         return self.find_image_once(
             self.BTN_HSLJ_READY_TEMPLATES,
             threshold=0.85,
-            roi=self.scale_roi(self.ROI_READY_BUTTON),
+            roi=self.scale_roi((520, 35, 240, 120)),
         )
 
     def is_match_button_visible_quiet(self) -> bool:
@@ -789,7 +779,7 @@ class HSLJTask(YmGameTask):
         return self.find_image_once(
             self.TEXT_HSLJ_MATCH_SUCCESS,
             threshold=0.85,
-            roi=self.scale_roi(self.ROI_MATCH_SUCCESS),
+            roi=self.scale_roi((500, 360, 300, 120)),
         )
 
     def is_hslj_panel_visible_quiet(self) -> bool:
@@ -819,7 +809,7 @@ class HSLJTask(YmGameTask):
 
     def wait_until_battle_complete(self, mode: str, match_index: int) -> str:
         """Auto-battle until the result panel appears or the Huashan panel returns."""
-        deadline = self._make_deadline(self.RESULT_TIMEOUT_MS)
+        deadline = self._make_deadline(420000)
         while not self._is_deadline_expired(deadline):
             if self.is_result_panel_visible():
                 self._log(f"华山论剑 {mode} 第 {match_index} 场结果面板已出现")
@@ -872,7 +862,7 @@ class HSLJTask(YmGameTask):
         if not self.find_image(
             [self.BTN_CLOSE, self.BTN_PANE_CLOSE],
             threshold=0.85,
-            roi=self.scale_roi(self.ROI_PURCHASE_DIALOG_CLOSE),
+            roi=self.scale_roi((850, 130, 140, 100)),
         ):
             return False
 

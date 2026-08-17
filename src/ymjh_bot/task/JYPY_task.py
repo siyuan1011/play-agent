@@ -33,12 +33,6 @@ class JYPYTask(YmGameTask):
     POINT_TASK_LIST_SCROLL_START = (190, 520)
     POINT_TASK_LIST_SCROLL_END = (190, 220)
 
-    ROI_ACTIVITY_JYPY_FORWARD = (560, 410, 240, 130)
-    ROI_NPC_CONFIRM = (900, 400, 360, 130)
-    ROI_NPC_MENU = (900, 250, 360, 260)
-    ROI_TASK_LIST = (40, 135, 330, 430)
-    ROI_DIALOG_NEXT = (1180, 640, 100, 80)
-
     ACTIVITY_FORWARD_THRESHOLD = 0.7
     SIDEBAR_TASK_THRESHOLD = 0.8
     TASK_FLOW_TIMEOUT_MS = 1800000
@@ -157,7 +151,7 @@ class JYPYTask(YmGameTask):
         """Return whether the JYPY forward button is visible in Activity - Hangdang."""
         return self.wait_find_image_in_roi(
             self.BTN_ACTIVITY_FORWARD,
-            self.ROI_ACTIVITY_JYPY_FORWARD,
+            (560, 410, 240, 130),
             timeout_ms=timeout_ms,
             description="活动页聚义平冤前往按钮",
             threshold=self.ACTIVITY_FORWARD_THRESHOLD,
@@ -175,7 +169,7 @@ class JYPYTask(YmGameTask):
             timeout_ms=2500,
             description="NPC 确认按钮",
             threshold=0.85,
-            roi=self.ROI_NPC_CONFIRM,
+            roi=(900, 400, 360, 130),
             wait_after_click_ms=1500,
         ):
             self._log("已确认 NPC 初始对话")
@@ -255,7 +249,7 @@ class JYPYTask(YmGameTask):
             for attempt in range(max_scrolls + 1):
                 if self.wait_find_image_in_roi(
                     self.TEXT_JYPY_SIDEBAR,
-                    self.ROI_TASK_LIST,
+                    (40, 135, 330, 430),
                     timeout_ms=1200,
                     description="任务栏聚义平冤追踪",
                     threshold=self.SIDEBAR_TASK_THRESHOLD,
@@ -287,7 +281,7 @@ class JYPYTask(YmGameTask):
             timeout_ms=600,
             description="聚义平冤剧情继续箭头",
             threshold=0.85,
-            roi=self.ROI_DIALOG_NEXT,
+            roi=(1180, 640, 100, 80),
             wait_after_click_ms=1200,
         )
 

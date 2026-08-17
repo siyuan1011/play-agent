@@ -198,7 +198,7 @@ class FakeRouteTask(BanquetAcquireMixin):
     def wait_find_image_in_roi(self, template, roi, **kwargs) -> bool:
         assert template == self.BTN_BANQUET_GET_ITEM
         assert roi == self.ROI_BANQUET_ACTION
-        assert kwargs["timeout_ms"] == self.PURCHASE_RESULT_CHECK_TIMEOUT_MS
+        assert kwargs["timeout_ms"] == 1500
         assert kwargs["threshold"] == 0.85
         self.get_button_checks += 1
         return self.get_button_states.pop(0) if self.get_button_states else False

@@ -6,8 +6,8 @@ import cv2
 import numpy as np
 import pytest
 
-from botCore import StepJumpException, StepStopException, VisionEngine
-from ymjh_bot.task.KYRW_task import KYRWTask
+from botCore import ImageMatchResult, StepJumpException, StepStopException, VisionEngine
+from ymjh_bot.task.KYRW_task import KYRWTask, _YinshiState
 from ymjh_bot.ym_game_task import TaskSidebarStateError
 
 
@@ -19,6 +19,300 @@ def load_image(path: Path) -> np.ndarray:
     image = cv2.imread(str(path))
     assert image is not None, f"无法读取测试图片：{path}"
     return image
+
+
+def make_yinshi_match(card_id: int, center_x: int, center_y: int = 112) -> ImageMatchResult:
+    return ImageMatchResult(
+        found=True,
+        score=0.99,
+        center=(center_x, center_y),
+        bbox=(center_x - 44, center_y - 38, center_x + 44, center_y + 38),
+        template_path=str(card_id),
+    )
+
+
+def make_yinshi_state(
+    order: list[int],
+    target_order: list[int],
+    positions: list[int],
+) -> _YinshiState:
+    cards = tuple(
+        make_yinshi_match(card_id, positions[index])
+        for index, card_id in enumerate(order)
+    )
+    correct_slots = frozenset(
+        index
+        for index, card_id in enumerate(order)
+        if card_id == target_order[index]
+    )
+    return _YinshiState(
+        visible=True,
+        screenshot=np.zeros((720, 1280, 3), dtype=np.uint8),
+        cards=cards,
+        correct_slots=correct_slots,
+    )
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "expected_centers", "expected_correct_slots"),
+    [
+        ("54_yinshi_4_cards.png", [511, 646, 781, 916], set()),
+        ("55_yinshi_3_cards.png", [579, 714, 849], set()),
+        ("56_yinshi_5_cards.png", [444, 579, 714, 849, 984], set()),
+        ("57_yinshi_partial_correct.png", [444, 579, 714, 849, 984], {2}),
+    ],
+)
+def test_yinshi_state_uses_dynamic_real_device_card_positions(
+    fixture_name: str,
+    expected_centers: list[int],
+    expected_correct_slots: set[int],
+) -> None:
+    task = KYRWTask()
+    task._vision = VisionEngine()
+    state = task._read_yinshi_state(load_image(FIXTURE_DIR / fixture_name))
+
+    assert state.visible
+    assert [card.center[0] for card in state.cards] == expected_centers
+    assert state.correct_slots == expected_correct_slots
+
+
+def test_yinshi_templates_reject_non_poetry_frame() -> None:
+    task = KYRWTask()
+    task._vision = VisionEngine()
+
+    state = task._read_yinshi_state(load_image(FIXTURE_DIR / "52_dialog_requires_confirm.png"))
+
+    assert not state.visible
+    assert state.cards == ()
+    assert state.correct_slots == frozenset()
+
+
+def test_yinshi_card_matches_merge_duplicate_peaks_and_keep_dynamic_spacing() -> None:
+    task = KYRWTask()
+    matches = [
+        make_yinshi_match(0, 710),
+        ImageMatchResult(
+            found=True,
+            score=0.91,
+            center=(718, 113),
+            bbox=(674, 75, 762, 151),
+            template_path="duplicate",
+        ),
+        make_yinshi_match(1, 292),
+        make_yinshi_match(2, 487),
+        make_yinshi_match(3, 1035),
+    ]
+
+    merged = task._merge_yinshi_card_matches(matches)
+
+    assert [match.center[0] for match in merged] == [292, 487, 710, 1035]
+
+
+def test_yinshi_fingerprint_tracks_same_card_without_reading_text() -> None:
+    task = KYRWTask()
+    task._vision = VisionEngine()
+    before = task._read_yinshi_state(load_image(FIXTURE_DIR / "56_yinshi_5_cards.png"))
+    after = task._read_yinshi_state(load_image(FIXTURE_DIR / "57_yinshi_partial_correct.png"))
+
+    source = task._yinshi_card_fingerprint(before.screenshot, before.cards[2])
+    moved_target = task._yinshi_card_fingerprint(after.screenshot, after.cards[1])
+    different_card = task._yinshi_card_fingerprint(after.screenshot, after.cards[2])
+
+    assert task._yinshi_fingerprint_similarity(source, moved_target) >= 0.99
+    assert task._yinshi_fingerprint_similarity(source, different_card) < 0.6
+
+
+def test_yinshi_drag_uses_current_detected_card_coordinates(monkeypatch) -> None:
+    task = KYRWTask()
+    source = make_yinshi_match(1, 887, center_y=126)
+    target = make_yinshi_match(0, 361, center_y=104)
+    swipes: list[tuple[int, int, int, int, int]] = []
+    waits: list[int] = []
+    monkeypatch.setattr(
+        task,
+        "swipe",
+        lambda x1, y1, x2, y2, *, duration_ms: swipes.append(
+            (x1, y1, x2, y2, duration_ms)
+        ),
+    )
+    monkeypatch.setattr(task, "wait", waits.append)
+
+    task._drag_yinshi_card(source, target)
+
+    assert swipes == [
+        (
+            source.center[0],
+            source.bbox[3] + task.YINSHI_DRAG_Y_OFFSET_FROM_TOP_BOTTOM,
+            target.center[0],
+            target.bbox[3] + task.YINSHI_DRAG_Y_OFFSET_FROM_TOP_BOTTOM,
+            task.YINSHI_DRAG_DURATION_MS,
+        )
+    ]
+    assert waits == [task.YINSHI_DRAG_SETTLE_MS]
+
+
+def test_yinshi_solver_rechecks_correct_slots_and_dynamic_positions(monkeypatch) -> None:
+    task = KYRWTask()
+    target_order = [0, 1, 2, 3]
+    order = [2, 0, 1, 3]
+    position_sets = [
+        [274, 449, 708, 1038],
+        [288, 463, 721, 1050],
+    ]
+    last_positions: list[int] = []
+    read_count = 0
+    drags: list[tuple[int, int, int, int]] = []
+
+    def read_state(*args, **kwargs) -> _YinshiState:
+        nonlocal read_count, last_positions
+        last_positions = position_sets[read_count % len(position_sets)]
+        read_count += 1
+        return make_yinshi_state(order, target_order, last_positions)
+
+    def drag(source: ImageMatchResult, target: ImageMatchResult) -> None:
+        source_index = last_positions.index(source.center[0])
+        target_index = last_positions.index(target.center[0])
+        drags.append((source_index, target_index, source.center[0], target.center[0]))
+        card_id = order.pop(source_index)
+        order.insert(target_index, card_id)
+
+    monkeypatch.setattr(task, "_read_yinshi_state", read_state)
+    monkeypatch.setattr(task, "_drag_yinshi_card", drag)
+    monkeypatch.setattr(
+        task,
+        "_yinshi_card_fingerprint",
+        lambda screenshot, card: np.array([[int(card.template_path)]], dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        task,
+        "_yinshi_fingerprint_similarity",
+        lambda expected, actual: 1.0 if np.array_equal(expected, actual) else 0.0,
+    )
+    monkeypatch.setattr(task, "wait", lambda *args, **kwargs: None)
+    monkeypatch.setattr(task, "_log", lambda *args, **kwargs: None)
+
+    assert task.handle_yinshi_task_if_visible()
+    assert order == target_order
+    assert read_count > len(drags)
+    assert all(source_index > target_index for source_index, target_index, _, _ in drags)
+    assert len({source_x for _, _, source_x, _ in drags}) > 1
+    assert {target_index for _, target_index, _, _ in drags} == {0, 1}
+
+
+def test_yinshi_solver_skips_an_already_correct_panel(monkeypatch) -> None:
+    task = KYRWTask()
+    order = [0, 1, 2, 3, 4, 5]
+    state = make_yinshi_state(order, order, [258, 374, 531, 689, 884, 1055])
+    monkeypatch.setattr(task, "_read_yinshi_state", lambda *args, **kwargs: state)
+    monkeypatch.setattr(
+        task,
+        "_drag_yinshi_card",
+        lambda *args, **kwargs: pytest.fail("已有红勾的槽位不应拖动"),
+    )
+    waits: list[int] = []
+    monkeypatch.setattr(task, "wait", waits.append)
+    monkeypatch.setattr(task, "_log", lambda *args, **kwargs: None)
+
+    assert task.handle_yinshi_task_if_visible()
+    assert waits == [task.YINSHI_COMPLETE_WAIT_MS]
+
+
+def test_yinshi_solver_treats_panel_disappearance_as_handled(monkeypatch) -> None:
+    task = KYRWTask()
+    visible = make_yinshi_state([1, 0], [0, 1], [402, 811])
+    hidden = _YinshiState(
+        visible=False,
+        screenshot=np.zeros((720, 1280, 3), dtype=np.uint8),
+    )
+    states = iter([visible, visible, visible, hidden])
+    drag_calls: list[int] = []
+    monkeypatch.setattr(task, "_read_yinshi_state", lambda *args, **kwargs: next(states))
+    monkeypatch.setattr(
+        task,
+        "_drag_yinshi_card",
+        lambda *args, **kwargs: drag_calls.append(1),
+    )
+    monkeypatch.setattr(task, "_log", lambda *args, **kwargs: None)
+
+    assert task.handle_yinshi_task_if_visible()
+    assert drag_calls == [1]
+
+
+def test_yinshi_solver_retries_failed_drag_then_saves_screenshot(monkeypatch) -> None:
+    task = KYRWTask()
+    state = make_yinshi_state([1, 0], [0, 1], [355, 919])
+    drag_calls: list[int] = []
+    screenshots: list[str] = []
+    monkeypatch.setattr(task, "_read_yinshi_state", lambda *args, **kwargs: state)
+    monkeypatch.setattr(
+        task,
+        "_drag_yinshi_card",
+        lambda *args, **kwargs: drag_calls.append(1),
+    )
+    monkeypatch.setattr(
+        task,
+        "_yinshi_card_fingerprint",
+        lambda screenshot, card: np.array([[int(card.template_path)]], dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        task,
+        "_yinshi_fingerprint_similarity",
+        lambda expected, actual: 0.0,
+    )
+    monkeypatch.setattr(
+        task,
+        "save_debug_screenshot",
+        lambda prefix: screenshots.append(prefix) or f"{prefix}.png",
+    )
+    monkeypatch.setattr(task, "_log", lambda *args, **kwargs: None)
+
+    with pytest.raises(RuntimeError, match="拖动到 1 后未生效"):
+        task.handle_yinshi_task_if_visible()
+
+    assert drag_calls == [1, 1]
+    assert screenshots == ["kyrw_yinshi_drag_failed"]
+
+
+def test_yinshi_solver_rejects_card_count_change(monkeypatch) -> None:
+    task = KYRWTask()
+    initial = make_yinshi_state([1, 0], [0, 1], [356, 914])
+    changed = make_yinshi_state([2, 1, 0], [0, 1, 2], [289, 631, 1007])
+    states = iter([initial, changed])
+    screenshots: list[str] = []
+    monkeypatch.setattr(task, "_read_yinshi_state", lambda *args, **kwargs: next(states))
+    monkeypatch.setattr(
+        task,
+        "save_debug_screenshot",
+        lambda prefix: screenshots.append(prefix) or f"{prefix}.png",
+    )
+
+    with pytest.raises(RuntimeError, match="卡片数量异常：预期 2，实际 3"):
+        task.handle_yinshi_task_if_visible()
+
+    assert screenshots == ["kyrw_yinshi_card_count_changed"]
+
+
+def test_yinshi_correct_mark_must_map_to_a_detected_card(monkeypatch) -> None:
+    task = KYRWTask()
+    cards = (make_yinshi_match(0, 310), make_yinshi_match(1, 518))
+    far_mark = ImageMatchResult(
+        found=True,
+        score=0.99,
+        center=(1010, 488),
+        bbox=(975, 463, 1045, 514),
+        template_path=task.ICON_YINSHI_CORRECT,
+    )
+    screenshots: list[str] = []
+    monkeypatch.setattr(
+        task,
+        "save_debug_screenshot",
+        lambda prefix: screenshots.append(prefix) or f"{prefix}.png",
+    )
+
+    with pytest.raises(RuntimeError, match="红勾无法映射"):
+        task._map_yinshi_correct_slots(cards, [far_mark])
+
+    assert screenshots == ["kyrw_yinshi_correct_unmapped"]
 
 
 def test_resume_existing_keye_uses_one_fast_cleanup_when_task_is_missing(monkeypatch) -> None:
@@ -64,7 +358,7 @@ def test_zero_timeout_panel_cleanup_checks_two_frames_without_waiting(monkeypatc
     assert waits == [0]
 
 
-def test_keye_sidebar_scroll_uses_expected_coordinates(monkeypatch) -> None:
+def test_keye_sidebar_scroll_uses_unified_coordinates(monkeypatch) -> None:
     task = KYRWTask()
     swipes: list[tuple[int, int, int, int, int]] = []
     waits: list[int] = []
@@ -83,9 +377,13 @@ def test_keye_sidebar_scroll_uses_expected_coordinates(monkeypatch) -> None:
     monkeypatch.setattr(task, "wait", waits.append)
 
     task.scroll_task_list_down()
+    task.scroll_task_list_up()
 
-    assert swipes == [(190, 360, 190, 170, 350)]
-    assert waits == [800]
+    assert swipes == [
+        (190, 330, 190, 190, 1000),
+        (190, 190, 190, 330, 400),
+    ]
+    assert waits == [500, 500]
 
 
 def test_refresh_cancel_still_jumps_to_resume_cleanup(monkeypatch) -> None:
@@ -166,17 +464,13 @@ def test_enter_keye_clicks_entry_and_waits_for_pathfinding(monkeypatch) -> None:
     task.enter_keye_from_activity_panel()
 
     assert [call[0] for call in entry_checks] == [task.BTN_KEYE_ENTRY_FORWARD]
-    assert entry_checks[0][1]["roi"] == task.ROI_KEYE_ENTRY
+    assert entry_checks[0][1]["roi"] == (175, 440, 205, 110)
     assert clicks == [1]
     assert waits == [1500]
-    assert task.AUTO_PATHFIND_TO_NPC_TIMEOUT_MS == 120000
-    assert timeouts == [task.AUTO_PATHFIND_TO_NPC_TIMEOUT_MS]
+    assert timeouts == [120000]
     assert logs == ["等待接取前自动寻路结束", "接取前自动寻路已结束"]
     assert task.enter_keye_from_activity_panel._step_meta["retry"] == 0
-    assert (
-        task.enter_keye_from_activity_panel._step_meta["timeout_ms"]
-        == task.ENTER_KEYE_STEP_TIMEOUT_MS
-    )
+    assert task.enter_keye_from_activity_panel._step_meta["timeout_ms"] == 390000
 
 
 def test_enter_keye_retries_only_pathfinding_without_clicking_entry_again(monkeypatch) -> None:
@@ -198,10 +492,7 @@ def test_enter_keye_retries_only_pathfinding_without_clicking_entry_again(monkey
     task.enter_keye_from_activity_panel()
 
     assert clicks == [1]
-    assert timeouts == [
-        task.AUTO_PATHFIND_TO_NPC_TIMEOUT_MS,
-        task.AUTO_PATHFIND_TO_NPC_TIMEOUT_MS,
-    ]
+    assert timeouts == [120000, 120000]
     assert logs == [
         "等待接取前自动寻路结束",
         "接取前自动寻路尚未结束，重试等待 2/2",
@@ -228,10 +519,7 @@ def test_enter_keye_pathfinding_timeout_is_a_failure(monkeypatch) -> None:
         task.enter_keye_from_activity_panel()
 
     assert clicks == [1]
-    assert timeouts == [
-        task.AUTO_PATHFIND_TO_NPC_TIMEOUT_MS,
-        task.AUTO_PATHFIND_TO_NPC_TIMEOUT_MS,
-    ]
+    assert timeouts == [120000, 120000]
     assert logs == [
         "等待接取前自动寻路结束",
         "接取前自动寻路尚未结束，重试等待 2/2",
@@ -350,6 +638,7 @@ def test_keye_flow_skips_state_checks_while_transition_is_unstable(monkeypatch) 
     [
         "close_keye_completion_dialog_if_visible",
         "cancel_refresh_confirm_if_visible",
+        "handle_yinshi_task_if_visible",
         "click_keye_use_if_visible",
         "handle_submit_panel_if_visible",
         "handle_acquire_route_panel_if_visible",
@@ -367,6 +656,7 @@ def test_keye_flow_state_handler_preserves_priority_and_short_circuits(
     handlers = [
         "close_keye_completion_dialog_if_visible",
         "cancel_refresh_confirm_if_visible",
+        "handle_yinshi_task_if_visible",
         "click_keye_use_if_visible",
         "handle_submit_panel_if_visible",
         "handle_acquire_route_panel_if_visible",
@@ -397,6 +687,7 @@ def test_keye_flow_state_handler_returns_idle_after_one_complete_scan(monkeypatc
     handlers = [
         "close_keye_completion_dialog_if_visible",
         "cancel_refresh_confirm_if_visible",
+        "handle_yinshi_task_if_visible",
         "click_keye_use_if_visible",
         "handle_submit_panel_if_visible",
         "handle_acquire_route_panel_if_visible",
@@ -433,7 +724,7 @@ def test_keye_dialog_confirm_uses_scoped_ok_template(monkeypatch) -> None:
             {
                 "timeout_ms": 600,
                 "description": "课业剧情确定按钮",
-                "roi": task.ROI_DIALOG_CONFIRM,
+                "roi": (900, 400, 360, 120),
                 "threshold": 0.85,
                 "wait_after_click_ms": 1500,
             },
@@ -447,6 +738,7 @@ def test_keye_dialog_confirm_short_circuits_dialog_next(monkeypatch) -> None:
     earlier_handlers = [
         "close_keye_completion_dialog_if_visible",
         "cancel_refresh_confirm_if_visible",
+        "handle_yinshi_task_if_visible",
         "click_keye_use_if_visible",
         "handle_submit_panel_if_visible",
         "handle_acquire_route_panel_if_visible",
@@ -582,6 +874,7 @@ def test_keye_sidebar_templates_only_keep_dynamic_prefixes() -> None:
     assert KYRWTask.KEYE_SIDEBAR_TEMPLATES == [
         KYRWTask.TEXT_KEYE_PREFIX,
         KYRWTask.TEXT_ZHISHA_PREFIX,
+        KYRWTask.TEXT_ZHUOJIAN_PREFIX,
     ]
     assert not hasattr(KYRWTask, "TEXT_KEYE_SIDEBAR")
     assert not hasattr(KYRWTask, "TEXT_KEYE_SHIMEN_SIDEBAR")
@@ -790,6 +1083,7 @@ def test_keye_completion_dialog_is_handled_before_three_missing_trackers(monkeyp
         lambda: completion_checks.append(1) or next(completion_results),
     )
     monkeypatch.setattr(task, "cancel_refresh_confirm_if_visible", lambda: False)
+    monkeypatch.setattr(task, "handle_yinshi_task_if_visible", lambda: False)
     monkeypatch.setattr(task, "click_keye_use_if_visible", lambda: False)
     monkeypatch.setattr(task, "handle_submit_panel_if_visible", lambda: False)
     monkeypatch.setattr(task, "handle_acquire_route_panel_if_visible", lambda: False)
@@ -920,13 +1214,13 @@ def test_keye_dialog_confirm_template_matches_timeout_frame_with_next_arrow() ->
         frame,
         KYRWTask.BTN_OK,
         threshold=0.85,
-        roi=KYRWTask.ROI_DIALOG_CONFIRM,
+        roi=(900, 400, 360, 120),
     )
     next_match = VisionEngine().match_template(
         frame,
         KYRWTask.BTN_DIALOG_NEXT,
         threshold=0.85,
-        roi=KYRWTask.ROI_DIALOG_NEXT,
+        roi=(1180, 640, 100, 80),
     )
 
     assert confirm_match.found
@@ -947,10 +1241,9 @@ def test_keye_one_key_submit_template_matches_old_and_lower_panels(fixture: Path
         load_image(fixture),
         KYRWTask.BTN_ONE_KEY_SUBMIT,
         threshold=0.85,
-        roi=KYRWTask.ROI_ONE_KEY_SUBMIT,
+        roi=(900, 330, 340, 240),
     )
 
-    assert KYRWTask.ROI_ONE_KEY_SUBMIT == (900, 330, 340, 240)
     assert match.found
     assert match.score >= 0.99
 
@@ -985,7 +1278,7 @@ def test_keye_prefix_templates_match_real_device_trackers(template: str, fixture
         load_image(fixture),
         template,
         threshold=0.85,
-        roi=KYRWTask.ROI_TASK_LIST,
+        roi=(40, 135, 330, 430),
     )
 
     assert match.found
@@ -1002,7 +1295,7 @@ def test_keye_prefix_templates_reject_non_tracker_frame(template: str) -> None:
         load_image(FIXTURE_DIR / "01_activity_jianghu_wuchan_entry.webp"),
         template,
         threshold=0.85,
-        roi=KYRWTask.ROI_TASK_LIST,
+        roi=(40, 135, 330, 430),
     )
 
     assert not match.found

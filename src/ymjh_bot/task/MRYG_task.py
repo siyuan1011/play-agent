@@ -20,7 +20,6 @@ class MRYGTask(YmGameTask):
 
     ICON_CGSS_COMPLETE = str(YmGameTask.TEMPLATES_DIR / "icon_cgss_complete.png")
 
-    TTYM_RESULT_TIMEOUT_MS = 180000
     TTYM_CLICK_INTERVAL_MS = 1500
 
     # 固定坐标点 (设计分辨率 1280x720 下)
@@ -63,7 +62,7 @@ class MRYGTask(YmGameTask):
 
         if not self.wait_image_appear(
             self.BTN_JSGX,
-            timeout_ms=self.TTYM_RESULT_TIMEOUT_MS,
+            timeout_ms=180000,
             interval_ms=self.TTYM_CLICK_INTERVAL_MS,
             callback=lambda found: self.click_point(1024, 580) if not found else None,
         ):

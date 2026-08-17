@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QListWidget,
     QListWidgetItem,
     QStackedWidget,
@@ -40,9 +41,14 @@ from ymjh_bot.ui.task_queue_state import (
     HSLJ_STRATEGY_FIRST_WIN,
     HSLJ_STRATEGY_FIXED_COUNT,
     HSLJ_STRATEGY_INFINITE,
+    SHRW_LINE_SCOPE_LABELS,
+    SHRW_MATERIAL_OPTIONS,
+    SHRW_TASK_KEY,
+    SHRW_TASK_TYPE_LABELS,
     clear_progress,
     load_state_for_serial,
     normalize_hslj_settings,
+    normalize_shrw_settings,
     restore_selected_tasks,
     safe_serial_name,
     save_state,
@@ -284,8 +290,51 @@ class TaskQueueWindow(QMainWindow):
         hslj_layout.addWidget(self.hslj_settings_confirm_btn, 1, 3, len(HSLJ_MODE_KEYS), 1)
         hslj_layout.setColumnStretch(1, 1)
 
+        self.shrw_settings_widget = QWidget()
+        shrw_layout = QGridLayout(self.shrw_settings_widget)
+        self.shrw_task_type_combo = QComboBox()
+        for task_type, label in SHRW_TASK_TYPE_LABELS.items():
+            self.shrw_task_type_combo.addItem(label, task_type)
+        self.shrw_task_type_combo.currentIndexChanged.connect(self._on_shrw_task_type_changed)
+        shrw_layout.addWidget(QLabel("任务类型"), 0, 0)
+        shrw_layout.addWidget(self.shrw_task_type_combo, 0, 1)
+
+        self.shrw_material_widget = QWidget()
+        self.shrw_material_layout = QHBoxLayout(self.shrw_material_widget)
+        self.shrw_material_layout.setContentsMargins(0, 0, 0, 0)
+        self.shrw_material_group = QButtonGroup(self.shrw_settings_widget)
+        self.shrw_material_group.setExclusive(True)
+        self.shrw_material_checks: dict[str, QRadioButton] = {}
+        shrw_layout.addWidget(QLabel("采购物品"), 1, 0)
+        shrw_layout.addWidget(self.shrw_material_widget, 1, 1, 1, 3)
+
+        self.shrw_loop_lines_check = QCheckBox("是否环线")
+        shrw_layout.addWidget(self.shrw_loop_lines_check, 2, 0, 1, 2)
+
+        self.shrw_line_scope_group = QButtonGroup(self.shrw_settings_widget)
+        self.shrw_line_scope_group.setExclusive(True)
+        self.shrw_line_scope_checks: dict[str, QRadioButton] = {}
+        line_scope_widget = QWidget()
+        line_scope_layout = QHBoxLayout(line_scope_widget)
+        line_scope_layout.setContentsMargins(0, 0, 0, 0)
+        for scope, label in SHRW_LINE_SCOPE_LABELS.items():
+            check = QRadioButton(label)
+            self.shrw_line_scope_group.addButton(check)
+            self.shrw_line_scope_checks[scope] = check
+            line_scope_layout.addWidget(check)
+        line_scope_layout.addStretch()
+        shrw_layout.addWidget(QLabel("线路范围"), 3, 0)
+        shrw_layout.addWidget(line_scope_widget, 3, 1, 1, 2)
+
+        self.shrw_settings_confirm_btn = QPushButton("确定")
+        self.shrw_settings_confirm_btn.clicked.connect(self.confirm_task_settings)
+        shrw_layout.addWidget(self.shrw_settings_confirm_btn, 0, 3)
+        shrw_layout.setColumnStretch(1, 1)
+        self._on_shrw_task_type_changed()
+
         self.task_settings_stack.addWidget(self.no_task_settings_widget)
         self.task_settings_stack.addWidget(self.hslj_settings_widget)
+        self.task_settings_stack.addWidget(self.shrw_settings_widget)
         layout.addWidget(self.task_settings_stack)
         return box
 
@@ -512,6 +561,13 @@ class TaskQueueWindow(QMainWindow):
             return
 
         task_key = str(task_info.get("key") or "")
+        if task_key == SHRW_TASK_KEY:
+            settings = normalize_shrw_settings(
+                (self._state.get("task_settings") or {}).get(SHRW_TASK_KEY)
+            )
+            self._apply_shrw_settings(settings)
+            self.task_settings_stack.setCurrentWidget(self.shrw_settings_widget)
+            return
         if task_key != HSLJ_TASK_KEY:
             self.no_task_settings_label.setText("该任务暂无参数配置")
             self.task_settings_stack.setCurrentWidget(self.no_task_settings_widget)
@@ -522,6 +578,68 @@ class TaskQueueWindow(QMainWindow):
         )
         self._apply_hslj_settings(settings)
         self.task_settings_stack.setCurrentWidget(self.hslj_settings_widget)
+
+    def _on_shrw_task_type_changed(self, _index: int | None = None) -> None:
+        """Rebuild life-task material choices for the selected category."""
+        selected_material = next(
+            (key for key, check in self.shrw_material_checks.items() if check.isChecked()),
+            None,
+        )
+        while self.shrw_material_layout.count():
+            item = self.shrw_material_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                self.shrw_material_group.removeButton(widget)
+                widget.deleteLater()
+        self.shrw_material_checks = {}
+
+        task_type = str(self.shrw_task_type_combo.currentData() or "mining")
+        options = SHRW_MATERIAL_OPTIONS.get(task_type, SHRW_MATERIAL_OPTIONS["mining"])
+        allowed = {key for key, _label in options}
+        if selected_material not in allowed:
+            selected_material = options[0][0]
+        for material, label in options:
+            check = QRadioButton(label)
+            self.shrw_material_group.addButton(check)
+            self.shrw_material_checks[material] = check
+            self.shrw_material_layout.addWidget(check)
+            check.setChecked(material == selected_material)
+        self.shrw_material_layout.addStretch()
+
+    def _apply_shrw_settings(self, settings: dict) -> None:
+        """Apply normalized life-task settings to the UI."""
+        task_type = str(settings.get("task_type") or "mining")
+        index = self.shrw_task_type_combo.findData(task_type)
+        self.shrw_task_type_combo.setCurrentIndex(max(0, index))
+        self._on_shrw_task_type_changed()
+        material = str(settings.get("material") or "stone")
+        if material in self.shrw_material_checks:
+            self.shrw_material_checks[material].setChecked(True)
+        self.shrw_loop_lines_check.setChecked(bool(settings.get("loop_lines", False)))
+        line_scope = str(settings.get("line_scope") or "local")
+        self.shrw_line_scope_checks.get(
+            line_scope,
+            self.shrw_line_scope_checks["local"],
+        ).setChecked(True)
+
+    def _collect_shrw_settings_from_ui(self) -> dict:
+        """Collect life-task settings from the UI in the persisted schema."""
+        material = next(
+            (key for key, check in self.shrw_material_checks.items() if check.isChecked()),
+            "stone",
+        )
+        line_scope = next(
+            (key for key, check in self.shrw_line_scope_checks.items() if check.isChecked()),
+            "local",
+        )
+        return normalize_shrw_settings(
+            {
+                "task_type": str(self.shrw_task_type_combo.currentData() or "mining"),
+                "material": material,
+                "loop_lines": self.shrw_loop_lines_check.isChecked(),
+                "line_scope": line_scope,
+            }
+        )
 
     def _apply_hslj_settings(self, settings: dict) -> None:
         """Apply normalized Huashan settings to the UI."""
@@ -585,14 +703,20 @@ class TaskQueueWindow(QMainWindow):
         task_info = self._selected_task_info()
         if not task_info:
             return
-        if str(task_info.get("key") or "") != HSLJ_TASK_KEY:
+        task_key = str(task_info.get("key") or "")
+        if task_key not in {HSLJ_TASK_KEY, SHRW_TASK_KEY}:
             return
 
         task_settings = dict(self._state.get("task_settings") or {})
-        task_settings[HSLJ_TASK_KEY] = self._collect_hslj_settings_from_ui()
+        if task_key == HSLJ_TASK_KEY:
+            task_settings[HSLJ_TASK_KEY] = self._collect_hslj_settings_from_ui()
+            message = "华山论剑任务设置已保存。"
+        else:
+            task_settings[SHRW_TASK_KEY] = self._collect_shrw_settings_from_ui()
+            message = "生活任务设置已保存。"
         self._state["task_settings"] = task_settings
         self._save_state_from_ui()
-        self._append_log("华山论剑任务设置已保存。")
+        self._append_log(message)
 
     def _get_selected_task_instances(self) -> list[GameTask]:
         """Create task instances from selected tasks."""
@@ -607,6 +731,11 @@ class TaskQueueWindow(QMainWindow):
                     instance = task_info["class"](
                         hslj_settings=settings,
                     )
+                elif str(task_info.get("key") or "") == SHRW_TASK_KEY:
+                    settings = normalize_shrw_settings(
+                        (self._state.get("task_settings") or {}).get(SHRW_TASK_KEY)
+                    )
+                    instance = task_info["class"](shrw_settings=settings)
                 else:
                     instance = task_info["class"]()
                 instances.append(instance)
@@ -1008,6 +1137,14 @@ class TaskQueueWindow(QMainWindow):
             self._update_hslj_mode_count_state(mode)
         if hasattr(self, "hslj_settings_confirm_btn"):
             self.hslj_settings_confirm_btn.setEnabled(enabled)
+        if hasattr(self, "shrw_task_type_combo"):
+            self.shrw_task_type_combo.setEnabled(enabled)
+            self.shrw_loop_lines_check.setEnabled(enabled)
+            for check in self.shrw_material_checks.values():
+                check.setEnabled(enabled)
+            for check in self.shrw_line_scope_checks.values():
+                check.setEnabled(enabled)
+            self.shrw_settings_confirm_btn.setEnabled(enabled)
 
 
 def main():

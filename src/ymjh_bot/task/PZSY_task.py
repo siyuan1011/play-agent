@@ -34,8 +34,6 @@ class PZSYTask(BanquetAcquireMixin, YmGameTask):
     ROI_POZHEN_INVITE_BUTTONS = (780, 135, 170, 520)
     ROI_BANQUET_ACTION = (960, 530, 210, 110)
     ROI_START_BANQUET_BUTTON = (210, 570, 190, 65)
-    ROI_SUBMIT_5_TAB = (110, 365, 215, 65)
-    ROI_SUBMIT_6_TAB = (295, 365, 205, 65)
 
     POINT_BANQUET_ITEM_SLOTS = (
         (608, 264),
@@ -218,8 +216,16 @@ class PZSYTask(BanquetAcquireMixin, YmGameTask):
                 threshold=0.8,
                 roi=self.scale_roi(self.ROI_BANQUET_ACTION),
             )
-            or self.find_image(self.BTN_POZHEN_SUBMIT_5_TAB, threshold=0.75, roi=self.scale_roi(self.ROI_SUBMIT_5_TAB))
-            or self.find_image(self.BTN_POZHEN_SUBMIT_6_TAB, threshold=0.75, roi=self.scale_roi(self.ROI_SUBMIT_6_TAB))
+            or self.find_image(
+                self.BTN_POZHEN_SUBMIT_5_TAB,
+                threshold=0.75,
+                roi=self.scale_roi((110, 365, 215, 65)),
+            )
+            or self.find_image(
+                self.BTN_POZHEN_SUBMIT_6_TAB,
+                threshold=0.75,
+                roi=self.scale_roi((295, 365, 205, 65)),
+            )
         )
 
     def on_finish(self, results: list) -> None:

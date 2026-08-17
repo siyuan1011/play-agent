@@ -12,6 +12,7 @@ NORMAL_TASK_TITLES = (
     "刺探敌情",
     "紧急救援",
     "金陵护送",
+    "不相为谋",
 )
 
 
@@ -32,7 +33,7 @@ def test_normal_bprw_titles_wait_for_auto_pathfinding(monkeypatch, task_title: s
     )
 
     assert task.handle_clicked_bangpai_task(task_title) is True
-    assert waits == [task.TASK_TRANSITION_TIMEOUT_MS]
+    assert waits == [120000]
 
 
 def test_return_title_waits_for_transition_before_item_flow(monkeypatch) -> None:

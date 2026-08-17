@@ -28,15 +28,10 @@ class BanquetAcquireMixin:
     BTN_MODAL_CANCEL = str(YmGameTask.TEMPLATES_DIR / "btn_modal_cancel.png")
 
     ROI_ROUTE_PANEL = (560, 70, 660, 480)
-    ROI_WAREHOUSE_SUBMIT = (760, 530, 230, 115)
     ROI_TRADE_ACTION = (520, 440, 330, 120)
-    ROI_MALL_BUY = (800, 610, 290, 100)
-    ROI_STALL_PURCHASE_CANCEL = (300, 440, 250, 120)
 
     STALL_PURCHASE_DIALOG_THRESHOLD = 0.85
-    STALL_PURCHASE_DIALOG_APPEAR_TIMEOUT_MS = 3000
     STALL_PURCHASE_FINAL_RECHECK_MS = 100
-    PURCHASE_RESULT_CHECK_TIMEOUT_MS = 1500
     PURCHASE_RETRY_LIMIT = 1
     BANQUET_INVITE_TIMEOUT_MS = 60000
     BANQUET_CONFIRM_TIMEOUT_MS = 10000
@@ -149,7 +144,7 @@ class BanquetAcquireMixin:
             if not self.wait_find_image_in_roi(
                 self.BTN_BANQUET_GET_ITEM,
                 self.ROI_BANQUET_ACTION,
-                timeout_ms=self.PURCHASE_RESULT_CHECK_TIMEOUT_MS,
+                timeout_ms=1500,
                 description="购买后仍存在的获取按钮",
                 threshold=0.85,
             ):
@@ -181,7 +176,7 @@ class BanquetAcquireMixin:
             self.BTN_MENKE_WAREHOUSE_SUBMIT,
             timeout_ms=2500,
             description="帮派仓库提交按钮",
-            roi=self.ROI_WAREHOUSE_SUBMIT,
+            roi=(760, 530, 230, 115),
             threshold=0.85,
             wait_after_click_ms=1500,
         ):
@@ -210,7 +205,7 @@ class BanquetAcquireMixin:
             self.BTN_MENKE_MALL_BUY_AREA,
             timeout_ms=5000,
             description="商城购买按钮",
-            roi=self.ROI_MALL_BUY,
+            roi=(800, 610, 290, 100),
             threshold=0.85,
             wait_after_click_ms=1500,
         ):
@@ -297,7 +292,7 @@ class BanquetAcquireMixin:
 
         if not self.wait_image_appear(
             self.BTN_MODAL_OK,
-            timeout_ms=self.STALL_PURCHASE_DIALOG_APPEAR_TIMEOUT_MS,
+            timeout_ms=3000,
             threshold=self.STALL_PURCHASE_DIALOG_THRESHOLD,
         ):
             debug_path = self.save_debug_screenshot("stall_purchase_unconfirmed")
@@ -330,7 +325,7 @@ class BanquetAcquireMixin:
         if not self.find_image(
             self.BTN_MODAL_CANCEL,
             threshold=self.STALL_PURCHASE_DIALOG_THRESHOLD,
-            roi=self.scale_roi(self.ROI_STALL_PURCHASE_CANCEL),
+            roi=self.scale_roi((300, 440, 250, 120)),
         ):
             cancel_path = self.save_debug_screenshot("stall_purchase_cancel_failed")
             raise StallPurchaseCancelError(

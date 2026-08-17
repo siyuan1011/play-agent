@@ -69,13 +69,9 @@ def patch_match_clocks(monkeypatch, clock: FakeClock) -> None:
     monkeypatch.setattr(ym_task_module.time, "perf_counter", clock.perf_counter)
 
 
-def test_hslj_match_wait_constants() -> None:
-    assert HSLJTask.READY_TIMEOUT_MS == 300_000
-    assert HSLJTask.MATCH_READY_TIMEOUT_MS == 300_000
+def test_hslj_match_wait_configuration() -> None:
     assert HSLJTask.MATCH_WAIT_POLL_INTERVAL_MS == 3_000
     assert HSLJTask.MATCH_WAIT_HEARTBEAT_MS == 10_000
-    assert HSLJTask.SINGLE_MATCH_TIMEOUT_MS == 480_000
-    assert HSLJTask.RESULT_TIMEOUT_MS == 420_000
 
 
 def test_hslj_match_cancels_only_after_one_hundred_three_second_polls(monkeypatch) -> None:

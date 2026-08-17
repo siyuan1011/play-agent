@@ -43,6 +43,81 @@ DEFAULT_HSLJ_SETTINGS: dict[str, Any] = {
     },
 }
 
+SHRW_TASK_KEY = "SHRW"
+SHRW_TASK_TYPE_LABELS: dict[str, str] = {
+    "mining": "挖矿",
+    "herb": "采草",
+    "logging": "伐木",
+    "wool": "采毛",
+}
+SHRW_MATERIAL_OPTIONS: dict[str, tuple[tuple[str, str], ...]] = {
+    "mining": (
+        ("stone", "碎石"),
+        ("brass_ore", "黄铜矿"),
+        ("silver_ore", "立银矿"),
+        ("gold_ore", "金矿"),
+        ("emerald_ore", "祖母绿矿"),
+        ("tungsten_ore", "钨晶矿"),
+    ),
+    "herb": (
+        ("weed", "杂草"),
+        ("wildflower", "野花"),
+        ("vermilion_fruit", "朱果"),
+        ("earth_spirit_fruit", "地灵果"),
+        ("wild_ginseng", "野山参"),
+        ("lingzhi", "灵芝"),
+    ),
+    "logging": (
+        ("deadwood", "枯木"),
+        ("green_bamboo", "翠竹"),
+        ("elm", "榆树"),
+        ("maple", "枫树"),
+        ("pine", "松树"),
+        ("eucalyptus", "桉树"),
+    ),
+    "wool": (
+        ("wool", "羊毛"),
+        ("reindeer_hair", "驯鹿毛"),
+        ("cashmere", "羊绒"),
+        ("reindeer_down", "驯鹿绒"),
+    ),
+}
+SHRW_LINE_SCOPE_LABELS: dict[str, str] = {
+    "local": "本服分线",
+    "interconnected": "互联分线",
+}
+DEFAULT_SHRW_SETTINGS: dict[str, Any] = {
+    "task_type": "mining",
+    "material": "stone",
+    "loop_lines": False,
+    "line_scope": "local",
+}
+
+_SHRW_TASK_TYPE_ALIASES = {
+    **{key: key for key in SHRW_TASK_TYPE_LABELS},
+    **{label: key for key, label in SHRW_TASK_TYPE_LABELS.items()},
+    "采矿": "mining",
+    "采药": "herb",
+    "砍伐": "logging",
+}
+_SHRW_MATERIAL_ALIASES = {
+    alias: material_key
+    for options in SHRW_MATERIAL_OPTIONS.values()
+    for material_key, label in options
+    for alias in (material_key, label)
+}
+_SHRW_MATERIAL_ALIASES["钨金矿"] = "tungsten_ore"
+_SHRW_LINE_SCOPE_ALIASES = {
+    "local": "local",
+    "本服": "local",
+    "本服分线": "local",
+    "server": "local",
+    "interconnected": "interconnected",
+    "互联": "interconnected",
+    "互联分线": "interconnected",
+    "cross_server": "interconnected",
+}
+
 TASK_KEY_ALIASES: dict[str, str] = {
     "launch": "QDYX",
     "start": "QDYX",
@@ -54,6 +129,10 @@ TASK_KEY_ALIASES: dict[str, str] = {
     "menke_sheyan": "MKSY",
     "mksy": "MKSY",
     "mryg": "MRYG",
+    "life": SHRW_TASK_KEY,
+    "shrw": SHRW_TASK_KEY,
+    "生活任务": SHRW_TASK_KEY,
+    "生活技能": SHRW_TASK_KEY,
     "pozhen_sheyan": "PZSY",
     "pzsy": "PZSY",
     "zgwx": "ZGWX",
@@ -185,8 +264,48 @@ def normalize_task_settings(settings: Any) -> dict[str, Any]:
         key = normalize_task_key(raw_key)
         if key == HSLJ_TASK_KEY:
             normalized[key] = normalize_hslj_settings(value)
+        elif key == SHRW_TASK_KEY:
+            normalized[key] = normalize_shrw_settings(value)
         else:
             normalized[key] = deepcopy(value)
+    return normalized
+
+
+def normalize_shrw_settings(settings: Any) -> dict[str, Any]:
+    """Normalize life-task settings into stable persisted identifiers."""
+    normalized = deepcopy(DEFAULT_SHRW_SETTINGS)
+    if not isinstance(settings, dict):
+        return normalized
+
+    raw_task_type = str(settings.get("task_type", normalized["task_type"]) or "").strip()
+    task_type = _SHRW_TASK_TYPE_ALIASES.get(raw_task_type, str(normalized["task_type"]))
+    normalized["task_type"] = task_type
+
+    raw_material = str(settings.get("material", normalized["material"]) or "").strip()
+    material = _SHRW_MATERIAL_ALIASES.get(raw_material, raw_material)
+    allowed_materials = {key for key, _label in SHRW_MATERIAL_OPTIONS[task_type]}
+    if material not in allowed_materials:
+        material = SHRW_MATERIAL_OPTIONS[task_type][0][0]
+    normalized["material"] = material
+
+    raw_loop = settings.get("loop_lines", normalized["loop_lines"])
+    if isinstance(raw_loop, str):
+        normalized["loop_lines"] = raw_loop.strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+            "是",
+            "开启",
+        }
+    else:
+        normalized["loop_lines"] = bool(raw_loop)
+
+    raw_scope = str(settings.get("line_scope", normalized["line_scope"]) or "").strip()
+    normalized["line_scope"] = _SHRW_LINE_SCOPE_ALIASES.get(
+        raw_scope,
+        str(normalized["line_scope"]),
+    )
     return normalized
 
 

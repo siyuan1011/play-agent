@@ -38,18 +38,14 @@ class JianghuYingxiongbangTask(YmGameTask):
     POINT_JHYXB_READY = (640, 97)
     POINT_DIRECTION_JOYSTICK_FORWARD = (105, 385)
 
-    ROI_ACTIVITY_JHYXB = (720, 500, 240, 120)
     ROI_PANEL_TITLE = (170, 45, 260, 75)
     ROI_MATCH_BUTTON = (950, 520, 230, 120)
     ROI_FIRST_BATTLE_CHEST = (385, 535, 105, 90)
     ROI_CHALLENGE_ZERO = (880, 560, 60, 55)
-    ROI_READY_BUTTON = (520, 40, 240, 120)
     ROI_RESULT_EXIT_BUTTON = (380, 420, 520, 240)
-    ROI_PURCHASE_DIALOG_CLOSE = (850, 130, 140, 100)
 
     DEFAULT_CHALLENGE_COUNT = 5
     CLOSE_ALL_MAX_ATTEMPTS = 12
-    READY_TIMEOUT_MS = 120000
     MATCH_POLL_INTERVAL_MS = 3000
     MATCH_READY_TIMEOUT_MS = 60000
     RESULT_TIMEOUT_MS = 360000
@@ -139,7 +135,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         """Click the Jianghu Yingxiongbang entry from Activity - Fen Zheng."""
         if not self.wait_find_image_in_roi(
             self.BTN_JHYXB_ACTIVITY_OPEN,
-            self.ROI_ACTIVITY_JHYXB,
+            (720, 500, 240, 120),
             timeout_ms=5000,
             description="活动页江湖英雄榜打开按钮",
             threshold=0.85,
@@ -168,7 +164,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         if not self.find_image(
             [self.BTN_CLOSE, self.BTN_PANE_CLOSE],
             threshold=0.85,
-            roi=self.scale_roi(self.ROI_PURCHASE_DIALOG_CLOSE),
+            roi=self.scale_roi((850, 130, 140, 100)),
         ):
             return False
 
@@ -356,7 +352,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         return self.find_image_once(
             self.BTN_JHYXB_READY,
             threshold=0.85,
-            roi=self.scale_roi(self.ROI_READY_BUTTON),
+            roi=self.scale_roi((520, 40, 240, 120)),
         )
 
     def is_match_button_visible_quiet(self) -> bool:

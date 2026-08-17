@@ -51,6 +51,11 @@ def load_image(path: Path | str) -> np.ndarray:
             "金陵护送",
         ),
         (
+            "bprw_sidebar_buxiangweimou.webp",
+            BPRWTask.TEXT_BANGPAI_BUXIANGWEIMOU,
+            "不相为谋",
+        ),
+        (
             "bprw_sidebar_return.webp",
             BPRWTask.TEXT_BANGPAI_RETURN,
             "回帮复命",
@@ -86,7 +91,7 @@ def test_bprw_titles_remain_compatible_with_previous_visual_variants(
     template: str,
 ) -> None:
     roi = (
-        BPRWTask.ROI_TASK_LIST
+        (40, 135, 330, 430)
         if fixture_name == "bangpai_debug_current_after_loop_timeout.webp"
         else None
     )
@@ -113,9 +118,9 @@ def test_sidebar_title_wait_returns_exact_title_and_preserves_click_center(monke
     monkeypatch.setattr(task, "wait", lambda *args, **kwargs: None)
 
     task_title = task.wait_bangpai_task_title_in_sidebar(
-        timeout_ms=1200,
+        timeout_ms=1500,
         threshold=0.8,
-        interval_ms=300,
+        interval_ms=500,
     )
 
     assert task_title == "回帮复命"
@@ -148,7 +153,7 @@ def test_generic_bangpai_or_daily_prefix_alone_is_not_a_bprw_match(generic_tag: 
         screenshot,
         BPRWTask.SIDEBAR_BANGPAI_TASK_TEMPLATES,
         threshold=0.8,
-        roi=BPRWTask.ROI_TASK_LIST,
+        roi=(40, 135, 330, 430),
     )
 
     assert not match.found

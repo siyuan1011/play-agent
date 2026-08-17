@@ -17,9 +17,11 @@ from botCore import ADBClient, GameTask, RunLogger, VisionEngine, load_task_clas
 from ymjh_bot.runner.task_queue_runner import TaskQueueRunner
 from ymjh_bot.ui.task_queue_state import (
     HSLJ_TASK_KEY,
+    SHRW_TASK_KEY,
     clear_progress,
     load_state_for_serial,
     normalize_hslj_settings,
+    normalize_shrw_settings,
     restore_selected_tasks,
     safe_serial_name,
     save_state,
@@ -72,6 +74,12 @@ def _task_instances(selected_tasks: list[dict[str, Any]], settings: dict[str, An
             instances.append(
                 task_class(
                     hslj_settings=normalize_hslj_settings(settings.get(HSLJ_TASK_KEY)),
+                )
+            )
+        elif str(task_info.get("key") or "") == SHRW_TASK_KEY:
+            instances.append(
+                task_class(
+                    shrw_settings=normalize_shrw_settings(settings.get(SHRW_TASK_KEY)),
                 )
             )
         else:

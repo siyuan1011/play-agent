@@ -32,16 +32,12 @@ class RCFBTask(YmGameTask):
     POINT_TASK_LIST_SCROLL_START = (190, 520)
     POINT_TASK_LIST_SCROLL_END = (190, 220)
 
-    ROI_TASK_LIST = (40, 135, 270, 430)
-    ROI_DUNGEON_TRANSFER_OUT = (900, 170, 110, 60)
     ROI_DUNGEON_EXIT = (960, 155, 85, 85)
-    ROI_DUNGEON_EXIT_MODAL_ACTIONS = (300, 440, 700, 130)
 
     DUNGEON_TASK_THRESHOLD = 0.78
     DUNGEON_TRANSFER_OUT_THRESHOLD = 0.85
     DUNGEON_EXIT_THRESHOLD = 0.9
     DUNGEON_EXIT_TEAM_THRESHOLD = 0.9
-    DUNGEON_TASK_VERIFY_TIMEOUT_MS = 300000
     DUNGEON_TASK_POLL_INTERVAL_MS = 3000
     MATCH_WAIT_TIMEOUT_MS = 300000
     MATCH_WAIT_POLL_INTERVAL_MS = 1000
@@ -51,11 +47,12 @@ class RCFBTask(YmGameTask):
     TASK_FLOW_RETRY_WAIT_MS = 5000
     TASK_MISSING_CONFIRMATIONS = 6
     SIDEBAR_SCROLL_COUNT = 2
+    DUNGEON_TRACKER_CLICK_INTERVAL_MS = 5000
     DUNGEON_EXIT_ACTION_TIMEOUT_MS = 5000
-    DUNGEON_TRANSFER_TIMEOUT_MS = 60000
+    DUNGEON_EXIT_MAX_ATTEMPTS = 3
+    DUNGEON_AUTO_TRANSFER_TIMEOUT_MS = 330000
     DUNGEON_TRANSFER_POLL_INTERVAL_MS = 500
     DUNGEON_TRANSFER_STABLE_CONFIRMATIONS = 3
-    DUNGEON_EXIT_STEP_TIMEOUT_MS = 90000
     DEFER_FOREGROUND_WAKE_TO_ON_START = True
 
     def __init__(self, default_interval_ms: int | None = None):
@@ -75,7 +72,7 @@ class RCFBTask(YmGameTask):
     @step(retry=0, timeout_ms=None)
     def wait_dungeon_task(self) -> None:
         """等待左侧任务页出现日常副本追踪；5 分钟未出现则退队重组。"""
-        if self.wait_for_dungeon_task(timeout_ms=self.DUNGEON_TASK_VERIFY_TIMEOUT_MS):
+        if self.wait_for_dungeon_task(timeout_ms=300000):
             self._log("检测到江湖副本任务，确认已进入副本流程")
             return
 
@@ -133,33 +130,94 @@ class RCFBTask(YmGameTask):
         debug_path = self.save_debug_screenshot("rcfb_task_flow_timeout")
         raise RuntimeError(f"日常副本任务执行流程超时，已保存截图：{debug_path}")
 
-    @step(retry=0, timeout_ms=DUNGEON_EXIT_STEP_TIMEOUT_MS)
+    @step(retry=0, timeout_ms=420000)
     def leave_team_after_completion(self) -> None:
         """副本完成后选择退本退队，并等待传送回到稳定主界面。"""
-        if not self.click_template_if_available(
-            self.ICON_DUNGEON_EXIT,
-            timeout_ms=self.DUNGEON_EXIT_ACTION_TIMEOUT_MS,
-            description="副本退出图标",
-            threshold=self.DUNGEON_EXIT_THRESHOLD,
-            roi=self.ROI_DUNGEON_EXIT,
-            wait_after_click_ms=500,
-        ):
-            debug_path = self.save_debug_screenshot("rcfb_dungeon_exit_missing")
-            raise RuntimeError(f"副本完成后未找到退出图标，已保存截图：{debug_path}")
+        exit_team_clicked = False
+        try:
+            exit_team_clicked = self.click_dungeon_exit_team_with_retries()
+        except StepStopException:
+            raise
+        except Exception as exc:
+            self._log(f"副本退出识别异常，改为等待自动传出：{exc}")
 
-        if not self.click_template_if_available(
+        if exit_team_clicked:
+            self._log("已点击退本退队，等待传送结束")
+            transfer_timeout_ms = 60000
+        else:
+            try:
+                debug_path = self.save_debug_screenshot("rcfb_exit_team_button_missing")
+                self._log(
+                    f"连续 {self.DUNGEON_EXIT_MAX_ATTEMPTS} 次未能点击退本退队，"
+                    f"等待副本自动传出；现场截图：{debug_path}"
+                )
+            except Exception as exc:
+                self._log(f"副本退出现场截图保存失败，继续等待自动传出：{exc}")
+            transfer_timeout_ms = self.DUNGEON_AUTO_TRANSFER_TIMEOUT_MS
+
+        try:
+            self.wait_for_dungeon_transfer_complete(timeout_ms=transfer_timeout_ms)
+        except StepStopException:
+            raise
+        except Exception as exc:
+            self._log(
+                f"副本退出等待未完成，不重跑已完成副本并尝试通用退队：{exc}"
+            )
+            self.leave_team_if_present()
+            return
+
+        if not exit_team_clicked:
+            self._log("副本已自动传出，执行通用退队")
+            self.leave_team_if_present()
+
+    def click_dungeon_exit_team_with_retries(self) -> bool:
+        """Try to open the dungeon-exit dialog and click leave-dungeon-and-team."""
+        for attempt in range(1, self.DUNGEON_EXIT_MAX_ATTEMPTS + 1):
+            if self.click_visible_dungeon_exit_team_button():
+                self._log("检测到已打开的副本退出弹框，点击退本退队")
+                return True
+
+            exit_clicked = self.click_template_if_available(
+                self.ICON_DUNGEON_EXIT,
+                timeout_ms=self.DUNGEON_EXIT_ACTION_TIMEOUT_MS,
+                description="副本退出图标",
+                threshold=self.DUNGEON_EXIT_THRESHOLD,
+                roi=self.ROI_DUNGEON_EXIT,
+                wait_after_click_ms=500,
+            )
+            if exit_clicked and self.click_template_if_available(
+                self.BTN_DUNGEON_EXIT_TEAM,
+                timeout_ms=self.DUNGEON_EXIT_ACTION_TIMEOUT_MS,
+                description="退本退队按钮",
+                threshold=self.DUNGEON_EXIT_TEAM_THRESHOLD,
+                roi=(300, 440, 700, 130),
+                wait_after_click_ms=0,
+            ):
+                return True
+
+            if exit_clicked:
+                self._log(
+                    f"第 {attempt}/{self.DUNGEON_EXIT_MAX_ATTEMPTS} 次点击退出图标后"
+                    "未出现退本退队按钮"
+                )
+            else:
+                self._log(
+                    f"第 {attempt}/{self.DUNGEON_EXIT_MAX_ATTEMPTS} 次未找到副本退出图标"
+                )
+
+        return False
+
+    def click_visible_dungeon_exit_team_button(self) -> bool:
+        """Click an exit-team action that is already visible without toggling the dialog."""
+        if not self.find_image_once(
             self.BTN_DUNGEON_EXIT_TEAM,
-            timeout_ms=self.DUNGEON_EXIT_ACTION_TIMEOUT_MS,
-            description="退本退队按钮",
             threshold=self.DUNGEON_EXIT_TEAM_THRESHOLD,
-            roi=self.ROI_DUNGEON_EXIT_MODAL_ACTIONS,
-            wait_after_click_ms=0,
+            roi=self.scale_roi((300, 440, 700, 130)),
         ):
-            debug_path = self.save_debug_screenshot("rcfb_exit_team_button_missing")
-            raise RuntimeError(f"副本退出弹框未找到退本退队按钮，已保存截图：{debug_path}")
+            return False
 
-        self._log("已点击退本退队，等待传送结束")
-        self.wait_for_dungeon_transfer_complete(timeout_ms=self.DUNGEON_TRANSFER_TIMEOUT_MS)
+        self.click(offset=0)
+        return True
 
     def start_daily_auto_match(self) -> None:
         """Select daily raid in convenient teaming and start auto match."""
@@ -293,7 +351,7 @@ class RCFBTask(YmGameTask):
         return self.find_image_once(
             self.TEXT_DUNGEON_TRANSFER_OUT,
             threshold=self.DUNGEON_TRANSFER_OUT_THRESHOLD,
-            roi=self.scale_roi(self.ROI_DUNGEON_TRANSFER_OUT),
+            roi=self.scale_roi((900, 170, 110, 60)),
         )
 
     def is_dungeon_exit_visible(self) -> bool:
@@ -311,7 +369,7 @@ class RCFBTask(YmGameTask):
 
         self._log("点击当前任务栏副本任务")
         self.click(offset=0)
-        self.wait(1500)
+        self.wait(self.DUNGEON_TRACKER_CLICK_INTERVAL_MS)
         return True
 
     def wait_for_dungeon_transfer_complete(self, *, timeout_ms: int) -> None:
@@ -381,7 +439,7 @@ class RCFBTask(YmGameTask):
         if not self.find_image(
             self.TEXT_DAILY_DUNGEON_TRACKERS,
             threshold=self.DUNGEON_TASK_THRESHOLD,
-            roi=self.scale_roi(self.ROI_TASK_LIST),
+            roi=self.scale_roi((40, 135, 270, 430)),
         ):
             return False
 
@@ -402,6 +460,8 @@ class RCFBTask(YmGameTask):
         """Leave any existing team, but do not fail when already unteamed."""
         try:
             self.leave_team(timeout_ms=5000, wait_after_click_ms=1000)
+        except StepStopException:
+            raise
         except Exception as exc:
             self._log(f"退队检查未完成，按未组队继续：{exc}")
 

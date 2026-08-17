@@ -23,6 +23,9 @@ class BPRWTask(YmGameTask):
         YmGameTask.TEMPLATES_DIR / "text_bangpai_emergency_rescue.png"
     )
     TEXT_BANGPAI_JINLING_ESCORT = str(YmGameTask.TEMPLATES_DIR / "text_bangpai_jinling_escort.png")
+    TEXT_BANGPAI_BUXIANGWEIMOU = str(
+        YmGameTask.TEMPLATES_DIR / "text_bangpai_buxiangweimou.png"
+    )
     TEXT_BANGPAI_RETURN = str(YmGameTask.TEMPLATES_DIR / "text_bangpai_return.png")
     SIDEBAR_BANGPAI_TASK_TITLE_BY_TEMPLATE = {
         TEXT_BANGPAI_FEAST_GUESTS: "大宴宾客",
@@ -30,6 +33,7 @@ class BPRWTask(YmGameTask):
         TEXT_BANGPAI_SCOUT_ENEMY: "刺探敌情",
         TEXT_BANGPAI_EMERGENCY_RESCUE: "紧急救援",
         TEXT_BANGPAI_JINLING_ESCORT: "金陵护送",
+        TEXT_BANGPAI_BUXIANGWEIMOU: "不相为谋",
         TEXT_BANGPAI_RETURN: "回帮复命",
     }
     SIDEBAR_BANGPAI_TASK_TEMPLATES = list(SIDEBAR_BANGPAI_TASK_TITLE_BY_TEMPLATE)
@@ -46,28 +50,24 @@ class BPRWTask(YmGameTask):
 
     # 固定坐标点 (设计分辨率 1280x720 下)
     ROI_BANGPAI_TASK_CARD = (130, 230, 240, 140)
-    ROI_BANGPAI_LIST_TITLE = (95, 110, 230, 90)
-    ROI_TASK_LIST = (40, 135, 330, 430)
     ROI_ROUTE_PANEL = (720, 120, 480, 500)
-    ROI_WAREHOUSE_SUBMIT = (760, 530, 230, 115)
-    ROI_MALL_BUY = (800, 610, 290, 100)
     ROI_TRADE_ACTION = (520, 440, 330, 120)
-    ROI_ONE_KEY_SUBMIT = (900, 330, 340, 160)
-    ROI_TASK_COMPLETE = (40, 570, 650, 90)
-    ROI_PURCHASE_DIALOG_CLOSE = (850, 130, 170, 110)
-    POINT_TASK_LIST_SCROLL_START = (190, 360)
-    POINT_TASK_LIST_SCROLL_END = (190, 260)
+    POINT_TASK_LIST_SCROLL_START = (190, 330)
+    POINT_TASK_LIST_SCROLL_END = (190, 190)
+    POINT_TASK_LIST_SCROLL_UP_START = (190, 190)
+    POINT_TASK_LIST_SCROLL_UP_END = (190, 330)
     POINT_DIALOG_NEXT = (1230, 690)
 
     CLOSE_ALL_MAX_ATTEMPTS = 8
     DEFER_FOREGROUND_WAKE_TO_ON_START = True
     TASK_FLOW_TIMEOUT_MS = 900000
-    TASK_TRANSITION_TIMEOUT_MS = 120000
     TASK_ENTRY_STEP_TIMEOUT_MS = 180000
     TASK_FLOW_RETRY_WAIT_MS = 3000
     SIDEBAR_TASK_CLICK_SETTLE_MS = 3000
     TASK_LIST_SCROLL_DURATION_MS = 1000
+    TASK_LIST_SCROLL_UP_DURATION_MS = 400
     TASK_LIST_SCROLL_SETTLE_MS = 500
+    TASK_LIST_SCROLL_UP_COUNT = 2
     ACQUIRE_ROUTE_OPEN_SETTLE_MS = 3500
     FLOW_DETECTION_INTERVAL_MS = 1000
     TRADE_ACTION_SETTLE_MS = 2500
@@ -90,7 +90,7 @@ class BPRWTask(YmGameTask):
         if not self.find_image(
             [self.BTN_CLOSE, self.BTN_PANE_CLOSE],
             threshold=0.85,
-            roi=self.scale_roi(self.ROI_PURCHASE_DIALOG_CLOSE),
+            roi=self.scale_roi((850, 130, 170, 110)),
         ):
             return False
 
@@ -169,7 +169,7 @@ class BPRWTask(YmGameTask):
         return self.find_image(
             self.TITLE_BANGPAI_LIST,
             threshold=0.85,
-            roi=self.scale_roi(self.ROI_BANGPAI_LIST_TITLE),
+            roi=self.scale_roi((95, 110, 230, 90)),
         )
 
     @step(retry=3, timeout_ms=TASK_ENTRY_STEP_TIMEOUT_MS)
@@ -232,12 +232,16 @@ class BPRWTask(YmGameTask):
 
     def find_bangpai_task_in_sidebar(self, max_scrolls: int = 5) -> str | None:
         """在已确认的江湖任务侧栏中查找帮派任务。"""
-        for attempt in range(max_scrolls + 1):
+        self._ensure_bangpai_sidebar_ready()
+        for _ in range(self.TASK_LIST_SCROLL_UP_COUNT):
+            self.scroll_task_list_up()
             self._ensure_bangpai_sidebar_ready()
+
+        for attempt in range(max_scrolls + 1):
             task_title = self.wait_bangpai_task_title_in_sidebar(
-                timeout_ms=1200,
+                timeout_ms=1500,
                 threshold=0.8,
-                interval_ms=300,
+                interval_ms=500,
             )
             if task_title is not None:
                 return task_title
@@ -249,6 +253,7 @@ class BPRWTask(YmGameTask):
                     f"向下翻页 {attempt + 1}/{max_scrolls}"
                 )
                 self.scroll_task_list_down()
+                self._ensure_bangpai_sidebar_ready()
 
         return None
 
@@ -269,7 +274,7 @@ class BPRWTask(YmGameTask):
     ) -> str | None:
         """Return the exact BPRW sidebar title while preserving its click center."""
         deadline = self._make_deadline(timeout_ms)
-        roi = self.scale_roi(self.ROI_TASK_LIST)
+        roi = self.scale_roi((40, 135, 330, 430))
         while not self._is_deadline_expired(deadline):
             match = self._vision.match_template(
                 self.screenshot(),
@@ -291,7 +296,7 @@ class BPRWTask(YmGameTask):
             self._last_match_center = None
             self.wait(interval_ms)
 
-        self._log("已确认江湖任务侧栏，本页未找到帮派任务六标题")
+        self._log("已确认江湖任务侧栏，本页未找到支持的帮派任务标题")
         return None
 
     def handle_clicked_bangpai_task(self, task_title: str) -> bool:
@@ -303,7 +308,7 @@ class BPRWTask(YmGameTask):
 
     def wait_bangpai_task_transition(self, description: str) -> None:
         """Wait for pathfinding/loading to settle or fail before any sidebar operation."""
-        if self.wait_auto_pathfinding(timeout_ms=self.TASK_TRANSITION_TIMEOUT_MS):
+        if self.wait_auto_pathfinding(timeout_ms=120000):
             return
         screenshot_path = self.save_debug_screenshot("bangpai_task_transition_timeout")
         raise RuntimeError(f"{description}等待自动寻路或过图结束超时，已保存截图：{screenshot_path}")
@@ -346,12 +351,25 @@ class BPRWTask(YmGameTask):
         )
         self.wait(self.TASK_LIST_SCROLL_SETTLE_MS)
 
+    def scroll_task_list_up(self) -> None:
+        """Drag the task list down by one page while normalizing to its first page."""
+        start = self.POINT_TASK_LIST_SCROLL_UP_START
+        end = self.POINT_TASK_LIST_SCROLL_UP_END
+        self.swipe(
+            start[0],
+            start[1],
+            end[0],
+            end[1],
+            duration_ms=self.TASK_LIST_SCROLL_UP_DURATION_MS,
+        )
+        self.wait(self.TASK_LIST_SCROLL_SETTLE_MS)
+
     def close_completion_dialog_if_visible(self) -> bool:
         """Close the final Bangpai completion dialog when it is visible."""
         if not self.find_image(
             self.TEXT_TASK_COMPLETE,
             threshold=0.9,
-            roi=self.scale_roi(self.ROI_TASK_COMPLETE),
+            roi=self.scale_roi((40, 570, 650, 90)),
         ):
             return False
 
@@ -391,7 +409,7 @@ class BPRWTask(YmGameTask):
             self.BTN_ONE_KEY_SUBMIT,
             timeout_ms=600,
             description="帮派任务一键提交按钮",
-            roi=self.ROI_ONE_KEY_SUBMIT,
+            roi=(900, 330, 340, 160),
             threshold=0.85,
             wait_after_click_ms=1500,
             interval_ms=self.FLOW_DETECTION_INTERVAL_MS,
@@ -423,7 +441,7 @@ class BPRWTask(YmGameTask):
             self.BTN_WAREHOUSE_SUBMIT,
             timeout_ms=3000,
             description="帮派仓库提交按钮",
-            roi=self.ROI_WAREHOUSE_SUBMIT,
+            roi=(760, 530, 230, 115),
             threshold=0.85,
             wait_after_click_ms=2000,
             interval_ms=self.FLOW_DETECTION_INTERVAL_MS,
@@ -455,7 +473,7 @@ class BPRWTask(YmGameTask):
             self.BTN_MALL_BUY_AREA,
             timeout_ms=5000,
             description="商城默认数量购买按钮",
-            roi=self.ROI_MALL_BUY,
+            roi=(800, 610, 290, 100),
             threshold=0.85,
             wait_after_click_ms=self.TRADE_ACTION_SETTLE_MS,
             interval_ms=self.FLOW_DETECTION_INTERVAL_MS,
