@@ -5,6 +5,8 @@ from __future__ import annotations
 import datetime
 import os
 import re
+from collections.abc import Callable
+from copy import deepcopy
 from pathlib import Path
 
 import cv2
@@ -20,27 +22,37 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QRadioButton,
-    QListWidget,
-    QListWidgetItem,
     QStackedWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
-from botCore import ADBClient, ADBError, GameTask, RunLogger, VisionEngine, load_task_class
+from botCore import (
+    ADBClient,
+    ADBError,
+    GameTask,
+    RunLogger,
+    VisionEngine,
+    load_task_class,
+)
+from ymjh_bot.runner.account_role_switcher import AccountRoleSwitcher
+from ymjh_bot.runner.task_factory import create_task_instances
 from ymjh_bot.runner.task_queue_runner import TaskQueueRunner
 from ymjh_bot.ui.task_queue_state import (
     DEFAULT_HSLJ_COUNT,
-    HSLJ_TASK_KEY,
     HSLJ_MODE_KEYS,
     HSLJ_STRATEGY_FIRST_WIN,
     HSLJ_STRATEGY_FIXED_COUNT,
     HSLJ_STRATEGY_INFINITE,
+    HSLJ_TASK_KEY,
+    MAX_ROLE_COUNT,
     SHRW_LINE_SCOPE_LABELS,
     SHRW_MATERIAL_OPTIONS,
     SHRW_TASK_KEY,
@@ -48,6 +60,7 @@ from ymjh_bot.ui.task_queue_state import (
     clear_progress,
     load_state_for_serial,
     normalize_hslj_settings,
+    normalize_selected_role_indices,
     normalize_shrw_settings,
     restore_selected_tasks,
     safe_serial_name,
@@ -95,6 +108,8 @@ class QueueRunnerWorker(QObject):
         log_dir: Path | None = None,
         initial_progress: dict | None = None,
         verbose: bool = False,
+        role_indices: list[int] | None = None,
+        task_factory: Callable[[], list[GameTask]] | None = None,
     ):
         super().__init__()
         self.task_instances = task_instances
@@ -103,6 +118,8 @@ class QueueRunnerWorker(QObject):
         self.log_dir = log_dir
         self.initial_progress = initial_progress
         self.verbose = verbose
+        self.role_indices = role_indices
+        self.task_factory = task_factory
         self.runner: TaskQueueRunner | None = None
 
     @Slot()
@@ -119,6 +136,11 @@ class QueueRunnerWorker(QObject):
                 event_callback=self.progress.emit,
                 progress_callback=self.progress_state.emit,
                 verbose=self.verbose,
+                role_indices=self.role_indices,
+                task_factory=self.task_factory,
+                role_switcher=(
+                    AccountRoleSwitcher() if self.role_indices is not None else None
+                ),
             )
             if self.initial_progress:
                 self.runner.load_progress(self.initial_progress)
@@ -212,6 +234,29 @@ class TaskQueueWindow(QMainWindow):
         serial_layout.addWidget(self.serial_input, 1)
         serial_layout.addWidget(self.connect_btn)
         grid.addWidget(serial_row, row, 1, 1, 3)
+        row += 1
+
+        role_selection_widget = QWidget()
+        role_selection_layout = QHBoxLayout(role_selection_widget)
+        role_selection_layout.setContentsMargins(0, 0, 0, 0)
+        selected_roles = set(
+            normalize_selected_role_indices(self._state.get("selected_role_indices"))
+        )
+        self.role_checks: dict[int, QCheckBox] = {}
+        for role_index in range(MAX_ROLE_COUNT):
+            check = QCheckBox(f"角色{role_index + 1}")
+            check.setChecked(role_index in selected_roles)
+            check.toggled.connect(self._on_role_selection_changed)
+            self.role_checks[role_index] = check
+            role_selection_layout.addWidget(check)
+        role_selection_layout.addStretch()
+        grid.addWidget(QLabel("账号执行角色"), row, 0)
+        grid.addWidget(role_selection_widget, row, 1, 1, 3)
+        row += 1
+
+        role_hint = QLabel("按角色编号升序执行；每个角色都会从任务图起点重新开始")
+        role_hint.setWordWrap(True)
+        grid.addWidget(role_hint, row, 1, 1, 3)
         row += 1
 
         self.refresh_devices()
@@ -721,27 +766,14 @@ class TaskQueueWindow(QMainWindow):
     def _get_selected_task_instances(self) -> list[GameTask]:
         """Create task instances from selected tasks."""
         self._sync_selected_tasks_from_widget()
-        instances = []
-        for task_info in self.selected_tasks:
-            try:
-                if str(task_info.get("key") or "") == HSLJ_TASK_KEY:
-                    settings = normalize_hslj_settings(
-                        (self._state.get("task_settings") or {}).get(HSLJ_TASK_KEY)
-                    )
-                    instance = task_info["class"](
-                        hslj_settings=settings,
-                    )
-                elif str(task_info.get("key") or "") == SHRW_TASK_KEY:
-                    settings = normalize_shrw_settings(
-                        (self._state.get("task_settings") or {}).get(SHRW_TASK_KEY)
-                    )
-                    instance = task_info["class"](shrw_settings=settings)
-                else:
-                    instance = task_info["class"]()
-                instances.append(instance)
-            except Exception as e:
-                self._append_log(f"[错误] 创建任务实例失败：{e}")
-        return instances
+        try:
+            return create_task_instances(
+                self.selected_tasks,
+                self._state.get("task_settings") or {},
+            )
+        except Exception as exc:
+            self._append_log(f"[错误] 创建任务实例失败：{exc}")
+            return []
 
     def start_queue(self) -> None:
         """Start executing the task queue."""
@@ -761,6 +793,16 @@ class TaskQueueWindow(QMainWindow):
             return
 
         adb_path = self.adb_path_edit.text().strip() or "adb"
+        role_indices = self._selected_role_indices_from_ui()
+        if not role_indices:
+            QMessageBox.warning(self, "未选择角色", "请至少勾选一个账号角色。")
+            return
+        task_blueprint = [task_info.copy() for task_info in self.selected_tasks]
+        task_settings = deepcopy(self._state.get("task_settings") or {})
+
+        def task_factory() -> list[GameTask]:
+            return create_task_instances(task_blueprint, task_settings)
+
         self._save_state_from_ui()
         initial_progress = self._state.get("progress")
         self._stop_requested_by_user = False
@@ -772,12 +814,14 @@ class TaskQueueWindow(QMainWindow):
 
         self.thread = QThread(self)
         self.worker = QueueRunnerWorker(
-            task_instances,
-            adb_path,
-            serial,
-            self.repo_root / "logs" / safe_serial_name(serial),
-            initial_progress if isinstance(initial_progress, dict) else None,
-            self.verbose_log_check.isChecked(),
+            task_instances=task_instances,
+            adb_path=adb_path,
+            serial=serial,
+            log_dir=self.repo_root / "logs" / safe_serial_name(serial),
+            initial_progress=initial_progress if isinstance(initial_progress, dict) else None,
+            verbose=self.verbose_log_check.isChecked(),
+            role_indices=role_indices,
+            task_factory=task_factory if len(role_indices) > 1 else None,
         )
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
@@ -797,8 +841,20 @@ class TaskQueueWindow(QMainWindow):
         self.verbose_log_check.setEnabled(False)
         self._set_queue_editing_enabled(False)
         self._append_log("任务队列已开始。")
+        role_labels = "、".join(f"角色{role_index + 1}" for role_index in role_indices)
+        self._append_log(f"账号角色队列：{role_labels}；将按编号升序执行。")
         if initial_progress:
-            self._append_log(f"恢复进度：任务={initial_progress.get('current_task_index', 0)}, 步骤={initial_progress.get('current_step_index', 0)}")
+            role_cursor = int(initial_progress.get("current_role_index", 0))
+            role_number = (
+                role_indices[role_cursor] + 1
+                if 0 <= role_cursor < len(role_indices)
+                else "未知"
+            )
+            self._append_log(
+                f"恢复进度：角色={role_number}, "
+                f"任务={initial_progress.get('current_task_index', 0)}, "
+                f"步骤={initial_progress.get('current_step_index', 0)}"
+            )
 
     def pause_queue(self) -> None:
         """Pause the task queue."""
@@ -961,6 +1017,24 @@ class TaskQueueWindow(QMainWindow):
             or self._current_serial
         )
 
+    def _selected_role_indices_from_ui(self) -> list[int]:
+        """Return checked account roles in stable ascending order."""
+        return [
+            role_index
+            for role_index, check in self.role_checks.items()
+            if check.isChecked()
+        ]
+
+    def _on_role_selection_changed(self, _checked: bool) -> None:
+        """Persist role choices and invalidate progress tied to the old role list."""
+        if self._suppress_state_switch:
+            return
+        had_progress = "progress" in self._state
+        self._state.pop("progress", None)
+        self._save_state_from_ui()
+        if had_progress:
+            self._append_log("账号角色选择已更改，旧角色任务进度已重置。")
+
     def _on_device_changed(self, serial: str) -> None:
         """Switch state when the selected device changes."""
         if self._suppress_state_switch:
@@ -997,6 +1071,13 @@ class TaskQueueWindow(QMainWindow):
         self._suppress_state_switch = True
         try:
             self.adb_path_edit.setText(str(self._state.get("adb_path") or self._env_adb_path or "adb"))
+            selected_roles = set(
+                normalize_selected_role_indices(
+                    self._state.get("selected_role_indices")
+                )
+            )
+            for role_index, check in self.role_checks.items():
+                check.setChecked(role_index in selected_roles)
             serial = str(self._state.get("serial") or "")
             self.serial_input.setText(serial)
             if serial:
@@ -1074,6 +1155,7 @@ class TaskQueueWindow(QMainWindow):
     def _save_progress(self, progress: dict) -> None:
         """Save current queue progress."""
         self._state["progress"] = {
+            "current_role_index": int(progress.get("current_role_index", 0)),
             "current_task_index": int(progress.get("current_task_index", 0)),
             "current_step_index": int(progress.get("current_step_index", 0)),
         }
@@ -1105,6 +1187,7 @@ class TaskQueueWindow(QMainWindow):
         self._sync_selected_tasks_from_widget()
         self._state["adb_path"] = self.adb_path_edit.text().strip() or "adb"
         self._state["serial"] = self._current_serial
+        self._state["selected_role_indices"] = self._selected_role_indices_from_ui()
         self._state["selected_task_keys"] = task_keys_from_infos(self.selected_tasks)
         save_state(self.state_path, self._state)
 
@@ -1128,6 +1211,8 @@ class TaskQueueWindow(QMainWindow):
         self.serial_input.setEnabled(enabled)
         self.device_combo.setEnabled(enabled)
         self.connect_btn.setEnabled(enabled)
+        for check in self.role_checks.values():
+            check.setEnabled(enabled)
         for mode in getattr(self, "hslj_mode_widgets", {}):
             widgets = self.hslj_mode_widgets[mode]
             checks = widgets["checks"]
@@ -1149,8 +1234,9 @@ class TaskQueueWindow(QMainWindow):
 
 def main():
     """Entry point for the Task Queue Manager."""
-    from PySide6.QtWidgets import QApplication
     import sys
+
+    from PySide6.QtWidgets import QApplication
 
     app = QApplication(sys.argv)
     window = TaskQueueWindow()

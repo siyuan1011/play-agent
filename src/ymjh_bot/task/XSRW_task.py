@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from typing import Literal
 
@@ -75,6 +74,10 @@ class XSRWTask(YmGameTask):
     TEXT_DEPOSIT_NOTICE = str(
         YmGameTask.TEMPLATES_DIR / "text_xsrw_deposit_notice.png"
     )
+    TEXT_DEPOSIT_NOTICE_PARTIAL = str(
+        YmGameTask.TEMPLATES_DIR / "text_xsrw_deposit_notice_partial.png"
+    )
+    DEPOSIT_NOTICE_TEMPLATES = (TEXT_DEPOSIT_NOTICE, TEXT_DEPOSIT_NOTICE_PARTIAL)
     TEXT_CATEGORY_JYPY = str(YmGameTask.TEMPLATES_DIR / "text_xsrw_jypy.png")
     TEXT_CATEGORY_JHJS = str(YmGameTask.TEMPLATES_DIR / "text_xsrw_jhjs.png")
     TEXT_CHALLENGE_VICTORY = str(
@@ -153,6 +156,8 @@ class XSRWTask(YmGameTask):
     DEPOSIT_NOTICE_THRESHOLD = 0.90
     DEPOSIT_CONFIRM_POINT = (855, 508)
     DEPOSIT_CONFIRM_SETTLE_MS = 800
+    DEPOSIT_MODAL_WAIT_MS = 5000
+    DEPOSIT_STARTUP_RECOVERY_MS = 1500
     REFRESH_SETTLE_MS = 900
     FORWARD_SETTLE_MS = 1500
     CHALLENGE_VICTORY_THRESHOLD = 0.90
@@ -183,6 +188,18 @@ class XSRWTask(YmGameTask):
     def __init__(self, default_interval_ms: int | None = None):
         super().__init__(default_interval_ms=default_interval_ms)
         self._active_delegate: YmGameTask | None = None
+
+    def before_start(self) -> None:
+        """Recover a stranded bounty deposit modal before shared startup checks."""
+        try:
+            self.resolve_bounty_deposit_modal_if_visible(
+                timeout_ms=self.DEPOSIT_STARTUP_RECOVERY_MS,
+            )
+        except StepStopException:
+            raise
+        except Exception as exc:
+            self._log(f"悬赏启动前押金弹框恢复检查失败，继续常规启动：{exc}")
+        super().before_start()
 
     def reset_startup_state(self) -> None:
         self._active_delegate = None
@@ -232,7 +249,14 @@ class XSRWTask(YmGameTask):
 
     def open_bounty_panel(self, *, refresh: bool) -> BountyPanelSnapshot:
         """Open the bounty panel from any Activity category and optionally refresh it."""
-        snapshot = self.read_bounty_panel()
+        deposit_confirmed = self.resolve_bounty_deposit_modal_if_visible(
+            timeout_ms=self.DEPOSIT_STARTUP_RECOVERY_MS,
+        )
+        snapshot = (
+            self._wait_bounty_panel(timeout_ms=self.PANEL_OPEN_TIMEOUT_MS)
+            if deposit_confirmed
+            else self.read_bounty_panel()
+        )
         if not snapshot.visible:
             self.open_activity_panel(wait_after_open_ms=2500)
             entry = self._wait_binary_match(
@@ -260,7 +284,12 @@ class XSRWTask(YmGameTask):
         snapshot: BountyPanelSnapshot | None = None,
     ) -> BountyPanelSnapshot:
         """Refresh the panel and return the new canonical visual state."""
-        current = snapshot or self.read_bounty_panel()
+        deposit_confirmed = self.resolve_bounty_deposit_modal_if_visible(timeout_ms=0)
+        current = (
+            self._wait_bounty_panel(timeout_ms=self.PANEL_OPEN_TIMEOUT_MS)
+            if deposit_confirmed
+            else (snapshot or self.read_bounty_panel())
+        )
         if not current.visible:
             current = self.open_bounty_panel(refresh=False)
 
@@ -388,10 +417,11 @@ class XSRWTask(YmGameTask):
             self.tap(*card.action_center)
             self.wait(self.ACCEPT_SETTLE_MS)
             immediate = self.read_bounty_panel()
-            if not immediate.visible and self.confirm_bounty_deposit_if_visible(
-                immediate.screenshot,
+            if not immediate.visible and self.resolve_bounty_deposit_modal_if_visible(
+                timeout_ms=self.DEPOSIT_MODAL_WAIT_MS,
+                initial_screenshot=immediate.screenshot,
             ):
-                immediate = self.read_bounty_panel()
+                immediate = self._wait_bounty_panel(timeout_ms=self.PANEL_OPEN_TIMEOUT_MS)
             immediate_success = self._accept_transition_confirmed(
                 before_pending,
                 card.slot_index,
@@ -414,7 +444,7 @@ class XSRWTask(YmGameTask):
         image = self.screenshot() if screenshot is None else screenshot
         match = self._binary_match(
             image,
-            self.TEXT_DEPOSIT_NOTICE,
+            self.DEPOSIT_NOTICE_TEMPLATES,
             mode="light_foreground",
             threshold=self.DEPOSIT_NOTICE_THRESHOLD,
             roi=self.ROI_DEPOSIT_NOTICE,
@@ -426,6 +456,28 @@ class XSRWTask(YmGameTask):
         self.click_point(*self.DEPOSIT_CONFIRM_POINT, offset=0)
         self.wait(self.DEPOSIT_CONFIRM_SETTLE_MS)
         return True
+
+    def resolve_bounty_deposit_modal_if_visible(
+        self,
+        *,
+        timeout_ms: int,
+        initial_screenshot: np.ndarray | None = None,
+    ) -> bool:
+        """Poll briefly for a bounty deposit modal and confirm it once."""
+        if timeout_ms < 0:
+            raise ValueError("押金弹框等待时间不能小于 0")
+
+        deadline = self._make_deadline(timeout_ms)
+        screenshot = initial_screenshot
+        while True:
+            if self.confirm_bounty_deposit_if_visible(screenshot):
+                return True
+            if self._is_deadline_expired(deadline):
+                return False
+            remaining_ms = self._remaining_ms(deadline)
+            if remaining_ms > 0:
+                self.wait(min(self.PANEL_POLL_INTERVAL_MS, remaining_ms))
+            screenshot = None
 
     def execute_pending_bounties(
         self,
@@ -701,30 +753,15 @@ class XSRWTask(YmGameTask):
         *,
         timeout_ms: int | None = None,
     ) -> None:
-        """Push solo/team dungeon trackers while tolerating battle-hidden sidebars."""
-        deadline = self._make_deadline(timeout_ms or delegate.TASK_FLOW_TIMEOUT_MS)
-        last_heartbeat_at = 0.0
-
-        while not self._is_deadline_expired(deadline):
-            if self.is_stopped() or delegate.is_stopped():
-                raise StepStopException("Stop requested")
-
-            if delegate.is_dungeon_transfer_out_visible():
-                self._log("检测到江湖纪事悬赏副本传出倒计时")
-                return
-
-            if delegate.click_current_dungeon_task_if_visible():
-                last_heartbeat_at = 0.0
-                continue
-
-            now = time.perf_counter()
-            if last_heartbeat_at <= 0 or (now - last_heartbeat_at) * 1000 >= 30000:
-                self._log("江湖纪事悬赏副本处于战斗/过图阶段，等待任务追踪恢复")
-                last_heartbeat_at = now
-            self.wait(delegate.TASK_FLOW_RETRY_WAIT_MS)
-
-        debug_path = self.save_debug_screenshot("xsrw_daily_raid_timeout")
-        raise RuntimeError(f"江湖纪事悬赏副本执行超时，已保存截图：{debug_path}")
+        """Reuse the daily-dungeon hangup monitor for a bounty raid."""
+        if self.is_stopped() or delegate.is_stopped():
+            raise StepStopException("Stop requested")
+        delegate.monitor_dungeon_hangup_flow(
+            timeout_ms=timeout_ms or delegate.TASK_FLOW_TIMEOUT_MS,
+            context="江湖纪事悬赏副本",
+            hangup_failure_screenshot_prefix="xsrw_daily_hangup_state_failed",
+            timeout_screenshot_prefix="xsrw_daily_raid_timeout",
+        )
 
     def run_jypy_bounty_challenge(self) -> None:
         """Wait for the direct bounty challenge and close its victory screen."""
@@ -1028,7 +1065,7 @@ class XSRWTask(YmGameTask):
 
     def _wait_binary_match(
         self,
-        template: str,
+        template: str | list[str] | tuple[str, ...],
         *,
         mode: Literal["otsu_dark", "light_foreground"],
         threshold: float,
@@ -1053,7 +1090,7 @@ class XSRWTask(YmGameTask):
     def _binary_match(
         self,
         screenshot: np.ndarray,
-        template: str,
+        template: str | list[str] | tuple[str, ...],
         *,
         mode: Literal["otsu_dark", "light_foreground"],
         threshold: float,

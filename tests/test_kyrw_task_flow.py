@@ -344,6 +344,8 @@ def test_zero_timeout_panel_cleanup_checks_two_frames_without_waiting(monkeypatc
     captures: list[int] = []
     waits: list[int] = []
     monkeypatch.setattr(task, "collapse_chat_if_open", lambda *args, **kwargs: False)
+    monkeypatch.setattr(task, "collapse_emotion_panel_if_open", lambda **kwargs: False)
+    monkeypatch.setattr(task, "_prepare_jianghu_calendar_close", lambda: False)
     monkeypatch.setattr(task, "wait", waits.append)
 
     def capture(*args, **kwargs):
@@ -875,7 +877,19 @@ def test_keye_sidebar_templates_only_keep_dynamic_prefixes() -> None:
         KYRWTask.TEXT_KEYE_PREFIX,
         KYRWTask.TEXT_ZHISHA_PREFIX,
         KYRWTask.TEXT_ZHUOJIAN_PREFIX,
+        KYRWTask.TEXT_LIEXUE_PREFIX,
+        KYRWTask.TEXT_XUNDAO_PREFIX,
+        KYRWTask.TEXT_DUANXIN_PREFIX,
     ]
+    for template in [
+        KYRWTask.TEXT_LIEXUE_PREFIX,
+        KYRWTask.TEXT_XUNDAO_PREFIX,
+        KYRWTask.TEXT_DUANXIN_PREFIX,
+    ]:
+        assert Path(template).is_file()
+        image = cv2.imread(template, cv2.IMREAD_UNCHANGED)
+        assert image is not None
+        assert image.shape == (18, 47, 4)
     assert not hasattr(KYRWTask, "TEXT_KEYE_SIDEBAR")
     assert not hasattr(KYRWTask, "TEXT_KEYE_SHIMEN_SIDEBAR")
 

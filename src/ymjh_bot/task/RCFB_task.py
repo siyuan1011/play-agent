@@ -26,6 +26,10 @@ class RCFBTask(YmGameTask):
     TEXT_DUNGEON_TRANSFER_OUT = str(YmGameTask.TEMPLATES_DIR / "text_rcfb_chuangchu.png")
     ICON_DUNGEON_EXIT = str(YmGameTask.TEMPLATES_DIR / "icon_exit.png")
     BTN_DUNGEON_EXIT_TEAM = str(YmGameTask.TEMPLATES_DIR / "btn_rcfb_exit_team.png")
+    TAB_DUNGEON_HANGUP_ACTIVE = (
+        str(YmGameTask.TEMPLATES_DIR / "tab_dungeon_hangup_active_dark.png"),
+        str(YmGameTask.TEMPLATES_DIR / "tab_dungeon_hangup_active_light.png"),
+    )
 
     POINT_TEAM_AUTO_MATCH = (990, 669)
     POINT_QUICK_CATEGORY_JIANGHU = (180, 210)
@@ -33,11 +37,13 @@ class RCFBTask(YmGameTask):
     POINT_TASK_LIST_SCROLL_END = (190, 220)
 
     ROI_DUNGEON_EXIT = (960, 155, 85, 85)
+    ROI_DUNGEON_HANGUP_ACTIVE = (145, 0, 105, 40)
 
     DUNGEON_TASK_THRESHOLD = 0.78
     DUNGEON_TRANSFER_OUT_THRESHOLD = 0.85
     DUNGEON_EXIT_THRESHOLD = 0.9
     DUNGEON_EXIT_TEAM_THRESHOLD = 0.9
+    DUNGEON_HANGUP_ACTIVE_THRESHOLD = 0.95
     DUNGEON_TASK_POLL_INTERVAL_MS = 3000
     MATCH_WAIT_TIMEOUT_MS = 300000
     MATCH_WAIT_POLL_INTERVAL_MS = 1000
@@ -48,6 +54,8 @@ class RCFBTask(YmGameTask):
     TASK_MISSING_CONFIRMATIONS = 6
     SIDEBAR_SCROLL_COUNT = 2
     DUNGEON_TRACKER_CLICK_INTERVAL_MS = 5000
+    DUNGEON_HANGUP_VERIFY_INTERVAL_MS = 15000
+    DUNGEON_HANGUP_MAX_CONSECUTIVE_FAILURES = 3
     DUNGEON_EXIT_ACTION_TIMEOUT_MS = 5000
     DUNGEON_EXIT_MAX_ATTEMPTS = 3
     DUNGEON_AUTO_TRANSFER_TIMEOUT_MS = 330000
@@ -98,37 +106,95 @@ class RCFBTask(YmGameTask):
 
     @step(retry=0, timeout_ms=TASK_FLOW_TIMEOUT_MS)
     def run_daily_raid_flow(self) -> None:
-        """持续点击当前副本追踪，直到出现明确的传出倒计时。"""
-        deadline = self._make_deadline(self.TASK_FLOW_TIMEOUT_MS)
-        missing_confirmations = 0
+        """Monitor hangup state until the daily dungeon explicitly completes."""
+        self.monitor_dungeon_hangup_flow(
+            timeout_ms=self.TASK_FLOW_TIMEOUT_MS,
+            context="日常副本",
+            hangup_failure_screenshot_prefix="rcfb_hangup_state_failed",
+            timeout_screenshot_prefix="rcfb_task_flow_timeout",
+        )
+
+    def monitor_dungeon_hangup_flow(
+        self,
+        *,
+        timeout_ms: int,
+        context: str,
+        hangup_failure_screenshot_prefix: str,
+        timeout_screenshot_prefix: str,
+    ) -> None:
+        """Keep a dungeon in hangup mode without resetting an active battle state."""
+        if timeout_ms <= 0:
+            raise ValueError("副本挂机监控超时时间必须大于 0")
+
+        deadline = self._make_deadline(timeout_ms)
+        consecutive_failures = 0
+        verification_pending = False
+        hangup_confirmed = False
 
         while not self._is_deadline_expired(deadline):
+            if self.is_stopped():
+                raise StepStopException("Stop requested")
+
             if self.is_dungeon_transfer_out_visible():
-                self._log("检测到副本传出倒计时，判断日常副本完成")
+                self._log(f"检测到{context}传出倒计时，判断副本完成")
                 return
 
-            if self.click_current_dungeon_task_if_visible():
-                missing_confirmations = 0
-                continue
+            if self.wake_from_power_saving_if_needed():
+                self._log(f"{context}挂机监控已唤醒省电模式，重新识别挂机状态")
+                if self.is_dungeon_transfer_out_visible():
+                    self._log(f"检测到{context}传出倒计时，判断副本完成")
+                    return
 
-            missing_confirmations += 1
-            self._debug(
-                "副本过图或剧情期间暂未找到任务追踪 "
-                f"({missing_confirmations}/{self.TASK_MISSING_CONFIRMATIONS})"
-            )
-            if missing_confirmations >= self.TASK_MISSING_CONFIRMATIONS:
-                debug_path = self.save_debug_screenshot("rcfb_task_tracker_missing")
-                raise RuntimeError(
-                    f"连续 {self.TASK_MISSING_CONFIRMATIONS} 次未找到日常副本任务追踪，"
-                    f"已保存截图：{debug_path}"
+            if self.is_dungeon_hangup_active():
+                if not hangup_confirmed or verification_pending or consecutive_failures:
+                    self._log(f"检测到{context}左上角挂机高亮，等待副本完成")
+                hangup_confirmed = True
+                verification_pending = False
+                consecutive_failures = 0
+            else:
+                if verification_pending:
+                    consecutive_failures += 1
+                    self._log(
+                        f"{context}挂机状态复核失败 "
+                        f"{consecutive_failures}/"
+                        f"{self.DUNGEON_HANGUP_MAX_CONSECUTIVE_FAILURES}"
+                    )
+                    if (
+                        consecutive_failures
+                        >= self.DUNGEON_HANGUP_MAX_CONSECUTIVE_FAILURES
+                    ):
+                        debug_path = self.save_debug_screenshot(
+                            hangup_failure_screenshot_prefix
+                        )
+                        raise RuntimeError(
+                            f"{context}连续 "
+                            f"{self.DUNGEON_HANGUP_MAX_CONSECUTIVE_FAILURES} 次"
+                            f"未检测到左上角挂机高亮，已保存截图：{debug_path}"
+                        )
+
+                attempt = consecutive_failures + 1
+                clicked = self.click_current_dungeon_task_if_visible(
+                    wait_after_click_ms=0,
                 )
+                if clicked:
+                    self._log(
+                        f"{context}未检测到挂机高亮，已点击当前副本任务追踪 "
+                        f"{attempt}/{self.DUNGEON_HANGUP_MAX_CONSECUTIVE_FAILURES}"
+                    )
+                else:
+                    self._log(
+                        f"{context}未检测到挂机高亮，且当前任务追踪不可见；"
+                        f"等待复核 {attempt}/"
+                        f"{self.DUNGEON_HANGUP_MAX_CONSECUTIVE_FAILURES}"
+                    )
+                verification_pending = True
 
             remaining_ms = self._remaining_ms(deadline)
             if remaining_ms > 0:
-                self.wait(min(self.TASK_FLOW_RETRY_WAIT_MS, remaining_ms))
+                self.wait(min(self.DUNGEON_HANGUP_VERIFY_INTERVAL_MS, remaining_ms))
 
-        debug_path = self.save_debug_screenshot("rcfb_task_flow_timeout")
-        raise RuntimeError(f"日常副本任务执行流程超时，已保存截图：{debug_path}")
+        debug_path = self.save_debug_screenshot(timeout_screenshot_prefix)
+        raise RuntimeError(f"{context}执行超时，已保存截图：{debug_path}")
 
     @step(retry=0, timeout_ms=420000)
     def leave_team_after_completion(self) -> None:
@@ -272,6 +338,8 @@ class RCFBTask(YmGameTask):
 
             now = time.perf_counter()
             if now >= next_heartbeat_at:
+                if self.confirm_already_in_team():
+                    return
                 self._debug("日常副本匹配入队等待中...")
                 next_heartbeat_at = now + self.MATCH_WAIT_HEARTBEAT_MS / 1000.0
 
@@ -282,6 +350,9 @@ class RCFBTask(YmGameTask):
         if self.is_stopped():
             raise RuntimeError("日常副本匹配等待被停止")
 
+        if self.confirm_already_in_team():
+            return
+
         debug_path = self.save_debug_screenshot("rcfb_team_follow_timeout")
         cancelled = self.cancel_daily_match_after_timeout()
         cancel_result = "已取消匹配" if cancelled else "未能确认取消匹配"
@@ -289,6 +360,30 @@ class RCFBTask(YmGameTask):
             f"日常副本匹配 5 分钟未检测到入队跟随确认弹框，{cancel_result}；"
             f"已保存截图：{debug_path}"
         )
+
+    def confirm_already_in_team(self) -> bool:
+        """Confirm real team membership when the follow dialog never appears."""
+        panel_opened = False
+        try:
+            self.open_team_panel(timeout_ms=2500, wait_after_click_ms=800)
+            panel_opened = True
+            in_team = self.is_in_team()
+            if in_team:
+                self._log("检测到已处于队伍中，继续进入副本任务检测")
+            return in_team
+        except StepStopException:
+            raise
+        except Exception as exc:
+            self._log(f"队伍状态确认未完成，继续等待入队弹框：{exc}")
+            return False
+        finally:
+            if panel_opened:
+                try:
+                    self.close_all_panels(timeout_ms=2000)
+                except StepStopException:
+                    raise
+                except Exception as exc:
+                    self._log(f"队伍状态确认后关闭面板失败，继续后续检测：{exc}")
 
     def cancel_daily_match_after_timeout(self) -> bool:
         """Best-effort cancellation after the follow-dialog wait times out."""
@@ -354,6 +449,14 @@ class RCFBTask(YmGameTask):
             roi=self.scale_roi((900, 170, 110, 60)),
         )
 
+    def is_dungeon_hangup_active(self) -> bool:
+        """Return whether the complete top-left hangup tab is highlighted."""
+        return self.find_image_once(
+            self.TAB_DUNGEON_HANGUP_ACTIVE,
+            threshold=self.DUNGEON_HANGUP_ACTIVE_THRESHOLD,
+            roi=self.scale_roi(self.ROI_DUNGEON_HANGUP_ACTIVE),
+        )
+
     def is_dungeon_exit_visible(self) -> bool:
         """Return whether the top-right dungeon exit control is visible."""
         return self.find_image_once(
@@ -362,14 +465,26 @@ class RCFBTask(YmGameTask):
             roi=self.scale_roi(self.ROI_DUNGEON_EXIT),
         )
 
-    def click_current_dungeon_task_if_visible(self) -> bool:
+    def click_current_dungeon_task_if_visible(
+        self,
+        *,
+        wait_after_click_ms: int | None = None,
+    ) -> bool:
         """Click the visible tracker without opening, switching, or scrolling the sidebar."""
+        if wait_after_click_ms is not None and wait_after_click_ms < 0:
+            raise ValueError("任务追踪点击后等待时间不能小于 0")
         if not self.find_dungeon_task_candidate():
             return False
 
         self._log("点击当前任务栏副本任务")
         self.click(offset=0)
-        self.wait(self.DUNGEON_TRACKER_CLICK_INTERVAL_MS)
+        effective_wait_ms = (
+            self.DUNGEON_TRACKER_CLICK_INTERVAL_MS
+            if wait_after_click_ms is None
+            else wait_after_click_ms
+        )
+        if effective_wait_ms > 0:
+            self.wait(effective_wait_ms)
         return True
 
     def wait_for_dungeon_transfer_complete(self, *, timeout_ms: int) -> None:

@@ -14,6 +14,7 @@ from ymjh_bot.task.XSRW_task import (
     BountyPanelSnapshot,
     XSRWTask,
 )
+from ymjh_bot.ym_game_task import YmGameTask
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "ymjh" / "xsrw"
@@ -62,6 +63,7 @@ def test_xsrw_templates_are_packaged() -> None:
         XSRWTask.BTN_ACCEPT,
         XSRWTask.BTN_FORWARD,
         XSRWTask.TEXT_DEPOSIT_NOTICE,
+        XSRWTask.TEXT_DEPOSIT_NOTICE_PARTIAL,
         XSRWTask.TEXT_CATEGORY_JYPY,
         XSRWTask.TEXT_CATEGORY_JHJS,
         XSRWTask.TEXT_CHALLENGE_VICTORY,
@@ -203,6 +205,20 @@ def test_deposit_notice_template_matches_real_device_state() -> None:
 
     assert match.found
     assert match.score >= 0.99
+
+
+def test_partial_deposit_notice_matches_join_toast_occlusion() -> None:
+    match = VisionEngine().match_binary_template(
+        load_image("deposit_modal_join_toast.webp"),
+        XSRWTask.DEPOSIT_NOTICE_TEMPLATES,
+        mode="light_foreground",
+        threshold=XSRWTask.DEPOSIT_NOTICE_THRESHOLD,
+        roi=XSRWTask.ROI_DEPOSIT_NOTICE,
+    )
+
+    assert match.found
+    assert match.score >= 0.99
+    assert match.template_path == XSRWTask.TEXT_DEPOSIT_NOTICE_PARTIAL
 
 
 @pytest.mark.parametrize(
@@ -359,7 +375,7 @@ def test_accept_attempt_confirms_deposit_before_refresh(monkeypatch) -> None:
     card = make_card(0)
     before = make_snapshot(card)
     deposit = BountyPanelSnapshot(
-        screenshot=load_image("deposit_modal.webp"),
+        screenshot=load_image("deposit_modal_join_toast.webp"),
         visible=False,
         daily_complete=False,
     )
@@ -385,6 +401,90 @@ def test_accept_attempt_confirms_deposit_before_refresh(monkeypatch) -> None:
     assert refreshed is accepted
     assert taps == [card.action_center]
     assert clicks == [(855, 508, 0)]
+
+
+def test_deposit_resolver_does_not_click_unrelated_screen(monkeypatch) -> None:
+    task = XSRWTask()
+    task._vision = VisionEngine()
+    clicks: list[tuple[int, int, int]] = []
+    monkeypatch.setattr(
+        task,
+        "click_point",
+        lambda x, y, *, offset: clicks.append((x, y, offset)),
+    )
+
+    assert not task.resolve_bounty_deposit_modal_if_visible(
+        timeout_ms=0,
+        initial_screenshot=load_image("activity.webp"),
+    )
+    assert clicks == []
+
+
+def test_before_start_recovers_deposit_before_shared_startup(monkeypatch) -> None:
+    task = XSRWTask()
+    events: list[object] = []
+    monkeypatch.setattr(
+        task,
+        "resolve_bounty_deposit_modal_if_visible",
+        lambda **kwargs: events.append(("deposit", kwargs["timeout_ms"])) or True,
+    )
+    monkeypatch.setattr(YmGameTask, "before_start", lambda self: events.append("shared"))
+
+    task.before_start()
+
+    assert events == [("deposit", task.DEPOSIT_STARTUP_RECOVERY_MS), "shared"]
+
+
+def test_open_bounty_panel_recovers_deposit_before_activity_navigation(monkeypatch) -> None:
+    task = XSRWTask()
+    snapshot = make_snapshot()
+    events: list[str] = []
+    monkeypatch.setattr(
+        task,
+        "resolve_bounty_deposit_modal_if_visible",
+        lambda **kwargs: events.append("deposit") or True,
+    )
+    monkeypatch.setattr(
+        task,
+        "_wait_bounty_panel",
+        lambda **kwargs: events.append("wait-panel") or snapshot,
+    )
+    monkeypatch.setattr(
+        task,
+        "open_activity_panel",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("不应打开活动面板")),
+    )
+
+    assert task.open_bounty_panel(refresh=False) is snapshot
+    assert events == ["deposit", "wait-panel"]
+
+
+def test_refresh_recovers_deposit_before_reopening_activity(monkeypatch) -> None:
+    task = XSRWTask()
+    snapshot = make_snapshot()
+    refresh_match = ImageMatchResult(True, 0.99, (1000, 140), (980, 120, 1020, 160))
+    events: list[str] = []
+    monkeypatch.setattr(
+        task,
+        "resolve_bounty_deposit_modal_if_visible",
+        lambda **kwargs: events.append("deposit") or True,
+    )
+    monkeypatch.setattr(task, "_binary_match", lambda *args, **kwargs: refresh_match)
+    monkeypatch.setattr(task, "tap", lambda *args: events.append("refresh"))
+    monkeypatch.setattr(task, "wait", lambda wait_ms: None)
+    monkeypatch.setattr(
+        task,
+        "_wait_bounty_panel",
+        lambda **kwargs: events.append("wait-panel") or snapshot,
+    )
+    monkeypatch.setattr(
+        task,
+        "open_bounty_panel",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("不应重新打开活动面板")),
+    )
+
+    assert task.refresh_bounty_panel() is snapshot
+    assert events == ["deposit", "wait-panel", "refresh", "wait-panel"]
 
 
 def test_round_skips_low_reward_then_accepts_eligible_card(monkeypatch) -> None:
@@ -670,34 +770,33 @@ def test_daily_bounty_solo_exit_uses_right_side_action(monkeypatch) -> None:
     assert transfer_waits == [60000]
 
 
-def test_daily_bounty_flow_tolerates_hidden_tracker_during_battle(monkeypatch) -> None:
+def test_daily_bounty_flow_reuses_shared_hangup_monitor(monkeypatch) -> None:
     task = XSRWTask()
-    transfer_states = iter((False, False, True))
-    tracker_states = iter((False, True))
-    waits: list[int] = []
+    monitor_kwargs: list[dict] = []
 
     class FakeDailyDelegate:
         TASK_FLOW_TIMEOUT_MS = 1800000
-        TASK_FLOW_RETRY_WAIT_MS = 5000
 
         @staticmethod
         def is_stopped() -> bool:
             return False
 
         @staticmethod
-        def is_dungeon_transfer_out_visible() -> bool:
-            return next(transfer_states)
+        def monitor_dungeon_hangup_flow(**kwargs) -> None:
+            monitor_kwargs.append(kwargs)
 
-        @staticmethod
-        def click_current_dungeon_task_if_visible() -> bool:
-            return next(tracker_states)
-
-    monkeypatch.setattr(task, "wait", waits.append)
-    monkeypatch.setattr(task, "_log", lambda *args: None)
+    monkeypatch.setattr(task, "is_stopped", lambda: False)
 
     task.run_daily_bounty_raid_flow(FakeDailyDelegate())  # type: ignore[arg-type]
 
-    assert waits == [5000]
+    assert monitor_kwargs == [
+        {
+            "timeout_ms": 1800000,
+            "context": "江湖纪事悬赏副本",
+            "hangup_failure_screenshot_prefix": "xsrw_daily_hangup_state_failed",
+            "timeout_screenshot_prefix": "xsrw_daily_raid_timeout",
+        }
+    ]
 
 
 def test_stop_propagates_to_active_delegate() -> None:

@@ -3,10 +3,39 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any, Protocol
 
-from botCore import ADBClient, VisionEngine, RunLogger, ExecutionResult, GameTask
+from botCore import (
+    ADBClient,
+    ExecutionResult,
+    GameTask,
+    RunLogger,
+    StepStopException,
+    VisionEngine,
+)
 from botCore.execution import DslStepExecutor, resolve_step_jump
+
+
+class RoleSwitcher(Protocol):
+    """Minimal navigation interface required by a multi-role queue."""
+
+    _screen_resolution: tuple[int, int] | None
+
+    def setup(
+        self,
+        adb: ADBClient,
+        vision: VisionEngine,
+        logger: RunLogger | None = None,
+        event_callback: Callable[[str], None] | None = None,
+        verbose: bool = False,
+    ) -> None: ...
+
+    def switch_to_role(self, role_index: int) -> None: ...
+
+    def stop(self) -> None: ...
+
+    def reset_stop(self) -> None: ...
 
 
 class TaskQueueRunner:
@@ -21,7 +50,6 @@ class TaskQueueRunner:
     """
 
     MAX_TASK_ATTEMPTS = 3
-
     def __init__(
         self,
         task_list: list[GameTask],
@@ -32,7 +60,21 @@ class TaskQueueRunner:
         event_callback: Callable[[str], None] | None = None,
         progress_callback: Callable[[dict[str, int]], None] | None = None,
         verbose: bool = False,
+        role_indices: list[int] | None = None,
+        task_factory: Callable[[], list[GameTask]] | None = None,
+        role_switcher: RoleSwitcher | None = None,
     ):
+        if role_indices is not None:
+            role_indices = sorted({int(role_index) for role_index in role_indices})
+            if not role_indices:
+                raise ValueError("role_indices cannot be empty")
+            if role_indices[0] < 0:
+                raise ValueError("role indices cannot be negative")
+            if role_switcher is None:
+                raise ValueError("explicit role queues require role_switcher")
+            if len(role_indices) > 1 and task_factory is None:
+                raise ValueError("multi-role queues require task_factory")
+
         self.task_list = task_list
         self.adb = adb_client
         self.vision = vision
@@ -40,14 +82,20 @@ class TaskQueueRunner:
         self.event_callback = event_callback
         self.progress_callback = progress_callback
         self.verbose = verbose
+        self.role_indices = role_indices
+        self.total_roles = len(role_indices) if role_indices is not None else 1
+        self.task_factory = task_factory
+        self.role_switcher = role_switcher
         self._stop_requested = False
         self._paused = False
 
         # 进度跟踪
+        self.current_role_index = 0
         self.current_task_index = 0
         self.current_step_index = 0
         self.total_tasks = len(task_list)
         self._started_task_index: int | None = None
+        self._prepared_role_index: int | None = None
         self._last_failure_message: str | None = None
         self._executor = DslStepExecutor(
             should_stop=lambda: self._stop_requested or self._paused,
@@ -59,6 +107,8 @@ class TaskQueueRunner:
         self._stop_requested = True
         for task in self.task_list:
             task.stop()
+        if self.role_switcher is not None:
+            self.role_switcher.stop()
         self._emit_progress()
 
     def pause(self) -> None:
@@ -67,6 +117,8 @@ class TaskQueueRunner:
         # 只设置当前正在执行的任务为停止状态（如果有的话）
         if 0 <= self.current_task_index < len(self.task_list):
             self.task_list[self.current_task_index].stop()
+        if self.role_switcher is not None:
+            self.role_switcher.stop()
         self._emit_progress()
 
     def resume(self) -> None:
@@ -75,6 +127,8 @@ class TaskQueueRunner:
         # 重置当前任务的停止状态，以便继续执行
         if 0 <= self.current_task_index < len(self.task_list):
             self.task_list[self.current_task_index]._stop_requested = False
+        if self.role_switcher is not None:
+            self.role_switcher.reset_stop()
 
     def is_paused(self) -> bool:
         """检查是否暂停。"""
@@ -83,6 +137,7 @@ class TaskQueueRunner:
     def get_progress(self) -> dict[str, int]:
         """Return a serializable snapshot of the current queue position."""
         return {
+            "current_role_index": self.current_role_index,
             "current_task_index": self.current_task_index,
             "current_step_index": self.current_step_index,
         }
@@ -90,6 +145,7 @@ class TaskQueueRunner:
     def load_progress(self, progress: dict[str, Any] | None) -> None:
         """Restore queue position from a saved progress dictionary."""
         if not progress:
+            self.current_role_index = 0
             self.current_task_index = 0
             self.current_step_index = 0
             self._started_task_index = None
@@ -97,12 +153,18 @@ class TaskQueueRunner:
             return
 
         try:
+            role_index = int(progress.get("current_role_index", 0))
             task_index = int(progress.get("current_task_index", 0))
             step_index = int(progress.get("current_step_index", 0))
         except (TypeError, ValueError):
+            role_index = 0
             task_index = 0
             step_index = 0
 
+        role_index = max(0, min(role_index, self.total_roles))
+        if role_index >= self.total_roles:
+            task_index = 0
+            step_index = 0
         task_index = max(0, min(task_index, self.total_tasks))
         if task_index >= self.total_tasks:
             step_index = 0
@@ -113,9 +175,11 @@ class TaskQueueRunner:
             else:
                 step_index = max(0, min(step_index, step_count - 1))
 
+        self.current_role_index = role_index
         self.current_task_index = task_index
         self.current_step_index = step_index
         self._started_task_index = None
+        self._prepared_role_index = None
         self._emit_progress()
 
     def run(self) -> list[ExecutionResult]:
@@ -127,6 +191,8 @@ class TaskQueueRunner:
         self._stop_requested = False
         self._paused = False
         self._last_failure_message = None
+        if self.role_switcher is not None:
+            self.role_switcher.reset_stop()
         self._emit_progress()
         self.adb.ensure_device()
 
@@ -144,57 +210,153 @@ class TaskQueueRunner:
 
         all_results: list[ExecutionResult] = []
 
-        while self.current_task_index < self.total_tasks:
-            # 检查停止请求
-            if self._stop_requested:
-                self._emit("任务队列已停止")
-                break
-
-            # 检查暂停
-            while self._paused:
-                if self._stop_requested:
-                    break
-                time.sleep(0.1)
-            if self._stop_requested:
-                break
-
-            task = self.task_list[self.current_task_index]
-
-            # 设置任务运行时依赖
-            task._screen_resolution = getattr(task, "FIXED_RESOLUTION", task.design_resolution)
-            task.setup(
-                self.adb,
-                self.vision,
-                self.logger,
-                self.event_callback,
-                verbose=self.verbose,
+        if self.role_indices is not None:
+            role_queue = " → ".join(
+                str(role_index + 1) for role_index in self.role_indices
             )
+            self._emit(f"本次账号角色队列：{role_queue}")
+            if self.total_roles == 1:
+                self._emit(
+                    f"本次仅执行角色 {self.role_indices[0] + 1}，"
+                    "完成后不会切换到其他角色"
+                )
 
-            # 执行当前任务，失败时从头重试，最多执行 MAX_TASK_ATTEMPTS 次。
-            task_results, task_completed = self._run_task_with_retries(task)
-            all_results.extend(task_results)
-
+        while self.current_role_index < self.total_roles:
+            self._wait_until_resumed_or_stopped()
             if self._stop_requested:
                 break
-            if self._paused:
+
+            role_needs_preparation = (
+                self.role_indices is not None
+                and self._prepared_role_index != self.current_role_index
+            )
+            if role_needs_preparation and not self._prepare_current_role(screen_size):
                 continue
 
-            if not task_completed:
-                self._emit("当前任务已跳过，继续执行下一个任务")
+            if self.role_indices is not None:
+                self._emit(
+                    f"=== 开始角色 {self._current_role_number()} 的任务图"
+                    f"（{self.current_role_index + 1}/{self.total_roles}） ==="
+                )
 
-            # 任务完成后，更新索引
-            self.current_task_index += 1
+            while self.current_task_index < self.total_tasks:
+                if self._stop_requested:
+                    break
+
+                self._wait_until_resumed_or_stopped()
+                if self._stop_requested:
+                    break
+
+                task = self.task_list[self.current_task_index]
+
+                # 设置任务运行时依赖
+                task._screen_resolution = getattr(task, "FIXED_RESOLUTION", task.design_resolution)
+                task.setup(
+                    self.adb,
+                    self.vision,
+                    self.logger,
+                    self.event_callback,
+                    verbose=self.verbose,
+                )
+
+                # 执行当前任务，失败时从头重试，最多执行 MAX_TASK_ATTEMPTS 次。
+                task_results, task_completed = self._run_task_with_retries(task)
+                all_results.extend(task_results)
+
+                if self._stop_requested:
+                    break
+                if self._paused:
+                    continue
+
+                if not task_completed:
+                    self._emit("当前任务已跳过，继续执行下一个任务")
+
+                # 任务完成后，更新索引
+                self.current_task_index += 1
+                self.current_step_index = 0
+                self._started_task_index = None
+                self._emit_progress()
+
+            if self._stop_requested:
+                break
+            if self.current_task_index < self.total_tasks:
+                continue
+
+            if self.role_indices is not None:
+                self._emit(
+                    f"角色 {self._current_role_number()} 的任务图执行完成"
+                    f"（{self.current_role_index + 1}/{self.total_roles}）"
+                )
+            self.current_role_index += 1
+            self.current_task_index = 0
             self.current_step_index = 0
             self._started_task_index = None
+            self._prepared_role_index = None
             self._emit_progress()
+            if self.current_role_index < self.total_roles:
+                self._load_fresh_task_list()
 
         # 所有任务完成后
         if self._stop_requested:
-            self._emit(f"任务队列已停止，完成 {self.current_task_index}/{self.total_tasks} 个任务")
+            self._emit(
+                f"任务队列已停止，停在角色 {self._current_role_number()}"
+                f"（{self.current_role_index + 1}/{self.total_roles}），"
+                f"完成 {self.current_task_index}/{self.total_tasks} 个任务"
+            )
+        elif self.role_indices is not None:
+            self._emit(f"全部 {self.total_roles} 个角色的任务队列执行完成")
         else:
             self._emit("任务队列执行完成")
 
         return all_results
+
+    def _prepare_current_role(self, screen_size: tuple[int, int]) -> bool:
+        """Select the persisted role before starting or resuming its task graph."""
+        if self.role_switcher is None:
+            return True
+        self.role_switcher._screen_resolution = screen_size
+        self.role_switcher.setup(
+            self.adb,
+            self.vision,
+            self.logger,
+            self.event_callback,
+            verbose=self.verbose,
+        )
+        self.role_switcher.reset_stop()
+        try:
+            self.role_switcher.switch_to_role(self._current_role_actual_index())
+        except StepStopException:
+            if self._stop_requested:
+                return False
+            if self._paused:
+                self._wait_until_resumed_or_stopped()
+                return False
+            raise
+        self._prepared_role_index = self.current_role_index
+        self._emit_progress()
+        return True
+
+    def _current_role_actual_index(self) -> int:
+        """Return the actual zero-based account-role index for the queue cursor."""
+        if self.role_indices is None:
+            return self.current_role_index
+        if not 0 <= self.current_role_index < len(self.role_indices):
+            raise RuntimeError("当前角色进度超出已勾选角色范围")
+        return self.role_indices[self.current_role_index]
+
+    def _current_role_number(self) -> int:
+        """Return the user-facing one-based account-role number."""
+        return self._current_role_actual_index() + 1
+
+    def _load_fresh_task_list(self) -> None:
+        """Create clean task objects before the next account role starts."""
+        if self.task_factory is None:
+            raise RuntimeError("缺少多角色任务实例工厂")
+        task_list = self.task_factory()
+        if not task_list:
+            raise RuntimeError("下一个角色没有可执行任务")
+        self.task_list = task_list
+        self.total_tasks = len(task_list)
 
     def _run_task_with_retries(self, task: GameTask) -> tuple[list[ExecutionResult], bool]:
         """执行当前任务，失败时在当前进程内从头重试。"""

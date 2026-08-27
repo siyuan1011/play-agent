@@ -38,10 +38,16 @@ class KYRWTask(YmGameTask):
     TEXT_KEYE_PREFIX = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_keye.png")
     TEXT_ZHISHA_PREFIX = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_zhisha.png")
     TEXT_ZHUOJIAN_PREFIX = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_zhuojian.png")
+    TEXT_LIEXUE_PREFIX = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_liexue.png")
+    TEXT_XUNDAO_PREFIX = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_xundao.png")
+    TEXT_DUANXIN_PREFIX = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_duanxin.png")
     KEYE_SIDEBAR_TEMPLATES = [
         TEXT_KEYE_PREFIX,
         TEXT_ZHISHA_PREFIX,
         TEXT_ZHUOJIAN_PREFIX,
+        TEXT_LIEXUE_PREFIX,
+        TEXT_XUNDAO_PREFIX,
+        TEXT_DUANXIN_PREFIX,
     ]
     TEXT_EXISTING_KEYE_TOAST = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_existing_keye_toast.png")
     TEXT_KEYE_COMPLETE = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_complete.png")

@@ -61,15 +61,10 @@ class JianghuYingxiongbangTask(YmGameTask):
     FIRST_BATTLE_REWARD_STATE_INITIAL = "initial"
     FIRST_BATTLE_REWARD_STATE_UNKNOWN = "unknown"
 
-    @step(retry=3, timeout_ms=30000)
-    def open_fenzheng_activity(self) -> None:
-        """打开活动界面并切换到纷争页签。"""
-        self.open_fenzheng_activity_panel()
-
-    @step(retry=3, timeout_ms=30000)
+    @step(retry=0, timeout_ms=60000)
     def open_jhyxb_panel(self) -> None:
-        """点击江湖英雄榜入口，打开英雄榜面板。"""
-        self.open_jhyxb_from_activity()
+        """通过活动-纷争打开江湖英雄榜面板。"""
+        self._open_jhyxb_panel_via_activity()
 
     @step(retry=0, timeout_ms=None)
     def use_all_challenges(self) -> None:
@@ -123,16 +118,14 @@ class JianghuYingxiongbangTask(YmGameTask):
         debug_path = self.save_debug_screenshot("jhyxb_first_battle_reward_claim_failed")
         raise RuntimeError(f"江湖英雄榜首战宝箱领取后未确认已领取状态，已保存截图：{debug_path}")
 
-    def open_fenzheng_activity_panel(self) -> None:
-        """Open the activity panel and switch to the Fen Zheng tab."""
+    def _open_jhyxb_panel_via_activity(self) -> None:
+        """Open Jianghu Yingxiongbang through a verified Activity - Fen Zheng panel."""
         self.open_activity_panel(
             "纷争",
             wait_after_open_ms=2500,
             wait_after_category_ms=1500,
         )
 
-    def open_jhyxb_from_activity(self) -> None:
-        """Click the Jianghu Yingxiongbang entry from Activity - Fen Zheng."""
         if not self.wait_find_image_in_roi(
             self.BTN_JHYXB_ACTIVITY_OPEN,
             (720, 500, 240, 120),
@@ -140,14 +133,16 @@ class JianghuYingxiongbangTask(YmGameTask):
             description="活动页江湖英雄榜打开按钮",
             threshold=0.85,
         ):
-            raise RuntimeError("未找到活动页江湖英雄榜打开按钮")
+            debug_path = self.save_debug_screenshot("jhyxb_activity_open_missing")
+            raise RuntimeError(f"活动-纷争未找到江湖英雄榜打开按钮，已保存截图：{debug_path}")
 
         self._log("点击活动页江湖英雄榜打开按钮")
         self.click(offset=0)
         self.wait(2000)
 
         if not self.ensure_jhyxb_panel_visible(timeout_ms=5000):
-            raise RuntimeError("未进入江湖英雄榜面板")
+            debug_path = self.save_debug_screenshot("jhyxb_panel_open_failed")
+            raise RuntimeError(f"未进入江湖英雄榜面板，已保存截图：{debug_path}")
 
     def ensure_jhyxb_panel_ready(self, *, timeout_ms: int) -> None:
         """Ensure the Jianghu Yingxiongbang panel is visible, reopening it if needed."""
@@ -156,8 +151,7 @@ class JianghuYingxiongbangTask(YmGameTask):
 
         self._log("江湖英雄榜面板不可见，尝试从主界面重新打开")
         self.close_all_panels(timeout_ms=1500, max_attempts=6)
-        self.open_fenzheng_activity_panel()
-        self.open_jhyxb_from_activity()
+        self._open_jhyxb_panel_via_activity()
 
     def close_purchase_dialog_if_needed(self) -> bool:
         """Close the extra challenge purchase dialog without hitting the panel close button behind it."""

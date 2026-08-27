@@ -88,6 +88,7 @@ class YmGameTask(GameTask):
     BTN_QUICK_MENU_FLOWER_NEW = str(TEMPLATES_DIR / "btn_quick_menu_flower_new.png")
     BTN_ESCAPE_STUCK = str(TEMPLATES_DIR / "btn_escape_stuck.png")
     BTN_WELCOME_CLOSE = str(TEMPLATES_DIR / "btn_welcome_close.png")
+    BTN_JIANGHU_HUASHI_CLOSE = str(TEMPLATES_DIR / "btn_jianghu_huashi_close.png")
     BTN_ROLE_CONFIRM = str(TEMPLATES_DIR / "btn_role_confirm.png")
     BTN_HD = str(TEMPLATES_DIR / "btn_HD.png")
     BTN_JRYX = str(TEMPLATES_DIR / "btn_JRYX.png")
@@ -109,6 +110,13 @@ class YmGameTask(GameTask):
     TEXT_SCENE_LOADING_LOGO2 = str(TEMPLATES_DIR / "text_scene_loading_logo2.png")
     SCENE_LOADING_LOGO_TEMPLATES = [TEXT_SCENE_LOADING_LOGO1, TEXT_SCENE_LOADING_LOGO2]
     TEXT_POWER_SAVING = str(TEMPLATES_DIR / "text_power_saving.png")
+    TEXT_JIANGHU_CALENDAR = str(TEMPLATES_DIR / "text_jianghu_calendar.png")
+    GENERAL_CLOSE_TEMPLATES = [
+        BTN_CLOSE,
+        BTN_PANE_CLOSE,
+        BTN_WELCOME_CLOSE,
+        BTN_JIANGHU_HUASHI_CLOSE,
+    ]
     ACTIVITY_TAB_JIANGHU_ACTIVE = str(TEMPLATES_DIR / "activity_tab_jianghu_active.png")
     ACTIVITY_TAB_BANGPAI_ACTIVE = str(TEMPLATES_DIR / "activity_tab_bangpai_active.png")
     ACTIVITY_TAB_FENZHENG_ACTIVE = str(TEMPLATES_DIR / "activity_tab_fenzheng_active.png")
@@ -148,7 +156,6 @@ class YmGameTask(GameTask):
     POINT_HUODONG_YOULI = (756, 680)
     POINT_HUODONG_SHEJIAO = (882, 680)
     POINT_MAIN_TEAM = (22, 276)
-    POINT_MAIN_TEAM_WHEN_TASK_PANEL_OPEN = (22, 420)
     POINT_MINIMAP = (1260, 90)
     POINT_SAFE_POINT_FALLBACK = (535, 35)
     POINT_TEAM_QUICK_BOTTOM = (1106, 663)
@@ -164,6 +171,9 @@ class YmGameTask(GameTask):
     POINT_DIRECTION_JOYSTICK_CENTER = (105, 455)
     POINT_BATTLE_NORMAL_ATTACK = (1135, 553)
     POINT_RIGHT_JOYSTICK_CENTER = POINT_BATTLE_NORMAL_ATTACK
+    # The clickable entry is the vertical "本页奖励" tab.  The reward item at
+    # x=360 opens an item tooltip instead of dismissing the right-side detail.
+    POINT_JIANGHU_CALENDAR_PAGE_REWARD = (322, 568)
     POINT_BATTLE_SKILL_BUTTONS = (
         (1118, 389),
         (1022, 449),
@@ -183,6 +193,8 @@ class YmGameTask(GameTask):
     ROI_EMOTION_PANEL = (250, 480, 730, 240)
     ROI_CHAT_SEND_BUTTON = (500, 640, 160, 80)
     ROI_POWER_SAVING = (480, 470, 340, 140)
+    ROI_JIANGHU_CALENDAR_MARKER = (100, 60, 130, 390)
+    ROI_JIANGHU_CALENDAR_CLOSE = (1080, 0, 200, 130)
     ROI_CENTER_MODAL_OK = (730, 440, 250, 120)
     ROI_ACTIVITY_CATEGORY_TABS = (40, 630, 930, 90)
     ROI_QUICK_MENU_BUTTON = (0, 600, 120, 120)
@@ -227,7 +239,9 @@ class YmGameTask(GameTask):
     HEALTH_UNRECOGNIZED_LOG_INTERVAL = 5
     HEALTH_RED_MIN_VALUE = 120
     HEALTH_RED_MIN_DELTA = 45
-    EMOTION_MEDITATE_THRESHOLD = 0.90
+    EMOTION_MEDITATE_THRESHOLD = 0.88
+    EMOTION_PANEL_COLLAPSE_WAIT_MS = 500
+    TEAM_PANEL_OPEN_ATTEMPTS = 2
     ESCAPE_STUCK_MENU_THRESHOLD = 0.80
     ESCAPE_STUCK_ITEM_THRESHOLD = 0.80
     ESCAPE_STUCK_CONFIRM_THRESHOLD = 0.95
@@ -343,6 +357,8 @@ class YmGameTask(GameTask):
     LOGIN_STATE_ROLE = "role"
     LOGIN_STATE_POPUP = "popup"
     LOGIN_STATE_MAIN = "main"
+    LOGIN_STATE_LOADING = "loading"
+    LOGIN_STATE_DIRTY_MAIN = "dirty_main"
 
     LOGIN_TOTAL_TIMEOUT_MS = 300000
     LOGIN_LOADING_TIMEOUT_MS = 120000
@@ -350,6 +366,10 @@ class YmGameTask(GameTask):
     LOGIN_POLL_INTERVAL_MS = 500
     LOGIN_WAIT_AFTER_CLICK_MS = 1500
     LOGIN_WAIT_AFTER_CLOSE_MS = 800
+    LOGIN_UNKNOWN_CLEANUP_INTERVAL_MS = 5000
+    LOGIN_UNKNOWN_CLEANUP_TIMEOUT_MS = 1000
+    JIANGHU_CALENDAR_MARKER_THRESHOLD = 0.75
+    JIANGHU_CALENDAR_REWARD_WAIT_MS = 600
     ACTIVITY_ENTRY_CLICK_UP_OFFSET = 10
 
     WALK_DIRECTIONS = {
@@ -573,6 +593,39 @@ class YmGameTask(GameTask):
         self.wait(wait_after_click_ms)
         return True
 
+    def is_emotion_panel_open(self) -> bool:
+        """Return whether the main-scene emotion panel is visible."""
+        return self.find_image_once(
+            self.BTN_EMOTION_MEDITATE,
+            threshold=self.EMOTION_MEDITATE_THRESHOLD,
+            roi=self.scale_roi(self.ROI_EMOTION_PANEL),
+        )
+
+    def collapse_emotion_panel_if_open(
+        self,
+        *,
+        wait_after_click_ms: int | None = None,
+        assume_open: bool = False,
+    ) -> bool:
+        """Collapse a visible emotion panel without triggering another expression."""
+        if not assume_open and not self.is_emotion_panel_open():
+            return False
+
+        self._log("检测到表情面板展开，点击收起")
+        self.click_point(
+            self.POINT_EMOTION_COLLAPSE[0],
+            self.POINT_EMOTION_COLLAPSE[1],
+            offset=0,
+        )
+        effective_wait_ms = (
+            self.EMOTION_PANEL_COLLAPSE_WAIT_MS
+            if wait_after_click_ms is None
+            else wait_after_click_ms
+        )
+        if effective_wait_ms > 0:
+            self.wait(effective_wait_ms)
+        return True
+
     def click_point(self, x: int, y: int, offset: int = 3) -> None:
         """Tap a fixed 1280x720 coordinate without runtime resolution scaling."""
         if offset > 0:
@@ -715,6 +768,7 @@ class YmGameTask(GameTask):
             return
 
         self._recovering_health = True
+        emotion_panel_opened = False
         meditation_started = False
         health_full = False
         try:
@@ -723,6 +777,7 @@ class YmGameTask(GameTask):
             else:
                 self._log(f"检测到血量较低：{health_ratio:.1%}，开始打坐恢复")
             self.click(0)
+            emotion_panel_opened = True
             self.wait(800)
             self.click_point(self.POINT_EMOTION_SINGLE_TAB[0], self.POINT_EMOTION_SINGLE_TAB[1], offset=0)
             self.wait(800)
@@ -744,15 +799,11 @@ class YmGameTask(GameTask):
             health_full = True
         finally:
             try:
-                if meditation_started:
-                    try:
-                        self.click_point(
-                            self.POINT_EMOTION_COLLAPSE[0],
-                            self.POINT_EMOTION_COLLAPSE[1],
-                            offset=0,
-                        )
-                        self.wait(500)
-                    finally:
+                try:
+                    if emotion_panel_opened:
+                        self.collapse_emotion_panel_if_open(assume_open=True)
+                finally:
+                    if meditation_started:
                         self.click_point(
                             self.POINT_LIGHTNESS[0],
                             self.POINT_LIGHTNESS[1],
@@ -898,6 +949,14 @@ class YmGameTask(GameTask):
                 self._log("检测到游戏已在前台，跳过启动")
                 return
 
+            if state is None or state.name == self.LOGIN_STATE_DIRTY_MAIN:
+                self._log("检测到游戏前台存在未清理界面，先执行弹框清理")
+                self.close_all_panels(timeout_ms=self.LOGIN_UNKNOWN_CLEANUP_TIMEOUT_MS)
+                state = self.detect_login_state(include_modal_controls=True)
+                if state and state.name == self.LOGIN_STATE_MAIN:
+                    self._log("前台界面清理完成，跳过登录流程")
+                    return
+
             if state is None and not woke_from_power_saving:
                 self.wake_foreground_screen_once()
                 if self.is_game_main_ready():
@@ -921,24 +980,57 @@ class YmGameTask(GameTask):
         """Enter the game main scene from the launcher/login screens."""
         self._log("进入游戏主界面")
         deadline = self._make_deadline(self.LOGIN_TOTAL_TIMEOUT_MS)
-        loading_started_at: float | None = None
+        unrecognized_started_at: float | None = None
+        next_unknown_cleanup_at = 0.0
         last_state_name: str | None = None
 
         while not self._is_deadline_expired(deadline):
             state = self.detect_login_state(include_modal_controls=True)
             if state is None:
-                if loading_started_at is None:
-                    loading_started_at = time.perf_counter()
-                    self._log("等待登录流程加载...")
-                elif self._elapsed_ms(loading_started_at) > self.LOGIN_LOADING_TIMEOUT_MS:
-                    raise RuntimeError("登录流程超时：长时间未识别到可操作界面")
+                now = time.perf_counter()
+                if unrecognized_started_at is None:
+                    unrecognized_started_at = now
+                    next_unknown_cleanup_at = now
+                    self._log("前台画面未识别，尝试省电唤醒和弹框清理")
+                elif self._elapsed_ms(unrecognized_started_at) > self.LOGIN_LOADING_TIMEOUT_MS:
+                    debug_path = self.save_debug_screenshot("login_unknown_scene_timeout")
+                    raise RuntimeError(
+                        "登录流程超时：长时间未识别到可操作界面，"
+                        f"已保存截图：{debug_path}"
+                    )
+
+                if now >= next_unknown_cleanup_at:
+                    self.wake_from_power_saving_if_needed()
+                    self.close_all_panels(timeout_ms=self.LOGIN_UNKNOWN_CLEANUP_TIMEOUT_MS)
+                    next_unknown_cleanup_at = (
+                        time.perf_counter()
+                        + self.LOGIN_UNKNOWN_CLEANUP_INTERVAL_MS / 1000.0
+                    )
                 self.wait(self.LOGIN_POLL_INTERVAL_MS)
                 continue
 
-            loading_started_at = None
+            unrecognized_started_at = None
+            next_unknown_cleanup_at = 0.0
+            if state.name == self.LOGIN_STATE_LOADING:
+                if state.name != last_state_name:
+                    self._log("等待登录流程加载...")
+                    last_state_name = state.name
+                self.wait(self.LOGIN_POLL_INTERVAL_MS)
+                continue
+
             if state.name != last_state_name:
                 self._log(f"登录状态：{state.description}")
                 last_state_name = state.name
+
+            if state.name == self.LOGIN_STATE_DIRTY_MAIN:
+                self._log("检测到不干净主界面，执行弹框清理")
+                cleanup_timeout = min(
+                    self.LOGIN_UNKNOWN_CLEANUP_TIMEOUT_MS,
+                    self._remaining_ms(deadline),
+                )
+                self.close_all_panels(timeout_ms=cleanup_timeout)
+                last_state_name = None
+                continue
 
             if state.name == self.LOGIN_STATE_NOTICE:
                 self.tap()
@@ -989,6 +1081,24 @@ class YmGameTask(GameTask):
     ) -> LoginState | None:
         """Detect the current login-flow state from a single screenshot."""
         screenshot = self.screenshot()
+
+        calendar_match = self._vision.match_template(
+            screenshot,
+            self.TEXT_JIANGHU_CALENDAR,
+            threshold=self.JIANGHU_CALENDAR_MARKER_THRESHOLD,
+            roi=self.scale_roi(self.ROI_JIANGHU_CALENDAR_MARKER),
+        )
+        if calendar_match.found and calendar_match.center:
+            self._last_match_score = calendar_match.score
+            self._last_match_center = calendar_match.center
+            return LoginState(
+                name=self.LOGIN_STATE_DIRTY_MAIN,
+                description="不干净主界面 - 江湖日历",
+                score=calendar_match.score,
+                center=calendar_match.center,
+                template_path=calendar_match.template_path,
+            )
+
         for state_name, description, templates in self._login_state_targets(include_modal_controls):
             match = self._vision.match_template(screenshot, templates, threshold=threshold)
             self._last_match_score = match.score
@@ -1001,6 +1111,23 @@ class YmGameTask(GameTask):
                 score=match.score,
                 center=match.center,
                 template_path=match.template_path,
+            )
+
+        loading_match = self._vision.match_template(
+            screenshot,
+            self.SCENE_LOADING_LOGO_TEMPLATES,
+            threshold=self.SCENE_LOADING_THRESHOLD,
+            roi=self.scale_roi(self.ROI_SCENE_LOADING_LOGO),
+        )
+        self._last_match_score = loading_match.score
+        if loading_match.found:
+            self._last_match_center = loading_match.center
+            return LoginState(
+                name=self.LOGIN_STATE_LOADING,
+                description="登录流程加载",
+                score=loading_match.score,
+                center=loading_match.center,
+                template_path=loading_match.template_path,
             )
 
         self._last_match_center = None
@@ -1056,7 +1183,7 @@ class YmGameTask(GameTask):
         )
 
     def _startup_close_targets(self, include_modal_controls: bool) -> list[str]:
-        targets = [self.BTN_CLOSE, self.BTN_PANE_CLOSE, self.BTN_WELCOME_CLOSE]
+        targets = list(self.GENERAL_CLOSE_TEMPLATES)
         if include_modal_controls:
             targets.extend([self.BTN_MODAL_OK, self.BTN_OK])
         return targets
@@ -1095,8 +1222,8 @@ class YmGameTask(GameTask):
         max_attempts: int | None = None,
     ) -> None:
         """Close stacked panels by trying and verifying every visible close candidate."""
-        targets = templates or [self.BTN_CLOSE, self.BTN_PANE_CLOSE, self.BTN_WELCOME_CLOSE]
-        targets = [targets] if isinstance(targets, str) else targets
+        targets = templates or list(self.GENERAL_CLOSE_TEMPLATES)
+        targets = [targets] if isinstance(targets, str) else list(targets)
         effective_max_attempts = max_attempts
         if effective_max_attempts is None:
             effective_max_attempts = getattr(self, "CLOSE_ALL_MAX_ATTEMPTS", None)
@@ -1110,8 +1237,12 @@ class YmGameTask(GameTask):
         attempts = 0
         consecutive_no_change = 0
         tried_centers: list[tuple[int, int]] = []
+
+        self._prepare_jianghu_calendar_close()
+
         self._log(f"开始关闭可识别弹窗，最多尝试 {effective_max_attempts} 次")
         self.collapse_chat_if_open()
+        self.collapse_emotion_panel_if_open()
 
         current_image, current_candidates = self._wait_for_initial_close_candidates(
             targets,
@@ -1119,6 +1250,7 @@ class YmGameTask(GameTask):
         )
         if not current_candidates:
             self.collapse_chat_if_open()
+            self.collapse_emotion_panel_if_open()
             self._log("已关闭所有弹窗")
             return
 
@@ -1131,6 +1263,7 @@ class YmGameTask(GameTask):
                 confirm_image, confirm_candidates = self._capture_close_candidates(targets)
                 if not confirm_candidates:
                     self.collapse_chat_if_open()
+                    self.collapse_emotion_panel_if_open()
                     self._log("已关闭所有弹窗")
                     return
                 current_image = confirm_image
@@ -1221,6 +1354,48 @@ class YmGameTask(GameTask):
 
             current_image = next_image
             current_candidates = next_candidates
+
+    def _prepare_jianghu_calendar_close(self) -> None:
+        """Dismiss the calendar detail card once, then require a general close icon."""
+        screenshot = self.screenshot()
+        calendar_match = self._vision.match_template(
+            screenshot,
+            self.TEXT_JIANGHU_CALENDAR,
+            threshold=self.JIANGHU_CALENDAR_MARKER_THRESHOLD,
+            roi=self.scale_roi(self.ROI_JIANGHU_CALENDAR_MARKER),
+        )
+        if not calendar_match.found:
+            return
+
+        self._log(
+            "检测到江湖日历，先点击一次“本页奖励”四字入口关闭详情遮挡"
+        )
+        self.click_point(
+            self.POINT_JIANGHU_CALENDAR_PAGE_REWARD[0],
+            self.POINT_JIANGHU_CALENDAR_PAGE_REWARD[1],
+            offset=0,
+        )
+        self.wait(self.JIANGHU_CALENDAR_REWARD_WAIT_MS)
+
+        screenshot = self.screenshot()
+        close_match = self._vision.match_template(
+            screenshot,
+            self.GENERAL_CLOSE_TEMPLATES,
+            threshold=self.CLOSE_MATCH_THRESHOLD,
+            roi=self.scale_roi(self.ROI_JIANGHU_CALENDAR_CLOSE),
+        )
+        self._last_match_score = close_match.score
+        self._last_match_center = close_match.center if close_match.found else None
+        if not close_match.found:
+            debug_path = self.save_debug_screenshot(
+                "jianghu_calendar_close_not_found"
+            )
+            raise RuntimeError(
+                "点击本页奖励后未识别到通用关闭按钮，"
+                f"已保存截图：{debug_path}"
+            )
+
+        self._log("本页奖励遮挡清理完成，通用关闭按钮复核通过")
 
     def _wait_for_initial_close_candidates(
         self,
@@ -1642,11 +1817,8 @@ class YmGameTask(GameTask):
 
     def is_team_panel_open(self) -> bool:
         """Return whether any team panel is visible."""
-        return self.find_image_once(
-            self.TEXT_TEAM_PANEL_TITLE,
-            threshold=self.TEAM_TEMPLATE_THRESHOLD,
-            roi=self.scale_roi(self.ROI_TEAM_PANEL_TITLE),
-        )
+        panel_open, _ = self._read_normal_team_panel_state()
+        return panel_open
 
     def is_quick_team_panel_open(self) -> bool:
         """Return whether the convenient team list is visible."""
@@ -1658,11 +1830,53 @@ class YmGameTask(GameTask):
 
     def is_in_team(self) -> bool:
         """Return whether the open normal team panel represents an active team."""
-        return not self.find_image_once(
-            self.BTN_TEAM_QUICK,
-            threshold=self.TEAM_TEMPLATE_THRESHOLD,
-            roi=self.scale_roi(self.ROI_TEAM_PANEL_BOTTOM_RIGHT),
-        )
+        _, in_team = self._read_normal_team_panel_state()
+        return in_team
+
+    def _read_normal_team_panel_state(
+        self,
+        screenshot: np.ndarray | None = None,
+    ) -> tuple[bool, bool]:
+        """Read normal team-panel visibility and membership from one frame."""
+        screen = self.screenshot() if screenshot is None else screenshot
+        matches = [
+            self._match_team_template(
+                screen,
+                self.TEXT_TEAM_PANEL_TITLE,
+                threshold=self.TEAM_TEMPLATE_THRESHOLD,
+                roi=self.scale_roi(self.ROI_TEAM_PANEL_TITLE),
+            ),
+            self._match_team_template(
+                screen,
+                self.BTN_TEAM_QUICK,
+                threshold=self.TEAM_TEMPLATE_THRESHOLD,
+                roi=self.scale_roi(self.ROI_TEAM_PANEL_BOTTOM_RIGHT),
+            ),
+            self._match_team_template(
+                screen,
+                self.BTN_TEAM_LEAVE,
+                threshold=self.TEAM_TEMPLATE_THRESHOLD,
+                roi=self.scale_roi(self.ROI_TEAM_PANEL_BOTTOM_RIGHT),
+            ),
+        ]
+        best = max(matches, key=lambda match: match.score)
+        self._last_match_score = best.score
+        self._last_match_center = best.center if best.found else None
+        panel_open = any(match.found for match in matches)
+        in_team = matches[-1].found
+        return panel_open, in_team
+
+    def wait_for_team_panel_open(self, *, timeout_ms: int) -> bool:
+        """Wait for any trusted normal team-panel marker."""
+        deadline = self._make_deadline(timeout_ms)
+        while True:
+            if self.is_team_panel_open():
+                return True
+            if self._is_deadline_expired(deadline):
+                return False
+            remaining_ms = self._remaining_ms(deadline)
+            if remaining_ms > 0:
+                self.wait(min(250, remaining_ms))
 
     def open_team_panel(
         self,
@@ -1671,6 +1885,7 @@ class YmGameTask(GameTask):
         wait_after_click_ms: int = 1000,
     ) -> None:
         """Open the normal team panel from the left sidebar."""
+        self.wake_from_power_saving_if_needed()
         if self.is_quick_team_panel_open():
             self._log("当前在便捷组队界面，返回我的队伍")
             self.click_point(self.POINT_TEAM_QUICK_RETURN[0], self.POINT_TEAM_QUICK_RETURN[1], offset=0)
@@ -1683,21 +1898,20 @@ class YmGameTask(GameTask):
 
         self.collapse_chat_if_open()
         self._log("点击侧边栏队伍按钮")
-        for index, point in enumerate((self.POINT_MAIN_TEAM, self.POINT_MAIN_TEAM_WHEN_TASK_PANEL_OPEN), start=1):
-            self.click_point(point[0], point[1], offset=0)
+        for attempt in range(1, self.TEAM_PANEL_OPEN_ATTEMPTS + 1):
+            self.click_point(self.POINT_MAIN_TEAM[0], self.POINT_MAIN_TEAM[1], offset=0)
             self.wait(wait_after_click_ms)
-            if self.wait_find_image_in_roi(
-                self.TEXT_TEAM_PANEL_TITLE,
-                self.ROI_TEAM_PANEL_TITLE,
-                timeout_ms=timeout_ms,
-                description="队伍面板",
-                threshold=self.TEAM_TEMPLATE_THRESHOLD,
-            ):
+            if self.wait_for_team_panel_open(timeout_ms=timeout_ms):
                 return
-            if index == 1:
-                self._log("常规队伍入口未打开面板，尝试任务栏展开状态下的队伍入口")
+            if attempt < self.TEAM_PANEL_OPEN_ATTEMPTS:
+                self._log("队伍入口首次点击未确认面板，唤醒后重试同一入口")
+                self.wake_from_power_saving_if_needed()
 
-        raise RuntimeError("未能打开队伍面板")
+        debug_path = self.save_debug_screenshot("team_panel_open_failed")
+        raise RuntimeError(
+            "未能打开队伍面板"
+            f"（最高匹配分数 {self._last_match_score:.3f}），已保存截图：{debug_path}"
+        )
 
     def open_quick_team_panel(
         self,
@@ -2350,6 +2564,8 @@ class YmGameTask(GameTask):
                 self.screenshot(),
                 [],
             )
+
+        self.collapse_emotion_panel_if_open()
 
         if self.is_chat_open():
             if self._is_deadline_expired(deadline):

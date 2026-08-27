@@ -14,14 +14,14 @@ if __package__ in {None, ""}:
         sys.path.insert(0, str(src_dir))
 
 from botCore import ADBClient, GameTask, RunLogger, VisionEngine, load_task_class
+from ymjh_bot.runner.account_role_switcher import AccountRoleSwitcher
+from ymjh_bot.runner.task_factory import create_task_instances
 from ymjh_bot.runner.task_queue_runner import TaskQueueRunner
 from ymjh_bot.ui.task_queue_state import (
-    HSLJ_TASK_KEY,
-    SHRW_TASK_KEY,
     clear_progress,
     load_state_for_serial,
-    normalize_hslj_settings,
-    normalize_shrw_settings,
+    normalize_selected_role_indices,
+    role_indices_from_count,
     restore_selected_tasks,
     safe_serial_name,
     save_state,
@@ -67,24 +67,7 @@ def _load_available_tasks() -> list[dict[str, Any]]:
 
 
 def _task_instances(selected_tasks: list[dict[str, Any]], settings: dict[str, Any]) -> list[GameTask]:
-    instances: list[GameTask] = []
-    for task_info in selected_tasks:
-        task_class = task_info["class"]
-        if str(task_info.get("key") or "") == HSLJ_TASK_KEY:
-            instances.append(
-                task_class(
-                    hslj_settings=normalize_hslj_settings(settings.get(HSLJ_TASK_KEY)),
-                )
-            )
-        elif str(task_info.get("key") or "") == SHRW_TASK_KEY:
-            instances.append(
-                task_class(
-                    shrw_settings=normalize_shrw_settings(settings.get(SHRW_TASK_KEY)),
-                )
-            )
-        else:
-            instances.append(task_class())
-    return instances
+    return create_task_instances(selected_tasks, settings)
 
 
 def _timestamp() -> str:
@@ -109,7 +92,51 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Enable detailed template, coordinate, and polling logs.",
     )
+    role_group = parser.add_mutually_exclusive_group()
+    role_group.add_argument(
+        "--role",
+        action="append",
+        type=int,
+        choices=range(1, 6),
+        help="Select one account role (1-5); repeat for an arbitrary combination.",
+    )
+    role_group.add_argument(
+        "--roles",
+        type=int,
+        choices=range(1, 6),
+        help="Compatibility option: select the first N account roles (1-5).",
+    )
     return parser.parse_args(argv)
+
+
+def resolve_role_indices(
+    args: argparse.Namespace,
+    state: dict[str, Any],
+) -> tuple[list[int], bool]:
+    """Resolve CLI or saved role selection and report whether CLI overrode it."""
+    saved = normalize_selected_role_indices(state.get("selected_role_indices"))
+    if args.role is not None:
+        return sorted({role_number - 1 for role_number in args.role}), True
+    if args.roles is not None:
+        return role_indices_from_count(args.roles), True
+    return saved, False
+
+
+def apply_role_cli_selection(
+    args: argparse.Namespace,
+    state: dict[str, Any],
+) -> tuple[dict[str, Any], list[int], bool]:
+    """Apply a CLI role override and invalidate progress when its queue changes."""
+    role_indices, overridden = resolve_role_indices(args, state)
+    saved = normalize_selected_role_indices(state.get("selected_role_indices"))
+    updated = state
+    if overridden:
+        updated = dict(state)
+        updated["selected_role_indices"] = role_indices
+    selection_changed = overridden and role_indices != saved
+    if args.clear_progress or selection_changed:
+        updated = clear_progress(updated)
+    return updated, role_indices, bool(args.clear_progress or overridden)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -127,9 +154,13 @@ def main(argv: list[str] | None = None) -> int:
         fallback_adb_path=args.adb_path,
     )
     state["serial"] = serial
-    if args.clear_progress:
-        state = clear_progress(state)
+    state, role_indices, should_save_role_state = apply_role_cli_selection(args, state)
+    if should_save_role_state:
         save_state(state_path, state)
+
+    if not role_indices:
+        _print("[ERROR] no account role selected; select at least one role")
+        return 2
 
     available_tasks = _load_available_tasks()
     selected_tasks, missing = restore_selected_tasks(
@@ -145,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
     task_names = [str(task.get("name") or task.get("key")) for task in selected_tasks]
     _print(f"STATE_PATH={state_path}")
     _print(f"TASK_QUEUE={' -> '.join(task_names)}")
+    _print(f"ROLE_QUEUE={' -> '.join(str(index + 1) for index in role_indices)}")
 
     run_lock = serial_run_lock(state_dir, serial)
     if not run_lock.acquire():
@@ -157,25 +189,35 @@ def main(argv: list[str] | None = None) -> int:
 
         def save_progress(progress: dict[str, int]) -> None:
             state["progress"] = {
+                "current_role_index": int(progress.get("current_role_index", 0)),
                 "current_task_index": int(progress.get("current_task_index", 0)),
                 "current_step_index": int(progress.get("current_step_index", 0)),
             }
             save_state(state_path, state)
 
+        task_settings = state.get("task_settings") or {}
+
+        def task_factory() -> list[GameTask]:
+            return _task_instances(selected_tasks, task_settings)
+
         runner = TaskQueueRunner(
-            _task_instances(selected_tasks, state.get("task_settings") or {}),
+            task_factory(),
             ADBClient(adb_path=args.adb_path, serial=serial),
             VisionEngine(),
             logger=logger,
             event_callback=_print,
             progress_callback=save_progress,
             verbose=args.debug,
+            role_indices=role_indices,
+            task_factory=task_factory if len(role_indices) > 1 else None,
+            role_switcher=AccountRoleSwitcher(),
         )
         progress = state.get("progress")
         if isinstance(progress, dict):
             runner.load_progress(progress)
             _print(
                 "RESTORED_PROGRESS="
+                f"role:{progress.get('current_role_index', 0)},"
                 f"task:{progress.get('current_task_index', 0)},"
                 f"step:{progress.get('current_step_index', 0)}"
             )

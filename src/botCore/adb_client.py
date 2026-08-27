@@ -9,6 +9,26 @@ import cv2
 import numpy as np
 
 
+_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _run_adb_process(
+    cmd: Sequence[str],
+    *,
+    text: bool,
+    timeout_sec: int,
+) -> subprocess.CompletedProcess:
+    """Run an ADB command without opening a console window on Windows."""
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=text,
+        timeout=timeout_sec,
+        check=False,
+        creationflags=_CREATE_NO_WINDOW,
+    )
+
+
 class ADBError(RuntimeError):
     pass
 
@@ -29,12 +49,10 @@ class ADBClient:
     def list_devices(adb_path: str = "adb", timeout_sec: int = 10) -> list[DeviceInfo]:
         cmd = [adb_path, "devices"]
         try:
-            proc = subprocess.run(
+            proc = _run_adb_process(
                 cmd,
-                capture_output=True,
                 text=True,
-                timeout=timeout_sec,
-                check=False,
+                timeout_sec=timeout_sec,
             )
         except FileNotFoundError:
             raise ADBError(f"ADB not found: {adb_path}. Please install ADB or set correct path.")
@@ -78,11 +96,10 @@ class ADBClient:
 
     def screenshot(self) -> np.ndarray:
         cmd = [self.adb_path, *self._device_prefix(), "exec-out", "screencap", "-p"]
-        proc = subprocess.run(
+        proc = _run_adb_process(
             cmd,
-            capture_output=True,
-            timeout=self.timeout_sec,
-            check=False,
+            text=False,
+            timeout_sec=self.timeout_sec,
         )
         if proc.returncode != 0:
             raise ADBError(proc.stderr.decode(errors="ignore").strip() or "screencap failed")
@@ -142,12 +159,10 @@ class ADBClient:
         text: bool,
     ) -> subprocess.CompletedProcess:
         cmd = [self.adb_path, *self._device_prefix(), *args]
-        proc = subprocess.run(
+        proc = _run_adb_process(
             cmd,
-            capture_output=True,
             text=text,
-            timeout=self.timeout_sec,
-            check=False,
+            timeout_sec=self.timeout_sec,
         )
         if check and proc.returncode != 0:
             stderr = proc.stderr if text else proc.stderr.decode(errors="ignore")

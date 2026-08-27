@@ -164,6 +164,20 @@ def test_target_panel_already_active_returns_without_clicking() -> None:
     assert task.taps == []
 
 
+def test_sidebar_preparation_collapses_emotion_panel(monkeypatch) -> None:
+    task = SidebarTask("task_active")
+    cleanup_calls: list[bool] = []
+    monkeypatch.setattr(
+        task,
+        "collapse_emotion_panel_if_open",
+        lambda: cleanup_calls.append(True) or True,
+    )
+
+    task.ensure_task_sidebar_open()
+
+    assert cleanup_calls == [True]
+
+
 @pytest.mark.parametrize(
     ("source_state", "source_panel", "source_center", "target_panel"),
     [

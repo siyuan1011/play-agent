@@ -43,7 +43,6 @@ class HSLJTask(YmGameTask):
 
     # 固定坐标点 (设计分辨率 1280x720 下)
     POINT_ACTIVITY_HSLJ_ICON = (220, 222)
-    POINT_ACTIVITY_HSLJ_OPEN = (835, 462)
     POINT_TAB_1V1 = (1118, 170)
     POINT_TAB_3V3 = (1118, 270)
     POINT_HSLJ_MATCH = (952, 590)
@@ -198,15 +197,10 @@ class HSLJTask(YmGameTask):
         """Return the configured fixed count for a mode."""
         return int(self.lunjian_mode_settings[mode]["count"])
 
-    @step(retry=3, timeout_ms=30000)
-    def open_fenzheng_activity(self) -> None:
-        """打开活动界面并切换到纷争页签。"""
-        self.open_fenzheng_activity_panel()
-
-    @step(retry=3, timeout_ms=30000)
-    def open_panel(self) -> None:
-        """从活动页安全打开华山论剑面板，不触发 1v1/3v3 默认匹配。"""
-        self.open_hslj_from_activity()
+    @step(retry=0, timeout_ms=60000)
+    def open_hslj_panel(self) -> None:
+        """通过活动-纷争打开华山论剑面板。"""
+        self._open_hslj_panel_via_activity()
 
     @step(retry=0, timeout_ms=None)
     def complete_1v1(self) -> None:
@@ -305,52 +299,44 @@ class HSLJTask(YmGameTask):
         """任务结束前关闭临时弹窗。"""
         self.close_reward_dialogs(max_attempts=2)
 
-    def open_fenzheng_activity_panel(self) -> None:
-        """Open the activity panel and switch to the Fen Zheng tab."""
+    def _open_hslj_panel_via_activity(self) -> None:
+        """Open Huashan Lunjian through a freshly verified Activity - Fen Zheng panel."""
         self.open_activity_panel(
             "纷争",
             wait_after_open_ms=2500,
             wait_after_category_ms=1500,
         )
 
-    def open_hslj_from_activity(self, mode: str | None = None) -> None:
-        """Open Huashan Lunjian from Activity - Fen Zheng without clicking 1v1/3v3."""
-        self.click_activity_hslj_icon()
-        self.click_activity_hslj_open_button()
-        self.wait(2000)
-        if not self.ensure_hslj_panel_visible(timeout_ms=5000):
-            raise RuntimeError("未进入华山论剑面板")
-
-    def click_activity_hslj_icon(self) -> None:
-        """Click the Huashan activity icon/card, not the 1v1 or 3v3 buttons."""
-        if self.wait_find_image_in_roi(
+        if not self.wait_find_image_in_roi(
             self.BTN_HSLJ_ACTIVITY_1V1,
             (105, 170, 250, 190),
             timeout_ms=5000,
             description="活动页华山论剑卡片",
             threshold=0.85,
         ):
-            self._log("识别到活动页华山论剑卡片，点击上方图标")
-        else:
-            self._log("未识别到活动页华山论剑卡片模板，使用固定图标坐标点击")
+            debug_path = self.save_debug_screenshot("hslj_activity_card_missing")
+            raise RuntimeError(f"活动-纷争未找到华山论剑卡片，已保存截图：{debug_path}")
+
+        self._log("识别到活动页华山论剑卡片，点击上方图标")
         self.click_point(self.POINT_ACTIVITY_HSLJ_ICON[0], self.POINT_ACTIVITY_HSLJ_ICON[1], offset=0)
         self.wait(1000)
 
-    def click_activity_hslj_open_button(self) -> None:
-        """Click the Activity-page open button for Huashan Lunjian."""
-        if self.wait_find_image_in_roi(
+        if not self.wait_find_image_in_roi(
             self.BTN_HSLJ_ACTIVITY_OPEN,
             (730, 410, 210, 105),
             timeout_ms=5000,
             description="活动页华山论剑打开按钮",
             threshold=0.85,
         ):
-            self._log("点击活动页华山论剑打开按钮")
-            self.click(offset=0)
-            return
+            debug_path = self.save_debug_screenshot("hslj_activity_open_missing")
+            raise RuntimeError(f"活动-纷争未找到华山论剑打开按钮，已保存截图：{debug_path}")
 
-        self._log("未识别到活动页华山论剑打开按钮模板，使用固定坐标点击")
-        self.click_point(self.POINT_ACTIVITY_HSLJ_OPEN[0], self.POINT_ACTIVITY_HSLJ_OPEN[1], offset=0)
+        self._log("点击活动页华山论剑打开按钮")
+        self.click(offset=0)
+        self.wait(2000)
+        if not self.ensure_hslj_panel_visible(timeout_ms=5000):
+            debug_path = self.save_debug_screenshot("hslj_panel_open_failed")
+            raise RuntimeError(f"未进入华山论剑面板，已保存截图：{debug_path}")
 
     def ensure_hslj_panel_ready(self, *, mode: str, timeout_ms: int) -> None:
         """Ensure the Huashan Lunjian panel is visible, reopening it if needed."""
@@ -362,8 +348,7 @@ class HSLJTask(YmGameTask):
 
         self._log("华山论剑面板不可见，尝试从主界面重新打开")
         self.close_all_panels(timeout_ms=1500, max_attempts=6)
-        self.open_fenzheng_activity_panel()
-        self.open_hslj_from_activity(mode)
+        self._open_hslj_panel_via_activity()
 
     def ensure_hslj_mode_ready_for_match(self, mode: str) -> None:
         """Ensure the Huashan panel and target mode are ready before matching."""

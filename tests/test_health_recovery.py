@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 import ymjh_bot.ym_game_task as ym_game_task_module
+from botCore import VisionEngine
 from ymjh_bot.ym_game_task import YmGameTask
 
 
@@ -263,6 +264,18 @@ def test_fixed_health_region_reads_low_health_fixture() -> None:
     assert health_ratio < task.HEALTH_RECOVER_THRESHOLD
 
 
+def test_meditate_template_matches_low_health_flashing_incident() -> None:
+    screenshot = load_fixture("health_recovery_meditate_flash.png")
+    match = VisionEngine().match_template(
+        screenshot,
+        YmGameTask.BTN_EMOTION_MEDITATE,
+        threshold=YmGameTask.EMOTION_MEDITATE_THRESHOLD,
+    )
+
+    assert match.found
+    assert YmGameTask.EMOTION_MEDITATE_THRESHOLD <= match.score < 0.90
+
+
 def test_fixed_health_region_reads_full_health_without_anchor_matching() -> None:
     task = HealthScreenshotTask(load_fixture("5.webp"))
 
@@ -359,7 +372,7 @@ def test_polling_detection_error_is_not_treated_as_duration_fallback() -> None:
     assert task._health_recover_started_at is None
 
 
-def test_missing_meditation_button_does_not_run_exit_actions() -> None:
+def test_missing_meditation_button_still_collapses_emotion_panel() -> None:
     task = HealthRecoveryTask(None, meditate_found=False)
 
     with pytest.raises(RuntimeError, match="未找到打坐表情"):
@@ -369,6 +382,7 @@ def test_missing_meditation_button_does_not_run_exit_actions() -> None:
     assert task.actions == [
         ("click", 0),
         ("point", task.POINT_EMOTION_SINGLE_TAB[0], task.POINT_EMOTION_SINGLE_TAB[1], 0),
+        ("point", task.POINT_EMOTION_COLLAPSE[0], task.POINT_EMOTION_COLLAPSE[1], 0),
     ]
     assert task._recovering_health is False
 

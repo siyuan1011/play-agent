@@ -12,13 +12,15 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_STATE: dict[str, Any] = {
     "adb_path": "adb",
     "serial": "",
+    "selected_role_indices": [0],
     "selected_task_keys": [],
     "task_settings": {},
 }
+
+MAX_ROLE_COUNT = 5
 
 HSLJ_TASK_KEY = "HSLJ"
 HSLJ_MODE_KEYS = ("1v1", "3v3")
@@ -167,6 +169,12 @@ def load_state(path: Path) -> dict[str, Any]:
         state["selected_task_keys"] = normalize_task_keys(state["selected_task_keys"])
     state["adb_path"] = str(state.get("adb_path") or "adb")
     state["serial"] = str(state.get("serial") or "")
+    if "selected_role_indices" in data:
+        state["selected_role_indices"] = normalize_selected_role_indices(
+            data.get("selected_role_indices")
+        )
+    elif "role_count" in data:
+        state["selected_role_indices"] = role_indices_from_count(data.get("role_count"))
     if not isinstance(state.get("task_settings"), dict):
         state["task_settings"] = {}
     else:
@@ -185,6 +193,9 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     serializable = default_state()
     serializable.update({key: value for key, value in state.items() if key in serializable})
+    serializable["selected_role_indices"] = normalize_selected_role_indices(
+        serializable.get("selected_role_indices")
+    )
     serializable["selected_task_keys"] = normalize_task_keys(serializable.get("selected_task_keys"))
     serializable["task_settings"] = normalize_task_settings(serializable.get("task_settings"))
     if "progress" in state:
@@ -202,6 +213,31 @@ def clear_progress(state: dict[str, Any]) -> dict[str, Any]:
     updated = deepcopy(state)
     updated.pop("progress", None)
     return updated
+
+
+def role_indices_from_count(value: Any) -> list[int]:
+    """Migrate a legacy leading-role count to explicit zero-based role indices."""
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        count = 1
+    return list(range(max(1, min(count, MAX_ROLE_COUNT))))
+
+
+def normalize_selected_role_indices(value: Any) -> list[int]:
+    """Normalize an explicit role selection while preserving an intentional empty list."""
+    if not isinstance(value, list):
+        return [0]
+
+    selected: set[int] = set()
+    for raw_index in value:
+        try:
+            role_index = int(raw_index)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= role_index < MAX_ROLE_COUNT:
+            selected.add(role_index)
+    return sorted(selected)
 
 
 def safe_serial_name(serial: str | None) -> str:
@@ -393,11 +429,13 @@ def normalize_progress(progress: Any) -> dict[str, int] | None:
     if not isinstance(progress, dict):
         return None
     try:
+        role_index = int(progress.get("current_role_index", 0))
         task_index = int(progress.get("current_task_index", 0))
         step_index = int(progress.get("current_step_index", 0))
     except (TypeError, ValueError):
         return None
     return {
+        "current_role_index": max(0, role_index),
         "current_task_index": max(0, task_index),
         "current_step_index": max(0, step_index),
     }

@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import numpy as np
 import pytest
 
+from botCore import VisionEngine, load_image
 from ymjh_bot.ym_game_task import LoginState, YmGameTask
+
+
+FIXTURES = Path(__file__).parent / "fixtures" / "ymjh"
 
 
 class ForegroundStartupTask(YmGameTask):
@@ -14,6 +21,7 @@ class ForegroundStartupTask(YmGameTask):
         self.detect_calls = 0
         self.enter_game_calls = 0
         self.launch_calls = 0
+        self.cleanup_calls = 0
         self.logs: list[str] = []
 
     def is_game_foreground(self) -> bool:
@@ -45,6 +53,11 @@ class ForegroundStartupTask(YmGameTask):
     def start_game_app(self, wait_after_launch_ms: int = 5000) -> None:
         self.launch_calls += 1
 
+    def close_all_panels(self, *args, **kwargs) -> None:
+        self.cleanup_calls += 1
+        if self.state in {"unknown", self.LOGIN_STATE_DIRTY_MAIN}:
+            self.state = self.LOGIN_STATE_MAIN
+
     def _log(self, message: str) -> None:
         self.logs.append(message)
 
@@ -57,6 +70,7 @@ class ForegroundStartupTask(YmGameTask):
         YmGameTask.LOGIN_STATE_ROLE_CONFIRM,
         YmGameTask.LOGIN_STATE_ROLE,
         YmGameTask.LOGIN_STATE_POPUP,
+        YmGameTask.LOGIN_STATE_LOADING,
     ],
 )
 def test_foreground_non_main_state_enters_login_flow(state: str) -> None:
@@ -90,3 +104,121 @@ def test_foreground_power_saving_still_defers_wake_to_on_start() -> None:
     assert task.enter_game_calls == 0
     assert task.launch_calls == 0
     assert task.logs == ["检测到游戏已在前台，省电唤醒交给 on_start"]
+
+
+@pytest.mark.parametrize("state", ["unknown", YmGameTask.LOGIN_STATE_DIRTY_MAIN])
+def test_foreground_dirty_scene_is_cleaned_before_login_flow(state: str) -> None:
+    task = ForegroundStartupTask(state)
+
+    task.before_start()
+
+    assert task.cleanup_calls == 1
+    assert task.detect_calls == 2
+    assert task.enter_game_calls == 0
+    assert task.state == YmGameTask.LOGIN_STATE_MAIN
+    assert "前台界面清理完成，跳过登录流程" in task.logs
+
+
+class LoginLoopTask(YmGameTask):
+    def __init__(self, states: list[str | None]) -> None:
+        super().__init__()
+        self.states = states
+        self.state_index = 0
+        self.cleanup_calls = 0
+        self.wake_calls = 0
+        self.logs: list[str] = []
+        self.saved_prefixes: list[str] = []
+
+    def detect_login_state(
+        self,
+        *,
+        include_modal_controls: bool = False,
+        threshold: float = 0.8,
+    ) -> LoginState | None:
+        index = min(self.state_index, len(self.states) - 1)
+        self.state_index += 1
+        state = self.states[index]
+        if state is None:
+            return None
+        return LoginState(state, state, 1.0, (100, 100), f"{state}.png")
+
+    def wake_from_power_saving_if_needed(self) -> bool:
+        self.wake_calls += 1
+        return False
+
+    def close_all_panels(self, *args, **kwargs) -> None:
+        self.cleanup_calls += 1
+
+    def close_startup_panels(self, **kwargs) -> bool:
+        return True
+
+    def wait(self, ms: int | float) -> None:
+        return None
+
+    def save_debug_screenshot(self, prefix: str = "debug") -> str:
+        self.saved_prefixes.append(prefix)
+        return f"{prefix}.png"
+
+    def _log(self, message: str) -> None:
+        self.logs.append(message)
+
+
+def test_enter_game_real_loading_state_waits_without_cleanup() -> None:
+    task = LoginLoopTask(
+        [YmGameTask.LOGIN_STATE_LOADING, YmGameTask.LOGIN_STATE_MAIN]
+    )
+
+    task.enter_game()
+
+    assert task.cleanup_calls == 0
+    assert task.wake_calls == 0
+    assert task.logs.count("等待登录流程加载...") == 1
+
+
+def test_enter_game_unknown_scene_runs_wake_and_cleanup() -> None:
+    task = LoginLoopTask([None, YmGameTask.LOGIN_STATE_MAIN])
+
+    task.enter_game()
+
+    assert task.wake_calls == 1
+    assert task.cleanup_calls == 1
+    assert "前台画面未识别，尝试省电唤醒和弹框清理" in task.logs
+
+
+def test_enter_game_unknown_timeout_saves_debug_screenshot() -> None:
+    task = LoginLoopTask([None])
+    task.LOGIN_LOADING_TIMEOUT_MS = -1
+
+    with pytest.raises(RuntimeError, match="login_unknown_scene_timeout.png"):
+        task.enter_game()
+
+    assert task.saved_prefixes == ["login_unknown_scene_timeout"]
+
+
+class StaticScreenshotTask(YmGameTask):
+    def __init__(self, screenshot: np.ndarray) -> None:
+        super().__init__()
+        self.frame = screenshot
+        self._vision = VisionEngine()
+
+    def screenshot(self) -> np.ndarray:
+        return self.frame
+
+
+def test_detect_login_state_distinguishes_real_loading_from_dirty_calendar() -> None:
+    loading_task = StaticScreenshotTask(load_image(FIXTURES / "scene_loading_02.webp"))
+    calendar_task = StaticScreenshotTask(
+        load_image(
+            FIXTURES
+            / "login_startup"
+            / "dirty_main_calendar_detail_power_saving.webp"
+        )
+    )
+
+    loading_state = loading_task.detect_login_state(include_modal_controls=True)
+    calendar_state = calendar_task.detect_login_state(include_modal_controls=True)
+
+    assert loading_state is not None
+    assert loading_state.name == YmGameTask.LOGIN_STATE_LOADING
+    assert calendar_state is not None
+    assert calendar_state.name == YmGameTask.LOGIN_STATE_DIRTY_MAIN
