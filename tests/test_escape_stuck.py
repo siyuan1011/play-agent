@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import cv2
 import pytest
 
-from botCore import StepStopException, VisionEngine
+from botCore import StepStopException, VisionEngine, load_image
 from ymjh_bot.ym_game_task import YmGameTask
 
 
@@ -14,9 +13,7 @@ VISION = VisionEngine()
 
 
 def load_fixture(name: str):
-    image = cv2.imread(str(FIXTURES / name), cv2.IMREAD_COLOR)
-    assert image is not None
-    return image
+    return load_image(FIXTURES / name)
 
 
 @pytest.mark.parametrize(

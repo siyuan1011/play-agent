@@ -3,9 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import cv2
+import numpy as np
 import pytest
 
-from botCore import StepStopException, VisionEngine
+from botCore import ImageMatchResult, StepStopException, VisionEngine
 from ymjh_bot.task.RCFB_task import RCFBTask
 from ymjh_bot.ym_game_task import TaskSidebarStateError
 
@@ -121,6 +122,40 @@ def test_dungeon_hangup_active_rejects_inactive_and_non_hud_scenes(
     assert task._last_match_score < task.DUNGEON_HANGUP_ACTIVE_THRESHOLD
 
 
+def test_dungeon_hangup_active_accepts_dim_template_with_cyan_highlight() -> None:
+    task = RCFBTask()
+    screenshot = np.zeros((720, 1280, 3), dtype=np.uint8)
+    x, y, width, height = task.ROI_DUNGEON_HANGUP_ACTIVE
+    screenshot[y : y + height, x : x + width] = (150, 150, 40)
+
+    class DimActiveVision:
+        @staticmethod
+        def match_template(*args, **kwargs):
+            return ImageMatchResult(True, 0.855, (198, 14), (158, 0, 238, 28))
+
+    task._vision = DimActiveVision()  # type: ignore[assignment]
+    task.screenshot = lambda: screenshot  # type: ignore[method-assign]
+
+    assert task.is_dungeon_hangup_active()
+    assert task._last_match_center == (198, 14)
+
+
+def test_dungeon_hangup_active_rejects_dim_neutral_tab() -> None:
+    task = RCFBTask()
+    screenshot = np.full((720, 1280, 3), 100, dtype=np.uint8)
+
+    class DimInactiveVision:
+        @staticmethod
+        def match_template(*args, **kwargs):
+            return ImageMatchResult(True, 0.938, (198, 14), (158, 0, 238, 28))
+
+    task._vision = DimInactiveVision()  # type: ignore[assignment]
+    task.screenshot = lambda: screenshot  # type: ignore[method-assign]
+
+    assert not task.is_dungeon_hangup_active()
+    assert task._last_match_center is None
+
+
 def test_dungeon_transfer_out_detects_real_completion_screen() -> None:
     task = detect_tracker("rcfb_dungeon_complete.webp")
 
@@ -160,7 +195,7 @@ def test_exit_team_button_template_matches_only_left_modal_action() -> None:
     assert match.center == (422, 508)
 
 
-def test_rcfb_step_sequence_merges_follow_wait_into_match() -> None:
+def test_rcfb_step_sequence_uses_single_player_team_flow() -> None:
     steps = RCFBTask.get_steps()
     step_names = [name for name, _, _ in steps]
     start_meta = next(meta for name, _, meta in steps if name == "start_daily_match")
@@ -174,229 +209,90 @@ def test_rcfb_step_sequence_merges_follow_wait_into_match() -> None:
         "leave_team_after_completion",
     ]
     assert start_meta["retry"] == 3
-    assert start_meta["timeout_ms"] == RCFBTask.MATCH_WAIT_TIMEOUT_MS == 300000
+    assert start_meta["timeout_ms"] == RCFBTask.DAILY_START_TIMEOUT_MS == 300000
     assert flow_meta["retry"] == 0
     assert flow_meta["timeout_ms"] == RCFBTask.TASK_FLOW_TIMEOUT_MS == 1800000
     assert exit_meta["retry"] == 0
     assert exit_meta["timeout_ms"] == 420000
 
 
-def test_start_daily_match_starts_follow_listener_immediately(monkeypatch) -> None:
+def test_start_daily_match_creates_one_player_team_then_challenges(monkeypatch) -> None:
     task = RCFBTask()
-    events: list[tuple[str, int | None]] = []
-    monkeypatch.setattr(task, "start_daily_auto_match", lambda: events.append(("match", None)))
+    events: list[object] = []
     monkeypatch.setattr(
         task,
-        "wait_for_team_follow_confirm",
-        lambda *, timeout_ms: events.append(("follow", timeout_ms)),
+        "create_team",
+        lambda target, **kwargs: events.append(("create", target, kwargs)),
     )
+    monkeypatch.setattr(task, "close_all_panels", lambda **kwargs: events.append("close"))
+    monkeypatch.setattr(task, "open_daily_dungeon_panel", lambda: events.append("panel"))
+    monkeypatch.setattr(task, "enter_daily_dungeon_challenge", lambda: events.append("enter"))
 
     task.start_daily_match()
 
-    assert events == [("match", None), ("follow", task.MATCH_WAIT_TIMEOUT_MS)]
-
-
-@pytest.mark.parametrize("template_found", [False, True])
-def test_auto_match_click_has_no_post_click_wait(monkeypatch, template_found: bool) -> None:
-    task = RCFBTask()
-    click_kwargs: list[dict] = []
-    fixed_clicks: list[tuple] = []
-    waits: list[int] = []
-    monkeypatch.setattr(task, "open_quick_team_panel", lambda **kwargs: None)
-    monkeypatch.setattr(task, "select_daily_raid_quick_target", lambda **kwargs: None)
-
-    def click_template(*args, **kwargs) -> bool:
-        click_kwargs.append(kwargs)
-        return template_found
-
-    monkeypatch.setattr(task, "click_template_if_available", click_template)
-    monkeypatch.setattr(task, "click_point", lambda *args, **kwargs: fixed_clicks.append(args))
-    monkeypatch.setattr(task, "wait", waits.append)
-
-    task.start_daily_auto_match()
-
-    assert click_kwargs[0]["wait_after_click_ms"] == 0
-    assert bool(fixed_clicks) is not template_found
-    assert waits == []
-
-
-def test_follow_confirmation_click_returns_before_team_state_probe(monkeypatch) -> None:
-    task = RCFBTask()
-    confirm_kwargs: list[dict] = []
-    logs: list[str] = []
-    monkeypatch.setattr(task, "is_stopped", lambda: False)
-
-    def confirm(*args, **kwargs) -> bool:
-        confirm_kwargs.append(kwargs)
-        return True
-
-    monkeypatch.setattr(task, "confirm_center_modal_ok_if_visible", confirm)
-    monkeypatch.setattr(
-        task,
-        "open_team_panel",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("不应检查队伍面板")),
-    )
-    monkeypatch.setattr(task, "_log", logs.append)
-
-    task.wait_for_team_follow_confirm(timeout_ms=task.MATCH_WAIT_TIMEOUT_MS)
-
-    assert confirm_kwargs == [{"wait_after_click_ms": 0}]
-    assert logs[-1] == "已点击入队跟随确认"
-    assert hasattr(RCFBTask, "confirm_already_in_team")
-
-
-def test_follow_dialog_is_polled_every_one_second(monkeypatch) -> None:
-    task = RCFBTask()
-    clock = [0.0]
-    detection_times: list[float] = []
-    waits: list[int] = []
-    monkeypatch.setattr("ymjh_bot.task.RCFB_task.time.perf_counter", lambda: clock[0])
-    monkeypatch.setattr(task, "is_stopped", lambda: False)
-
-    def confirm(*args, **kwargs) -> bool:
-        detection_times.append(clock[0])
-        return clock[0] >= 4.0
-
-    def advance(wait_ms: int) -> None:
-        waits.append(wait_ms)
-        clock[0] += wait_ms / 1000.0
-
-    monkeypatch.setattr(task, "confirm_center_modal_ok_if_visible", confirm)
-    monkeypatch.setattr(task, "wait", advance)
-
-    task.wait_for_team_follow_confirm(timeout_ms=10000)
-
-    assert detection_times == [0.0, 1.0, 2.0, 3.0, 4.0]
-    assert waits == [task.MATCH_WAIT_POLL_INTERVAL_MS] * 4
-
-
-def test_follow_wait_times_out_after_heartbeat_and_final_team_checks(monkeypatch) -> None:
-    task = RCFBTask()
-    clock = [0.0]
-    detection_times: list[float] = []
-    waits: list[int] = []
-    cancelled: list[bool] = []
-    team_checks: list[float] = []
-    monkeypatch.setattr("ymjh_bot.task.RCFB_task.time.perf_counter", lambda: clock[0])
-    monkeypatch.setattr(task, "is_stopped", lambda: False)
-
-    def confirm(*args, **kwargs) -> bool:
-        detection_times.append(clock[0])
-        return False
-
-    def advance(wait_ms: int) -> None:
-        waits.append(wait_ms)
-        clock[0] += wait_ms / 1000.0
-
-    monkeypatch.setattr(task, "confirm_center_modal_ok_if_visible", confirm)
-    monkeypatch.setattr(task, "wait", advance)
-    monkeypatch.setattr(
-        task,
-        "confirm_already_in_team",
-        lambda: team_checks.append(clock[0]) or False,
-    )
-    monkeypatch.setattr(task, "save_debug_screenshot", lambda prefix: "follow-timeout.png")
-    monkeypatch.setattr(
-        task,
-        "cancel_daily_match_after_timeout",
-        lambda: cancelled.append(True) or True,
-    )
-
-    with pytest.raises(RuntimeError, match="5 分钟") as exc_info:
-        task.wait_for_team_follow_confirm(timeout_ms=task.MATCH_WAIT_TIMEOUT_MS)
-
-    assert "follow-timeout.png" in str(exc_info.value)
-    assert detection_times == [float(second) for second in range(300)]
-    assert waits == [task.MATCH_WAIT_POLL_INTERVAL_MS] * 300
-    assert team_checks == [float(second) for second in range(30, 301, 30)]
-    assert cancelled == [True]
-
-
-def test_follow_wait_returns_when_heartbeat_confirms_existing_team(monkeypatch) -> None:
-    task = RCFBTask()
-    clock = [0.0]
-    team_checks: list[float] = []
-    cancelled: list[bool] = []
-    monkeypatch.setattr("ymjh_bot.task.RCFB_task.time.perf_counter", lambda: clock[0])
-    monkeypatch.setattr(task, "is_stopped", lambda: False)
-    monkeypatch.setattr(task, "confirm_center_modal_ok_if_visible", lambda *args, **kwargs: False)
-    monkeypatch.setattr(task, "wait", lambda wait_ms: clock.__setitem__(0, clock[0] + wait_ms / 1000.0))
-    monkeypatch.setattr(
-        task,
-        "confirm_already_in_team",
-        lambda: team_checks.append(clock[0]) or True,
-    )
-    monkeypatch.setattr(
-        task,
-        "cancel_daily_match_after_timeout",
-        lambda: cancelled.append(True) or True,
-    )
-
-    task.wait_for_team_follow_confirm(timeout_ms=task.MATCH_WAIT_TIMEOUT_MS)
-
-    assert team_checks == [30.0]
-    assert cancelled == []
-
-
-def test_follow_timeout_final_team_check_does_not_cancel_joined_team(monkeypatch) -> None:
-    task = RCFBTask()
-    clock = [0.0]
-    cancelled: list[bool] = []
-    monkeypatch.setattr("ymjh_bot.task.RCFB_task.time.perf_counter", lambda: clock[0])
-    monkeypatch.setattr(task, "is_stopped", lambda: False)
-    monkeypatch.setattr(task, "confirm_center_modal_ok_if_visible", lambda *args, **kwargs: False)
-    monkeypatch.setattr(task, "wait", lambda wait_ms: clock.__setitem__(0, clock[0] + wait_ms / 1000.0))
-    monkeypatch.setattr(task, "confirm_already_in_team", lambda: True)
-    monkeypatch.setattr(
-        task,
-        "cancel_daily_match_after_timeout",
-        lambda: cancelled.append(True) or True,
-    )
-
-    task.wait_for_team_follow_confirm(timeout_ms=10000)
-
-    assert cancelled == []
-
-
-def test_confirm_already_in_team_closes_panel_after_explicit_leave_marker(monkeypatch) -> None:
-    task = RCFBTask()
-    events: list[str] = []
-    monkeypatch.setattr(task, "open_team_panel", lambda **kwargs: events.append("open"))
-    monkeypatch.setattr(task, "is_in_team", lambda: events.append("state") or True)
-    monkeypatch.setattr(task, "close_all_panels", lambda **kwargs: events.append("close"))
-    monkeypatch.setattr(task, "_log", lambda message: events.append(message))
-
-    assert task.confirm_already_in_team()
     assert events == [
-        "open",
-        "state",
-        "检测到已处于队伍中，继续进入副本任务检测",
+        ("create", "日常", {"min_member_count": 1}),
         "close",
+        "panel",
+        "enter",
     ]
 
 
-def test_match_timeout_cancellation_uses_template_and_cleans_panels(monkeypatch) -> None:
+def test_open_daily_panel_uses_jianghu_activity_entry(monkeypatch) -> None:
     task = RCFBTask()
-    events: list[str] = []
-    clicked_templates: list[str] = []
-    monkeypatch.setattr(task, "open_quick_team_panel", lambda **kwargs: events.append("open"))
+    panel_states = iter((False, True))
+    events: list[object] = []
     monkeypatch.setattr(
         task,
-        "select_daily_raid_quick_target",
-        lambda **kwargs: events.append("select"),
+        "is_daily_dungeon_panel_visible",
+        lambda **kwargs: next(panel_states),
     )
+    monkeypatch.setattr(
+        task,
+        "open_activity_panel",
+        lambda category, **kwargs: events.append(("activity", category, kwargs)),
+    )
+    monkeypatch.setattr(
+        task,
+        "click_point",
+        lambda x, y, *, offset: events.append(("click", x, y, offset)),
+    )
+    monkeypatch.setattr(task, "wait", lambda wait_ms: events.append(("wait", wait_ms)))
+    monkeypatch.setattr(task, "_log", lambda *args: None)
 
-    def click_template(template, **kwargs) -> bool:
-        clicked_templates.append(template)
-        events.append("cancel")
-        return True
+    task.open_daily_dungeon_panel()
 
-    monkeypatch.setattr(task, "click_template_if_available", click_template)
-    monkeypatch.setattr(task, "close_all_panels", lambda **kwargs: events.append("close"))
+    assert events == [
+        (
+            "activity",
+            "江湖",
+            {"wait_after_open_ms": task.DAILY_ACTIVITY_SETTLE_MS},
+        ),
+        ("click", *task.POINT_ACTIVITY_DAILY_ENTRY, 0),
+        ("wait", task.DAILY_ACTIVITY_SETTLE_MS),
+    ]
 
-    assert task.cancel_daily_match_after_timeout()
-    assert clicked_templates == [task.BTN_TEAM_CANCEL_MATCH]
-    assert events == ["open", "select", "cancel", "close"]
+
+def test_daily_challenge_clicks_challenge_then_countdown_confirm(monkeypatch) -> None:
+    task = RCFBTask()
+    matches = iter(
+        (
+            ImageMatchResult(False, 0.1, None, None),
+            ImageMatchResult(True, 0.99, (1165, 660), None),
+            ImageMatchResult(True, 0.78, (1067, 597), None),
+        )
+    )
+    taps: list[tuple[int, int]] = []
+    monkeypatch.setattr(task, "_wait_daily_binary_match", lambda *args, **kwargs: next(matches))
+    monkeypatch.setattr(task, "is_daily_dungeon_panel_visible", lambda **kwargs: True)
+    monkeypatch.setattr(task, "tap", lambda x, y: taps.append((x, y)))
+    monkeypatch.setattr(task, "wait", lambda wait_ms: None)
+    monkeypatch.setattr(task, "wait_for_daily_dungeon_panel_close", lambda: True)
+    monkeypatch.setattr(task, "_log", lambda *args: None)
+
+    task.enter_daily_dungeon_challenge()
+
+    assert taps == [(1165, 660), (1067, 597)]
 
 
 def configure_dungeon_wait_clock(monkeypatch, task: RCFBTask, scans: int) -> None:
@@ -461,47 +357,18 @@ def test_dungeon_wait_keeps_valid_missing_result_after_later_sidebar_error(monke
     assert not task.wait_for_dungeon_task(timeout_ms=1000)
 
 
-def test_missing_tracker_rematches_three_times_then_fails(monkeypatch) -> None:
+def test_missing_tracker_in_self_created_team_fails_without_rematching(monkeypatch) -> None:
     task = RCFBTask()
-    leaves: list[bool] = []
     jumps: list[str] = []
     monkeypatch.setattr(task, "wait_for_dungeon_task", lambda **kwargs: False)
     monkeypatch.setattr(task, "save_debug_screenshot", lambda prefix: "missing-tracker.png")
-    monkeypatch.setattr(task, "leave_team_if_present", lambda: leaves.append(True))
     monkeypatch.setattr(task, "jump_to", jumps.append)
 
-    for expected_count in range(1, task.MAX_LEADER_REMATCHES + 1):
-        task.wait_dungeon_task()
-        assert task._leader_rematch_count == expected_count
-
-    with pytest.raises(RuntimeError, match="连续 4 支队伍"):
+    with pytest.raises(RuntimeError, match="自建单人队伍挑战后") as exc_info:
         task.wait_dungeon_task()
 
-    assert jumps == ["start_daily_match"] * task.MAX_LEADER_REMATCHES
-    assert len(leaves) == task.MAX_LEADER_REMATCHES + 1
-
-
-def test_sidebar_error_does_not_consume_leader_rematch(monkeypatch) -> None:
-    task = RCFBTask()
-    monkeypatch.setattr(
-        task,
-        "wait_for_dungeon_task",
-        lambda **kwargs: (_ for _ in ()).throw(TaskSidebarStateError("过渡异常")),
-    )
-
-    with pytest.raises(TaskSidebarStateError, match="过渡异常"):
-        task.wait_dungeon_task()
-
-    assert task._leader_rematch_count == 0
-
-
-def test_startup_reset_clears_leader_rematch_count() -> None:
-    task = RCFBTask()
-    task._leader_rematch_count = task.MAX_LEADER_REMATCHES
-
-    task.reset_startup_state()
-
-    assert task._leader_rematch_count == 0
+    assert "missing-tracker.png" in str(exc_info.value)
+    assert jumps == []
 
 
 def test_current_tracker_click_does_not_switch_or_scroll_sidebar(monkeypatch) -> None:
@@ -539,6 +406,7 @@ def test_current_tracker_click_can_skip_internal_wait(monkeypatch) -> None:
 
 def test_raid_flow_prioritizes_completion_marker_over_visible_tracker(monkeypatch) -> None:
     task = RCFBTask()
+    task.mark_dungeon_entered()
     monkeypatch.setattr(task, "_make_deadline", lambda timeout_ms: 1.0)
     monkeypatch.setattr(task, "_is_deadline_expired", lambda deadline: False)
     monkeypatch.setattr(task, "is_dungeon_transfer_out_visible", lambda: True)
@@ -574,9 +442,26 @@ def test_raid_flow_prioritizes_completion_marker_over_visible_tracker(monkeypatc
 
     task.run_daily_raid_flow()
 
+    assert task._dungeon_completion_confirmed
+
+
+def test_raid_flow_rejects_unconfirmed_dungeon_without_polling(monkeypatch) -> None:
+    task = RCFBTask()
+    monkeypatch.setattr(
+        task,
+        "is_dungeon_transfer_out_visible",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("未确认入本时不应开始副本画面轮询")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="未确认进入日常副本"):
+        task.run_daily_raid_flow()
+
 
 def test_raid_flow_never_clicks_while_hangup_highlight_is_active(monkeypatch) -> None:
     task = RCFBTask()
+    task.mark_dungeon_entered()
     completion_results = iter((False, False, True))
     hangup_results = iter((True, True))
     waits: list[int] = []
@@ -594,6 +479,7 @@ def test_raid_flow_never_clicks_while_hangup_highlight_is_active(monkeypatch) ->
         lambda: next(completion_results),
     )
     monkeypatch.setattr(task, "wake_from_power_saving_if_needed", lambda: False)
+    monkeypatch.setattr(task, "is_dungeon_outside_main_frame", lambda: False)
     monkeypatch.setattr(
         task,
         "is_dungeon_hangup_active",
@@ -618,6 +504,7 @@ def test_raid_flow_retries_after_highlight_disappears_and_resets_failures(
     monkeypatch,
 ) -> None:
     task = RCFBTask()
+    task.mark_dungeon_entered()
     completion_results = iter((False, False, False, False, True))
     hangup_results = iter((False, True, False, True))
     click_kwargs: list[dict] = []
@@ -636,6 +523,7 @@ def test_raid_flow_retries_after_highlight_disappears_and_resets_failures(
         lambda: next(completion_results),
     )
     monkeypatch.setattr(task, "wake_from_power_saving_if_needed", lambda: False)
+    monkeypatch.setattr(task, "is_dungeon_outside_main_frame", lambda: False)
     monkeypatch.setattr(
         task,
         "is_dungeon_hangup_active",
@@ -662,6 +550,7 @@ def test_raid_flow_fails_after_three_full_hangup_verification_windows(
     monkeypatch,
 ) -> None:
     task = RCFBTask()
+    task.mark_dungeon_entered()
     click_kwargs: list[dict] = []
     waits: list[int] = []
     screenshots: list[str] = []
@@ -675,6 +564,7 @@ def test_raid_flow_fails_after_three_full_hangup_verification_windows(
     monkeypatch.setattr(task, "is_stopped", lambda: False)
     monkeypatch.setattr(task, "is_dungeon_transfer_out_visible", lambda: False)
     monkeypatch.setattr(task, "wake_from_power_saving_if_needed", lambda: False)
+    monkeypatch.setattr(task, "is_dungeon_outside_main_frame", lambda: False)
     monkeypatch.setattr(task, "is_dungeon_hangup_active", lambda: False)
     monkeypatch.setattr(
         task,
@@ -700,6 +590,7 @@ def test_raid_flow_fails_after_three_full_hangup_verification_windows(
 
 def test_raid_flow_does_not_blind_tap_when_tracker_is_hidden(monkeypatch) -> None:
     task = RCFBTask()
+    task.mark_dungeon_entered()
     tracker_checks: list[dict] = []
     screenshots: list[str] = []
     monkeypatch.setattr(task, "_make_deadline", lambda timeout_ms: 1.0)
@@ -712,6 +603,7 @@ def test_raid_flow_does_not_blind_tap_when_tracker_is_hidden(monkeypatch) -> Non
     monkeypatch.setattr(task, "is_stopped", lambda: False)
     monkeypatch.setattr(task, "is_dungeon_transfer_out_visible", lambda: False)
     monkeypatch.setattr(task, "wake_from_power_saving_if_needed", lambda: False)
+    monkeypatch.setattr(task, "is_dungeon_outside_main_frame", lambda: False)
     monkeypatch.setattr(task, "is_dungeon_hangup_active", lambda: False)
     monkeypatch.setattr(
         task,
@@ -735,6 +627,7 @@ def test_raid_flow_does_not_blind_tap_when_tracker_is_hidden(monkeypatch) -> Non
 
 def test_raid_flow_wakes_power_saving_before_hangup_detection(monkeypatch) -> None:
     task = RCFBTask()
+    task.mark_dungeon_entered()
     completion_results = iter((False, False, False, True))
     wake_results = iter((True, False))
     hangup_results = iter((True, True))
@@ -757,6 +650,7 @@ def test_raid_flow_wakes_power_saving_before_hangup_detection(monkeypatch) -> No
         "wake_from_power_saving_if_needed",
         lambda: events.append("wake") or next(wake_results),
     )
+    monkeypatch.setattr(task, "is_dungeon_outside_main_frame", lambda: False)
     monkeypatch.setattr(
         task,
         "is_dungeon_hangup_active",
@@ -777,8 +671,48 @@ def test_raid_flow_wakes_power_saving_before_hangup_detection(monkeypatch) -> No
     assert events == ["wake", "hangup", "wake", "hangup"]
 
 
+def test_raid_flow_accepts_stable_main_scene_when_transfer_countdown_was_missed(
+    monkeypatch,
+) -> None:
+    task = RCFBTask()
+    task.mark_dungeon_entered()
+    waits: list[int] = []
+    monkeypatch.setattr(task, "_make_deadline", lambda timeout_ms: 1.0)
+    monkeypatch.setattr(task, "_is_deadline_expired", lambda deadline: False)
+    monkeypatch.setattr(
+        task,
+        "_remaining_ms",
+        lambda deadline: task.DUNGEON_HANGUP_VERIFY_INTERVAL_MS,
+    )
+    monkeypatch.setattr(task, "is_stopped", lambda: False)
+    monkeypatch.setattr(task, "is_dungeon_transfer_out_visible", lambda: False)
+    monkeypatch.setattr(task, "wake_from_power_saving_if_needed", lambda: False)
+    monkeypatch.setattr(task, "is_dungeon_outside_main_frame", lambda: True)
+    monkeypatch.setattr(
+        task,
+        "is_dungeon_hangup_active",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        task,
+        "click_current_dungeon_task_if_visible",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("已稳定回到主界面时不应点击任务追踪")
+        ),
+    )
+    monkeypatch.setattr(task, "wait", waits.append)
+    monkeypatch.setattr(task, "_log", lambda message: None)
+    monkeypatch.setattr(task, "_debug", lambda message: None)
+
+    task.run_daily_raid_flow()
+
+    assert task._dungeon_completion_confirmed
+    assert waits == [task.DUNGEON_HANGUP_VERIFY_INTERVAL_MS] * 2
+
+
 def test_leave_after_completion_clicks_exit_then_exit_team(monkeypatch) -> None:
     task = RCFBTask()
+    task.mark_dungeon_completed()
     clicks: list[tuple[str, dict]] = []
     transfers: list[int] = []
 
@@ -788,6 +722,7 @@ def test_leave_after_completion_clicks_exit_then_exit_team(monkeypatch) -> None:
 
     monkeypatch.setattr(task, "click_template_if_available", click_template)
     monkeypatch.setattr(task, "click_visible_dungeon_exit_team_button", lambda: False)
+    monkeypatch.setattr(task, "wake_from_power_saving_if_needed", lambda: False)
     monkeypatch.setattr(
         task,
         "wait_for_dungeon_transfer_complete",
@@ -813,8 +748,10 @@ def test_leave_after_completion_clicks_exit_then_exit_team(monkeypatch) -> None:
 
 def test_leave_after_completion_clicks_already_open_exit_team_dialog(monkeypatch) -> None:
     task = RCFBTask()
+    task.mark_dungeon_completed()
     transfers: list[int] = []
     monkeypatch.setattr(task, "click_visible_dungeon_exit_team_button", lambda: True)
+    monkeypatch.setattr(task, "wake_from_power_saving_if_needed", lambda: False)
     monkeypatch.setattr(
         task,
         "click_template_if_available",
@@ -835,10 +772,12 @@ def test_leave_after_completion_clicks_already_open_exit_team_dialog(monkeypatch
 
 def test_leave_after_completion_retries_exit_locally_before_success(monkeypatch) -> None:
     task = RCFBTask()
+    task.mark_dungeon_completed()
     clicked_templates: list[str] = []
     button_results = iter([False, True])
     transfers: list[int] = []
     monkeypatch.setattr(task, "click_visible_dungeon_exit_team_button", lambda: False)
+    monkeypatch.setattr(task, "wake_from_power_saving_if_needed", lambda: False)
 
     def click_template(template: str, **kwargs) -> bool:
         clicked_templates.append(template)
@@ -873,11 +812,19 @@ def test_leave_after_completion_retries_exit_locally_before_success(monkeypatch)
 
 def test_leave_after_completion_waits_for_auto_transfer_then_leaves_team(monkeypatch) -> None:
     task = RCFBTask()
+    task.mark_dungeon_completed()
     transfers: list[int] = []
     leaves: list[bool] = []
     screenshots: list[str] = []
     monkeypatch.setattr(task, "click_visible_dungeon_exit_team_button", lambda: False)
     monkeypatch.setattr(task, "click_template_if_available", lambda *args, **kwargs: False)
+    monkeypatch.setattr(task, "wake_from_power_saving_if_needed", lambda: False)
+    outside_states = iter((False, True))
+    monkeypatch.setattr(
+        task,
+        "wait_for_verified_outside_dungeon",
+        lambda **kwargs: next(outside_states),
+    )
     monkeypatch.setattr(
         task,
         "save_debug_screenshot",
@@ -888,7 +835,9 @@ def test_leave_after_completion_waits_for_auto_transfer_then_leaves_team(monkeyp
         "wait_for_dungeon_transfer_complete",
         lambda *, timeout_ms: transfers.append(timeout_ms),
     )
-    monkeypatch.setattr(task, "leave_team_if_present", lambda: leaves.append(True))
+    monkeypatch.setattr(task, "leave_team", lambda **kwargs: leaves.append(True))
+    monkeypatch.setattr(task, "close_all_panels", lambda **kwargs: None)
+    monkeypatch.setattr(task, "is_game_main_ready", lambda **kwargs: True)
 
     task.leave_team_after_completion()
 
@@ -898,34 +847,184 @@ def test_leave_after_completion_waits_for_auto_transfer_then_leaves_team(monkeyp
     assert leaves == [True]
 
 
+def test_failed_uncompleted_dungeon_never_waits_for_auto_transfer(monkeypatch) -> None:
+    task = RCFBTask()
+    task.mark_dungeon_entered()
+    screenshots: list[str] = []
+    monkeypatch.setattr(task, "wake_from_power_saving_if_needed", lambda: False)
+    monkeypatch.setattr(task, "click_dungeon_exit_team_with_retries", lambda: False)
+    monkeypatch.setattr(task, "wait_for_verified_outside_dungeon", lambda **kwargs: False)
+    monkeypatch.setattr(
+        task,
+        "save_debug_screenshot",
+        lambda prefix: screenshots.append(prefix) or "failure-exit.png",
+    )
+    monkeypatch.setattr(
+        task,
+        "wait_for_dungeon_transfer_complete",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("未完成副本不得等待自动传出")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="禁止依赖自动传出"):
+        task.exit_team_dungeon_strict(
+            allow_auto_transfer=False,
+            screenshot_prefix="rcfb_failure_exit_missing",
+        )
+
+    assert screenshots == ["rcfb_failure_exit_missing"]
+
+
+def test_failed_dungeon_cleanup_accepts_verified_outside_scene(monkeypatch) -> None:
+    task = RCFBTask()
+    task.mark_dungeon_entered()
+    events: list[str] = []
+    monkeypatch.setattr(task, "wake_from_power_saving_if_needed", lambda: False)
+    monkeypatch.setattr(task, "click_dungeon_exit_team_with_retries", lambda: False)
+    monkeypatch.setattr(
+        task,
+        "wait_for_verified_outside_dungeon",
+        lambda **kwargs: True,
+    )
+    monkeypatch.setattr(
+        task,
+        "finish_verified_outside_dungeon_cleanup",
+        lambda: events.append("outside-cleaned"),
+    )
+
+    task.exit_team_dungeon_strict(
+        allow_auto_transfer=False,
+        screenshot_prefix="must-not-save",
+    )
+
+    assert events == ["outside-cleaned"]
+
+
+def test_outside_verification_wakes_power_saving_and_requires_three_frames(
+    monkeypatch,
+) -> None:
+    task = RCFBTask()
+    wake_states = iter((True, False, False))
+    outside_frame_calls: list[bool] = []
+    monkeypatch.setattr(task, "_make_deadline", lambda timeout_ms: 1.0)
+    monkeypatch.setattr(task, "_is_deadline_expired", lambda deadline: False)
+    monkeypatch.setattr(task, "_remaining_ms", lambda deadline: 1000)
+    monkeypatch.setattr(task, "wait", lambda ms: None)
+    monkeypatch.setattr(
+        task,
+        "wake_from_power_saving_if_needed",
+        lambda: next(wake_states),
+    )
+    monkeypatch.setattr(
+        task,
+        "is_dungeon_outside_main_frame",
+        lambda: outside_frame_calls.append(True) or True,
+    )
+
+    assert task.wait_for_verified_outside_dungeon()
+    assert len(outside_frame_calls) == task.DUNGEON_OUTSIDE_STABLE_CONFIRMATIONS
+
+
+def test_outside_main_frame_uses_one_atomic_screenshot() -> None:
+    task = RCFBTask()
+    screenshot = np.zeros((720, 1280, 3), dtype=np.uint8)
+    screenshot_calls: list[bool] = []
+
+    class MainFrameVision:
+        @staticmethod
+        def match_template(image, templates, **kwargs):
+            assert image is screenshot
+            candidates = [templates] if isinstance(templates, str) else templates
+            found = task.BTN_HD in candidates
+            return ImageMatchResult(
+                found,
+                0.99 if found else 0.0,
+                (921, 63) if found else None,
+                None,
+            )
+
+    task._vision = MainFrameVision()  # type: ignore[assignment]
+    task.screenshot = lambda: screenshot_calls.append(True) or screenshot  # type: ignore[method-assign]
+
+    assert task.is_dungeon_outside_main_frame()
+    assert screenshot_calls == [True]
+
+
+def test_failure_cleanup_wakes_and_exits_confirmed_dungeon(monkeypatch) -> None:
+    task = RCFBTask()
+    task.mark_dungeon_entered()
+    events: list[object] = []
+    monkeypatch.setattr(
+        task,
+        "wake_from_power_saving_if_needed",
+        lambda: events.append("wake") or True,
+    )
+    monkeypatch.setattr(
+        task,
+        "close_all_panels",
+        lambda **kwargs: events.append(("close", kwargs)),
+    )
+    monkeypatch.setattr(
+        task,
+        "exit_team_dungeon_strict",
+        lambda **kwargs: events.append(("exit", kwargs)),
+    )
+
+    task.cleanup_after_failure("hangup failed")
+
+    assert events == [
+        "wake",
+        (
+            "close",
+            {"timeout_ms": task.DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS},
+        ),
+        (
+            "exit",
+            {
+                "allow_auto_transfer": False,
+                "screenshot_prefix": "rcfb_failure_exit_missing",
+            },
+        ),
+    ]
+
+
 @pytest.mark.parametrize("exit_team_clicked", [False, True])
-def test_leave_after_completion_transfer_timeout_does_not_rerun(
+def test_leave_after_completion_transfer_timeout_is_not_swallowed(
     monkeypatch,
     exit_team_clicked: bool,
 ) -> None:
     task = RCFBTask()
+    task.mark_dungeon_completed()
     leaves: list[bool] = []
     monkeypatch.setattr(
         task,
         "click_dungeon_exit_team_with_retries",
         lambda: exit_team_clicked,
     )
+    monkeypatch.setattr(task, "wake_from_power_saving_if_needed", lambda: False)
+    if not exit_team_clicked:
+        monkeypatch.setattr(task, "wait_for_verified_outside_dungeon", lambda **kwargs: False)
     monkeypatch.setattr(task, "save_debug_screenshot", lambda prefix: "exit-missing.png")
     monkeypatch.setattr(
         task,
         "wait_for_dungeon_transfer_complete",
         lambda **kwargs: (_ for _ in ()).throw(RuntimeError("传送超时")),
     )
-    monkeypatch.setattr(task, "leave_team_if_present", lambda: leaves.append(True))
+    monkeypatch.setattr(task, "leave_team", lambda **kwargs: leaves.append(True))
 
-    task.leave_team_after_completion()
+    with pytest.raises(RuntimeError, match="传送超时"):
+        task.leave_team_after_completion()
 
-    assert leaves == [True]
+    assert leaves == []
 
 
 def test_leave_after_completion_stop_interrupts_auto_transfer(monkeypatch) -> None:
     task = RCFBTask()
+    task.mark_dungeon_completed()
     monkeypatch.setattr(task, "click_dungeon_exit_team_with_retries", lambda: False)
+    monkeypatch.setattr(task, "wake_from_power_saving_if_needed", lambda: False)
+    monkeypatch.setattr(task, "wait_for_verified_outside_dungeon", lambda **kwargs: False)
     monkeypatch.setattr(task, "save_debug_screenshot", lambda prefix: "exit-missing.png")
     monkeypatch.setattr(
         task,

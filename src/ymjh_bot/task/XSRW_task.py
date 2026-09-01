@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Literal
 
 import cv2
@@ -55,6 +56,25 @@ class BountyPanelSnapshot:
         )
 
 
+class DailyBountyPhase(str, Enum):
+    """Verified milestones for one Jianghu daily bounty execution."""
+
+    TARGET_OPENED = "target_opened"
+    TEAM_CREATED = "team_created"
+    PANEL_RESTORED = "panel_restored"
+    ENTRY_CONFIRMED = "entry_confirmed"
+    COMPLETION_CONFIRMED = "completion_confirmed"
+
+
+@dataclass(slots=True)
+class DailyBountyContext:
+    """Cleanup context retained from the first forward click until safe exit."""
+
+    card: BountyCardSnapshot
+    delegate: RCFBTask
+    phase: DailyBountyPhase = DailyBountyPhase.TARGET_OPENED
+
+
 class XSRWTask(YmGameTask):
     """一梦江湖悬赏任务。"""
 
@@ -92,21 +112,6 @@ class XSRWTask(YmGameTask):
     BTN_DAILY_CONFIRM = str(
         YmGameTask.TEMPLATES_DIR / "btn_xsrw_daily_confirm.png"
     )
-    BTN_DAILY_FIND_TEAM = str(
-        YmGameTask.TEMPLATES_DIR / "btn_xsrw_daily_find_team.png"
-    )
-    TEXT_DAILY_TEAM_LIST = str(
-        YmGameTask.TEMPLATES_DIR / "text_xsrw_daily_team_list.png"
-    )
-    BTN_DAILY_JOIN_TEAM = str(
-        YmGameTask.TEMPLATES_DIR / "btn_xsrw_daily_join_team.png"
-    )
-    BTN_DAILY_TEAM_REFRESH = str(
-        YmGameTask.TEMPLATES_DIR / "btn_xsrw_daily_team_refresh.png"
-    )
-    BTN_DAILY_EXIT_SOLO = str(
-        YmGameTask.TEMPLATES_DIR / "btn_xsrw_daily_exit_solo.png"
-    )
 
     CARD_LEFTS = (260, 483, 705, 928)
     CARD_WIDTH = 215
@@ -119,11 +124,6 @@ class XSRWTask(YmGameTask):
     ROI_DAILY_PANEL_TITLE = (0, 0, 260, 80)
     ROI_DAILY_CHALLENGE = (1040, 600, 220, 110)
     ROI_DAILY_CONFIRM = (930, 530, 270, 130)
-    ROI_DAILY_FIND_TEAM = (870, 600, 230, 110)
-    ROI_DAILY_TEAM_LIST = (740, 0, 190, 80)
-    ROI_DAILY_JOIN_ACTIONS = (1160, 100, 100, 520)
-    ROI_DAILY_TEAM_REFRESH = (1120, 640, 160, 80)
-    ROI_DAILY_EXIT_SOLO = (700, 440, 300, 130)
     CARD_CATEGORY_Y = 178
     CARD_CATEGORY_HEIGHT = 48
     CARD_REWARD_X_OFFSET = 130
@@ -167,27 +167,23 @@ class XSRWTask(YmGameTask):
     CHALLENGE_VICTORY_EXIT_SETTLE_MS = 2000
     DAILY_PANEL_THRESHOLD = 0.90
     DAILY_CHALLENGE_THRESHOLD = 0.90
-    DAILY_CONFIRM_THRESHOLD = 0.90
-    DAILY_TEAM_THRESHOLD = 0.90
-    DAILY_JOIN_THRESHOLD = 0.85
-    DAILY_SOLO_EXIT_THRESHOLD = 0.90
+    DAILY_CONFIRM_THRESHOLD = 0.75
     DAILY_ENTRY_TIMEOUT_MS = 15000
     DAILY_ENTRY_SETTLE_MS = 5000
-    DAILY_TEAM_JOIN_ROUNDS = 5
-    DAILY_TEAM_MAX_APPLICATIONS_PER_ROUND = 4
-    DAILY_TEAM_APPLICATION_WAIT_MS = 60000
-    DAILY_TEAM_QUICK_CONFIRM_MS = 1500
-    DAILY_TEAM_APPLICATION_POLL_MS = 1000
-    DAILY_TEAM_LIST_SETTLE_MS = 1200
-    DAILY_TEAM_LIST_CLOSE_POINT = (1234, 30)
+    DAILY_ENTRY_VERIFY_TIMEOUT_MS = 10000
+    DAILY_ENTRY_VERIFY_POLL_MS = 500
+    DAILY_ENTRY_MAX_ATTEMPTS = 2
+    DAILY_KNOWN_PANEL_DISMISS_ATTEMPTS = 3
+    DAILY_KNOWN_PANEL_DISMISS_WAIT_MS = 1000
+    DAILY_BOUNTY_PANEL_DISMISS_POINT = (20, 360)
     DAILY_TASK_WAIT_TIMEOUT_MS = 300000
-    DAILY_SOLO_RAID_TIMEOUT_MS = 14400000
 
     RCFB_DELEGATE_STEPS = ("leave_team_after_completion",)
 
     def __init__(self, default_interval_ms: int | None = None):
         super().__init__(default_interval_ms=default_interval_ms)
         self._active_delegate: YmGameTask | None = None
+        self._daily_context: DailyBountyContext | None = None
 
     def before_start(self) -> None:
         """Recover a stranded bounty deposit modal before shared startup checks."""
@@ -203,13 +199,40 @@ class XSRWTask(YmGameTask):
 
     def reset_startup_state(self) -> None:
         self._active_delegate = None
+        self._daily_context = None
 
     def stop(self) -> None:
         """Propagate queue stop/pause requests to the active delegated flow."""
         super().stop()
         if self._active_delegate is not None:
             self._active_delegate.stop()
+        if self._daily_context is not None:
+            self._daily_context.delegate.stop()
 
+    def reset_stop(self) -> None:
+        """Clear stop state for this task and any retained daily delegate."""
+        super().reset_stop()
+        if self._active_delegate is not None:
+            self._active_delegate.reset_stop()
+        if self._daily_context is not None:
+            self._daily_context.delegate.reset_stop()
+
+    def cleanup_after_failure(
+        self,
+        failure: Exception | str | None = None,
+    ) -> None:
+        """Finish retained daily-bounty cleanup before a queue-level retry."""
+        if self._daily_context is None:
+            return
+
+        context = self._daily_context
+        context.delegate.reset_stop()
+        self._log(
+            "悬赏任务失败，重试未完成的江湖纪事现场清理："
+            f"阶段={context.phase.value}，失败={failure}"
+        )
+        self.cleanup_daily_bounty_after_failure(context)
+        self._daily_context = None
     @step(retry=1, timeout_ms=None)
     def run_bounty_flow(self) -> None:
         """Run accept/execute/verify rounds until today's bounty work is done."""
@@ -492,9 +515,7 @@ class XSRWTask(YmGameTask):
                 raise RuntimeError(f"待完成悬赏类型或前往按钮无法确认，已保存截图：{debug_path}")
 
             self._log(f"开始执行待完成悬赏：{card.category}")
-            self.tap(*card.action_center)
-            self.wait(self.FORWARD_SETTLE_MS)
-            self._run_category_delegate(card.category)
+            self._run_category_delegate(card)
             current = self.open_bounty_panel(refresh=True)
             remaining = sum(
                 1 for pending in current.pending_cards if pending.category == card.category
@@ -508,15 +529,19 @@ class XSRWTask(YmGameTask):
             raise StepStopException("Stop requested")
         return current
 
-    def _run_category_delegate(self, category: BountyCategory) -> None:
+    def _run_category_delegate(self, card: BountyCardSnapshot) -> None:
+        category = card.category
+        if card.action != "前往" or card.action_center is None:
+            raise ValueError("Only a confirmed pending bounty card can be executed")
         if category == "聚义平冤":
+            self.tap(*card.action_center)
+            self.wait(self.FORWARD_SETTLE_MS)
             self.run_jypy_bounty_challenge()
             return
         if category != "江湖纪事":
             raise ValueError(f"Unsupported bounty category: {category}")
 
-        joined_team = self.enter_daily_bounty_dungeon()
-        delegate: YmGameTask = RCFBTask()
+        delegate = RCFBTask()
         delegate._screen_resolution = self._screen_resolution
         delegate.setup(
             self._adb,
@@ -526,226 +551,279 @@ class XSRWTask(YmGameTask):
             verbose=self._verbose,
         )
         delegate.reset_startup_state()
+        context = DailyBountyContext(card=card, delegate=delegate)
+        self._daily_context = context
         self._active_delegate = delegate
         try:
+            # Retain cleanup ownership before the very first forward click. Any
+            # click, transition, team creation, or challenge failure below can
+            # therefore be normalized by the same stage-aware cleanup path.
+            self.tap(*card.action_center)
+            self.wait(self.FORWARD_SETTLE_MS)
+            self.enter_daily_bounty_dungeon(context)
             self.wait_for_daily_bounty_task(delegate)
-            self.run_daily_bounty_raid_flow(
+            context.phase = DailyBountyPhase.ENTRY_CONFIRMED
+            self.run_daily_bounty_raid_flow(delegate)
+            context.phase = DailyBountyPhase.COMPLETION_CONFIRMED
+            self._execute_delegate_steps(
                 delegate,
-                timeout_ms=(
-                    delegate.TASK_FLOW_TIMEOUT_MS
-                    if joined_team
-                    else self.DAILY_SOLO_RAID_TIMEOUT_MS
-                ),
+                self.RCFB_DELEGATE_STEPS,
+                category,
             )
-            if joined_team:
-                self._execute_delegate_steps(
-                    delegate,
-                    self.RCFB_DELEGATE_STEPS,
-                    category,
-                )
-            else:
-                self.leave_daily_bounty_solo(delegate)
+            self._daily_context = None
+        except StepStopException:
+            raise
+        except Exception as exc:
+            try:
+                self.cleanup_daily_bounty_after_failure(context)
+            except StepStopException:
+                raise
+            except Exception as cleanup_exc:
+                raise RuntimeError(
+                    f"江湖纪事悬赏原始异常：{exc}；"
+                    f"阶段 {context.phase.value} 清理异常：{cleanup_exc}"
+                ) from cleanup_exc
+            self._daily_context = None
+            raise
         finally:
             self._active_delegate = None
 
-    def enter_daily_bounty_dungeon(self) -> bool:
-        """Prefer a matching team, falling back to a direct solo challenge."""
-        if self.try_join_daily_bounty_team():
-            return True
-
-        self._log("限定时间内未加入江湖纪事队伍，回到副本页使用单人挑战兜底")
-        self.click_point(*self.DAILY_TEAM_LIST_CLOSE_POINT, offset=0)
-        self.wait(self.DAILY_TEAM_LIST_SETTLE_MS)
-        self.enter_daily_bounty_solo()
-        return False
-
-    def try_join_daily_bounty_team(self) -> bool:
-        """Apply to visible teams for the exact dungeon selected by the bounty."""
-        panel = self._wait_binary_match(
-            self.TEXT_DAILY_PANEL_TITLE,
-            mode="light_foreground",
-            threshold=self.DAILY_PANEL_THRESHOLD,
-            roi=self.ROI_DAILY_PANEL_TITLE,
-            timeout_ms=self.DAILY_ENTRY_TIMEOUT_MS,
+    def cleanup_daily_bounty_after_failure(
+        self,
+        context: DailyBountyContext,
+    ) -> None:
+        """Normalize every known pre-entry or in-dungeon bounty failure state."""
+        delegate = context.delegate
+        self._log(
+            "江湖纪事悬赏异常，开始按阶段安全清理："
+            f"{context.phase.value}"
         )
-        if not panel.found:
-            debug_path = self.save_debug_screenshot("xsrw_daily_panel_missing")
-            raise RuntimeError(f"江湖纪事悬赏未进入日常副本面板，已保存截图：{debug_path}")
+        delegate.wake_from_power_saving_if_needed()
+        entry_confirmed = context.phase in {
+            DailyBountyPhase.ENTRY_CONFIRMED,
+            DailyBountyPhase.COMPLETION_CONFIRMED,
+        } or delegate._dungeon_entry_confirmed
+        if entry_confirmed:
+            delegate.close_all_panels(
+                timeout_ms=delegate.DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS
+            )
+            delegate.exit_team_dungeon_strict(
+                allow_auto_transfer=delegate._dungeon_completion_confirmed,
+                screenshot_prefix="xsrw_daily_failure_exit_missing",
+            )
+            return
 
-        find_team = self._wait_binary_match(
-            self.BTN_DAILY_FIND_TEAM,
-            mode="otsu_dark",
-            threshold=self.DAILY_TEAM_THRESHOLD,
-            roi=self.ROI_DAILY_FIND_TEAM,
-            timeout_ms=self.DAILY_ENTRY_TIMEOUT_MS,
+        # These are legitimate pre-entry pages, not unknown dungeon residue.
+        # Dismiss them before generic panel cleanup so cleanup never clicks a
+        # different bounty card's “前往” action.
+        self._dismiss_known_daily_bounty_panels()
+        delegate.close_all_panels(
+            timeout_ms=delegate.DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS
         )
-        if not find_team.found or find_team.center is None:
-            debug_path = self.save_debug_screenshot("xsrw_daily_find_team_missing")
-            raise RuntimeError(f"日常副本面板未找到寻找队伍按钮，已保存截图：{debug_path}")
+        if delegate.detect_and_mark_dungeon_scene():
+            delegate.exit_team_dungeon_strict(
+                allow_auto_transfer=delegate._dungeon_completion_confirmed,
+                screenshot_prefix="xsrw_daily_failure_exit_missing",
+            )
+            return
+        delegate.normalize_outside_dungeon_after_failure(panels_already_closed=True)
 
-        self._log("打开江湖纪事悬赏对应副本的队伍列表")
-        self.tap(*find_team.center)
-        team_list = self._wait_binary_match(
-            self.TEXT_DAILY_TEAM_LIST,
-            mode="light_foreground",
-            threshold=self.DAILY_TEAM_THRESHOLD,
-            roi=self.ROI_DAILY_TEAM_LIST,
-            timeout_ms=self.DAILY_ENTRY_TIMEOUT_MS,
-        )
-        if not team_list.found:
-            debug_path = self.save_debug_screenshot("xsrw_daily_team_list_missing")
-            raise RuntimeError(f"未能确认日常副本队伍列表，已保存截图：{debug_path}")
-
-        for round_index in range(1, self.DAILY_TEAM_JOIN_ROUNDS + 1):
+    def _dismiss_known_daily_bounty_panels(self) -> None:
+        """Dismiss known bounty overlays without treating them as dungeon scenes."""
+        for attempt in range(1, self.DAILY_KNOWN_PANEL_DISMISS_ATTEMPTS + 1):
             screenshot = self.screenshot()
-            join_matches = self._vision.match_all_templates(
+            bounty_panel = self.read_bounty_panel(screenshot)
+            daily_panel = self._binary_match(
                 screenshot,
-                self.BTN_DAILY_JOIN_TEAM,
-                threshold=self.DAILY_JOIN_THRESHOLD,
-                roi=self.scale_roi(self.ROI_DAILY_JOIN_ACTIONS),
-            )
-            join_matches.sort(key=lambda match: match.center[1] if match.center else 9999)
-            visible_join_matches = [
-                match
-                for match in join_matches[: self.DAILY_TEAM_MAX_APPLICATIONS_PER_ROUND]
-                if match.center is not None
-            ]
-            if visible_join_matches:
-                for application_index, match in enumerate(visible_join_matches, start=1):
-                    self._log(
-                        f"申请加入江湖纪事悬赏队伍 "
-                        f"{round_index}/{self.DAILY_TEAM_JOIN_ROUNDS}-"
-                        f"{application_index}/{len(visible_join_matches)}"
-                    )
-                    assert match.center is not None
-                    self.tap(*match.center)
-                    if self._wait_daily_team_follow_confirm(
-                        timeout_ms=self.DAILY_TEAM_QUICK_CONFIRM_MS,
-                    ):
-                        self._log("已加入江湖纪事悬赏队伍并确认跟随")
-                        return True
-
-                if self._wait_daily_team_follow_confirm():
-                    self._log("已加入江湖纪事悬赏队伍并确认跟随")
-                    return True
-            else:
-                self._log(
-                    f"当前未找到可申请的江湖纪事队伍 "
-                    f"{round_index}/{self.DAILY_TEAM_JOIN_ROUNDS}"
-                )
-
-            refreshed = self._binary_match(
-                self.screenshot(),
-                self.BTN_DAILY_TEAM_REFRESH,
-                mode="otsu_dark",
-                threshold=self.DAILY_TEAM_THRESHOLD,
-                roi=self.ROI_DAILY_TEAM_REFRESH,
-            )
-            if refreshed.found and refreshed.center is not None:
-                self.tap(*refreshed.center)
-                self.wait(self.DAILY_TEAM_LIST_SETTLE_MS)
-
-        return False
-
-    def _wait_daily_team_follow_confirm(self, *, timeout_ms: int | None = None) -> bool:
-        deadline = self._make_deadline(timeout_ms or self.DAILY_TEAM_APPLICATION_WAIT_MS)
-        while not self._is_deadline_expired(deadline):
-            if self.confirm_center_modal_ok_if_visible(
-                "江湖纪事悬赏入队跟随",
-                wait_after_click_ms=2000,
-            ):
-                return True
-            self.wait(self.DAILY_TEAM_APPLICATION_POLL_MS)
-        return False
-
-    def enter_daily_bounty_solo(self) -> None:
-        """Enter the selected daily dungeon without a team as a final fallback."""
-        confirm = self._wait_binary_match(
-            self.BTN_DAILY_CONFIRM,
-            mode="otsu_dark",
-            threshold=self.DAILY_CONFIRM_THRESHOLD,
-            roi=self.ROI_DAILY_CONFIRM,
-            timeout_ms=1000,
-        )
-        if not confirm.found:
-            panel = self._wait_binary_match(
                 self.TEXT_DAILY_PANEL_TITLE,
                 mode="light_foreground",
                 threshold=self.DAILY_PANEL_THRESHOLD,
                 roi=self.ROI_DAILY_PANEL_TITLE,
-                timeout_ms=self.DAILY_ENTRY_TIMEOUT_MS,
             )
-            if not panel.found:
-                debug_path = self.save_debug_screenshot("xsrw_daily_panel_missing")
-                raise RuntimeError(f"江湖纪事悬赏未进入日常副本面板，已保存截图：{debug_path}")
+            if not bounty_panel.visible and not daily_panel.found:
+                return
 
-            challenge = self._wait_binary_match(
-                self.BTN_DAILY_CHALLENGE,
-                mode="otsu_dark",
-                threshold=self.DAILY_CHALLENGE_THRESHOLD,
-                roi=self.ROI_DAILY_CHALLENGE,
-                timeout_ms=self.DAILY_ENTRY_TIMEOUT_MS,
+            if bounty_panel.visible:
+                self._log(
+                    "失败清理检测到悬赏面板，点击面板外侧关闭 "
+                    f"{attempt}/{self.DAILY_KNOWN_PANEL_DISMISS_ATTEMPTS}"
+                )
+                self.click_point(*self.DAILY_BOUNTY_PANEL_DISMISS_POINT, offset=0)
+                self.wait(self.DAILY_KNOWN_PANEL_DISMISS_WAIT_MS)
+            else:
+                self._log(
+                    "失败清理检测到江湖纪事副本选择页，关闭面板 "
+                    f"{attempt}/{self.DAILY_KNOWN_PANEL_DISMISS_ATTEMPTS}"
+                )
+                self.close_all_panels(
+                    timeout_ms=RCFBTask.DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS
+                )
+
+        screenshot = self.screenshot()
+        if self.read_bounty_panel(screenshot).visible:
+            debug_path = self.save_debug_screenshot("xsrw_cleanup_bounty_panel_stuck")
+            raise RuntimeError(f"悬赏面板清理后仍可见，已保存截图：{debug_path}")
+        daily_panel = self._binary_match(
+            screenshot,
+            self.TEXT_DAILY_PANEL_TITLE,
+            mode="light_foreground",
+            threshold=self.DAILY_PANEL_THRESHOLD,
+            roi=self.ROI_DAILY_PANEL_TITLE,
+        )
+        if daily_panel.found:
+            debug_path = self.save_debug_screenshot("xsrw_cleanup_daily_panel_stuck")
+            raise RuntimeError(f"江湖纪事副本页清理后仍可见，已保存截图：{debug_path}")
+
+    def enter_daily_bounty_dungeon(self, context: DailyBountyContext) -> None:
+        """Create a private one-player team, then challenge the bounty dungeon."""
+        self._log("关闭江湖纪事副本页，创建人数要求为 1 的自有队伍")
+        self.close_all_panels(
+            timeout_ms=RCFBTask.DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS
+        )
+        self.create_team("日常", min_member_count=1)
+        context.phase = DailyBountyPhase.TEAM_CREATED
+        self.close_all_panels(
+            timeout_ms=RCFBTask.DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS
+        )
+        self._restore_daily_panel_from_main_scene(context.card)
+        context.phase = DailyBountyPhase.PANEL_RESTORED
+        self.enter_daily_bounty_challenge()
+
+    def _restore_daily_panel_from_main_scene(
+        self,
+        original_card: BountyCardSnapshot,
+    ) -> None:
+        """Reopen and click only the exact card slot selected before team creation."""
+        snapshot = self.open_bounty_panel(refresh=False)
+        restored = next(
+            (
+                card
+                for card in snapshot.cards
+                if card.slot_index == original_card.slot_index
+            ),
+            None,
+        )
+        if (
+            restored is None
+            or restored.category != "江湖纪事"
+            or restored.action != "前往"
+            or restored.action_center is None
+        ):
+            debug_path = self.save_debug_screenshot("xsrw_daily_original_card_changed")
+            raise RuntimeError(
+                f"恢复悬赏面板后原第 {original_card.slot_index + 1} 卡位"
+                f"不再是可前往的江湖纪事，已保存截图：{debug_path}"
             )
-            if not challenge.found or challenge.center is None:
-                debug_path = self.save_debug_screenshot("xsrw_daily_challenge_missing")
-                raise RuntimeError(f"日常副本面板未找到挑战按钮，已保存截图：{debug_path}")
+        self._log(
+            f"自建单人队伍完成，重新点击原第 {original_card.slot_index + 1} "
+            "卡位江湖纪事前往"
+        )
+        self.tap(*restored.action_center)
+        self.wait(self.FORWARD_SETTLE_MS)
 
-            self._log("点击江湖纪事悬赏日常副本挑战")
-            self.tap(*challenge.center)
+    def enter_daily_bounty_challenge(self) -> None:
+        """Challenge from the self-created one-player team and verify transition."""
+        for attempt in range(1, self.DAILY_ENTRY_MAX_ATTEMPTS + 1):
             confirm = self._wait_binary_match(
                 self.BTN_DAILY_CONFIRM,
                 mode="otsu_dark",
                 threshold=self.DAILY_CONFIRM_THRESHOLD,
                 roi=self.ROI_DAILY_CONFIRM,
-                timeout_ms=self.DAILY_ENTRY_TIMEOUT_MS,
+                timeout_ms=1000,
             )
+            if not confirm.found:
+                panel = self._wait_binary_match(
+                    self.TEXT_DAILY_PANEL_TITLE,
+                    mode="light_foreground",
+                    threshold=self.DAILY_PANEL_THRESHOLD,
+                    roi=self.ROI_DAILY_PANEL_TITLE,
+                    timeout_ms=self.DAILY_ENTRY_TIMEOUT_MS,
+                )
+                if not panel.found:
+                    debug_path = self.save_debug_screenshot("xsrw_daily_panel_missing")
+                    raise RuntimeError(
+                        f"江湖纪事悬赏未进入日常副本面板，已保存截图：{debug_path}"
+                    )
 
-        if not confirm.found or confirm.center is None:
-            debug_path = self.save_debug_screenshot("xsrw_daily_confirm_missing")
-            raise RuntimeError(f"日常副本挑战未出现确认按钮，已保存截图：{debug_path}")
+                challenge = self._wait_binary_match(
+                    self.BTN_DAILY_CHALLENGE,
+                    mode="otsu_dark",
+                    threshold=self.DAILY_CHALLENGE_THRESHOLD,
+                    roi=self.ROI_DAILY_CHALLENGE,
+                    timeout_ms=self.DAILY_ENTRY_TIMEOUT_MS,
+                )
+                if not challenge.found or challenge.center is None:
+                    debug_path = self.save_debug_screenshot("xsrw_daily_challenge_missing")
+                    raise RuntimeError(
+                        f"日常副本面板未找到挑战按钮，已保存截图：{debug_path}"
+                    )
 
-        self._log("确认进入江湖纪事悬赏日常副本")
-        self.tap(*confirm.center)
-        self.wait(self.DAILY_ENTRY_SETTLE_MS)
+                self._log("点击江湖纪事悬赏日常副本挑战")
+                self.tap(*challenge.center)
+                confirm = self._wait_binary_match(
+                    self.BTN_DAILY_CONFIRM,
+                    mode="otsu_dark",
+                    threshold=self.DAILY_CONFIRM_THRESHOLD,
+                    roi=self.ROI_DAILY_CONFIRM,
+                    timeout_ms=self.DAILY_ENTRY_TIMEOUT_MS,
+                )
+
+            if not confirm.found or confirm.center is None:
+                debug_path = self.save_debug_screenshot("xsrw_daily_confirm_missing")
+                raise RuntimeError(f"日常副本挑战未出现确认按钮，已保存截图：{debug_path}")
+
+            self._log(
+                "点击江湖纪事悬赏日常副本进入确认，"
+                f"等待页面切换 {attempt}/{self.DAILY_ENTRY_MAX_ATTEMPTS}"
+            )
+            self.tap(*confirm.center)
+            self.wait(self.DAILY_ENTRY_SETTLE_MS)
+            if self._wait_for_daily_bounty_panel_to_close():
+                self._log("日常副本选择页已消失，等待副本任务追踪确认真实入本")
+                return
+
+            if attempt < self.DAILY_ENTRY_MAX_ATTEMPTS:
+                self._log("进入确认后仍停留日常副本选择页，重新挑战一次")
+
+        debug_path = self.save_debug_screenshot("xsrw_daily_entry_transition_failed")
+        raise RuntimeError(
+            "江湖纪事悬赏自建队伍挑战确认后仍停留日常副本选择页，"
+            f"已保存截图：{debug_path}"
+        )
+
+    def _wait_for_daily_bounty_panel_to_close(self) -> bool:
+        """Confirm that the self-team challenge panel is no longer visible."""
+        deadline = self._make_deadline(self.DAILY_ENTRY_VERIFY_TIMEOUT_MS)
+        while not self._is_deadline_expired(deadline):
+            if self.wake_from_power_saving_if_needed():
+                self._log("单人挑战入本复核已唤醒省电模式")
+
+            panel = self._binary_match(
+                self.screenshot(),
+                self.TEXT_DAILY_PANEL_TITLE,
+                mode="light_foreground",
+                threshold=self.DAILY_PANEL_THRESHOLD,
+                roi=self.ROI_DAILY_PANEL_TITLE,
+            )
+            if not panel.found:
+                return True
+
+            remaining_ms = self._remaining_ms(deadline)
+            if remaining_ms > 0:
+                self.wait(min(self.DAILY_ENTRY_VERIFY_POLL_MS, remaining_ms))
+        return False
 
     def wait_for_daily_bounty_task(self, delegate: RCFBTask) -> None:
         """Wait for the bounty dungeon tracker without rematching a different target."""
         if delegate.wait_for_dungeon_task(timeout_ms=self.DAILY_TASK_WAIT_TIMEOUT_MS):
+            delegate.mark_dungeon_entered()
             self._log("检测到江湖纪事悬赏副本任务追踪")
             return
 
-        delegate.leave_team_if_present()
         debug_path = self.save_debug_screenshot("xsrw_daily_task_missing")
         raise RuntimeError(
-            f"江湖纪事悬赏进入后未出现副本任务追踪，已退队并保存截图：{debug_path}"
+            f"江湖纪事悬赏进入后未出现副本任务追踪，已保存截图：{debug_path}"
         )
-
-    def leave_daily_bounty_solo(self, delegate: RCFBTask) -> None:
-        """Leave a solo dungeon using the right-side exit action."""
-        if not delegate.click_template_if_available(
-            delegate.ICON_DUNGEON_EXIT,
-            timeout_ms=delegate.DUNGEON_EXIT_ACTION_TIMEOUT_MS,
-            description="悬赏单人副本退出图标",
-            threshold=delegate.DUNGEON_EXIT_THRESHOLD,
-            roi=delegate.ROI_DUNGEON_EXIT,
-            wait_after_click_ms=500,
-        ):
-            debug_path = self.save_debug_screenshot("xsrw_daily_solo_exit_missing")
-            raise RuntimeError(f"悬赏单人副本未找到退出图标，已保存截图：{debug_path}")
-
-        if not self.click_template_if_available(
-            self.BTN_DAILY_EXIT_SOLO,
-            timeout_ms=delegate.DUNGEON_EXIT_ACTION_TIMEOUT_MS,
-            description="悬赏单人副本离开按钮",
-            threshold=self.DAILY_SOLO_EXIT_THRESHOLD,
-            roi=self.ROI_DAILY_EXIT_SOLO,
-            wait_after_click_ms=0,
-        ):
-            debug_path = self.save_debug_screenshot("xsrw_daily_solo_exit_button_missing")
-            raise RuntimeError(f"悬赏单人副本未找到离开副本按钮，已保存截图：{debug_path}")
-
-        self._log("已点击离开悬赏单人副本，等待传送结束")
-        delegate.wait_for_dungeon_transfer_complete(timeout_ms=60000)
 
     def run_daily_bounty_raid_flow(
         self,

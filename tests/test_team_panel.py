@@ -108,3 +108,56 @@ def test_open_team_panel_failure_saves_score_and_screenshot(
 
     assert clicks == [task.POINT_MAIN_TEAM] * task.TEAM_PANEL_OPEN_ATTEMPTS
     assert not hasattr(task, "POINT_MAIN_TEAM_WHEN_TASK_PANEL_OPEN")
+
+
+def test_create_team_with_one_member_never_starts_public_matching(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = YmGameTask()
+    events: list[object] = []
+    monkeypatch.setattr(task, "open_team_panel", lambda **kwargs: events.append("open"))
+    monkeypatch.setattr(task, "is_in_team", lambda: False)
+    monkeypatch.setattr(
+        task,
+        "open_quick_team_panel",
+        lambda **kwargs: events.append("quick"),
+    )
+    monkeypatch.setattr(
+        task,
+        "select_quick_team_target",
+        lambda target, **kwargs: events.append(("target", target)),
+    )
+    monkeypatch.setattr(
+        task,
+        "click_template_if_available",
+        lambda *args, **kwargs: events.append("create") or True,
+    )
+    monkeypatch.setattr(
+        task,
+        "wait_for_normal_team_state",
+        lambda **kwargs: events.append("verified") or True,
+    )
+    monkeypatch.setattr(
+        task,
+        "click_point",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("人数要求为 1 时不应点击开始匹配")
+        ),
+    )
+    monkeypatch.setattr(
+        task,
+        "wait_for_team_members",
+        lambda count: (_ for _ in ()).throw(
+            AssertionError("人数要求为 1 时不应进入招募等待")
+        ),
+    )
+
+    task.create_team("日常", min_member_count=1)
+
+    assert events == [
+        "open",
+        "quick",
+        ("target", task.TEAM_TARGET_JIANGHU_DAILY),
+        "create",
+        "verified",
+    ]

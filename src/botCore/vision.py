@@ -231,7 +231,12 @@ class VisionEngine:
 
 
 def load_image(path: str | Path) -> np.ndarray:
-    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    image_path = Path(path)
+    try:
+        encoded = np.fromfile(image_path, dtype=np.uint8)
+    except OSError as exc:
+        raise FileNotFoundError(f"Unable to load image: {path}") from exc
+    image = cv2.imdecode(encoded, cv2.IMREAD_COLOR) if encoded.size else None
     if image is None:
         raise FileNotFoundError(f"Unable to load image: {path}")
     return image

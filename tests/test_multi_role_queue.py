@@ -81,6 +81,44 @@ class RecordingRoleSwitcher:
         self.stopped = False
 
 
+class FailingCleanupTask(GameTask):
+    task_name = "失败清理任务"
+
+    def __init__(
+        self,
+        *,
+        cleanup_fails: bool = False,
+        cleanup_failures_before_success: int = 0,
+        recovery_fails: bool = False,
+    ) -> None:
+        super().__init__()
+        self.cleanup_fails = cleanup_fails
+        self.cleanup_failures_before_success = cleanup_failures_before_success
+        self.recovery_fails = recovery_fails
+        self.attempts = 0
+        self.cleanups: list[str] = []
+        self.retries: list[str] = []
+        self.recoveries: list[str] = []
+
+    @step(retry=0, timeout_ms=1000)
+    def fail(self) -> None:
+        self.attempts += 1
+        raise RuntimeError("task failed")
+
+    def cleanup_after_failure(self, failure=None) -> None:
+        self.cleanups.append(str(failure))
+        if self.cleanup_fails or len(self.cleanups) <= self.cleanup_failures_before_success:
+            raise RuntimeError("cleanup failed")
+
+    def before_retry(self, retry_scope: str, failure=None) -> None:
+        self.retries.append(str(failure))
+
+    def recover_after_cleanup_failure(self, failure=None) -> None:
+        self.recoveries.append(str(failure))
+        if self.recovery_fails:
+            raise RuntimeError("recovery failed")
+
+
 def test_arbitrary_role_queue_restarts_the_whole_graph_with_fresh_tasks() -> None:
     executions: list[int] = []
     generations: list[RecordingTask] = []
@@ -181,6 +219,149 @@ def test_role_switch_failure_does_not_execute_tasks_or_advance_cursor() -> None:
 
     assert executions == []
     assert runner.get_progress()["current_role_index"] == 0
+
+
+def test_task_failure_cleanup_runs_before_every_retry_and_final_skip() -> None:
+    task = FailingCleanupTask()
+    runner = TaskQueueRunner(
+        [task],
+        FakeADB(),  # type: ignore[arg-type]
+        VisionEngine(),
+    )
+
+    results = runner.run()
+
+    assert task.attempts == runner.MAX_TASK_ATTEMPTS == 3
+    assert len(task.cleanups) == 3
+    assert len(task.retries) == 2
+    assert all(not result.success for result in results)
+    assert runner.current_role_index == 1
+    assert runner.current_task_index == 0
+
+
+def test_task_failure_cleanup_error_recovers_and_finishes_failed_role() -> None:
+    task = FailingCleanupTask(cleanup_fails=True)
+    events: list[str] = []
+    runner = TaskQueueRunner(
+        [task],
+        FakeADB(),  # type: ignore[arg-type]
+        VisionEngine(),
+        event_callback=events.append,
+    )
+
+    results = runner.run()
+
+    assert len(results) == 1
+    assert task.attempts == 1
+    assert len(task.cleanups) == runner.MAX_FAILURE_CLEANUP_ATTEMPTS == 2
+    assert len(task.retries) == 1
+    assert len(task.recoveries) == 1
+    assert runner.current_role_index == 1
+    assert runner.current_task_index == 0
+    assert runner.current_step_index == 0
+    assert not runner._stop_requested
+    assert runner.get_run_summary() == {
+        "status": "completed_with_failures",
+        "successful_tasks": 0,
+        "failed_tasks": 1,
+        "abandoned_tasks": 0,
+        "skipped_tasks": 0,
+        "unexecuted_tasks": 0,
+    }
+    assert any("失败现场强制恢复完成" in event for event in events)
+
+
+def test_cleanup_recovery_failure_preserves_role_progress() -> None:
+    task = FailingCleanupTask(cleanup_fails=True, recovery_fails=True)
+    runner = TaskQueueRunner(
+        [task],
+        FakeADB(),  # type: ignore[arg-type]
+        VisionEngine(),
+    )
+
+    with pytest.raises(RuntimeError, match="强制恢复失败：recovery failed"):
+        runner.run()
+
+    assert task.recoveries
+    assert runner.get_progress() == {
+        "current_role_index": 0,
+        "current_task_index": 0,
+        "current_step_index": 0,
+    }
+    assert runner.get_run_summary() == {
+        "status": "recovery_failed",
+        "successful_tasks": 0,
+        "failed_tasks": 1,
+        "abandoned_tasks": 0,
+        "skipped_tasks": 0,
+        "unexecuted_tasks": 0,
+    }
+
+
+def test_transient_cleanup_failure_recovers_without_stopping_queue() -> None:
+    task = FailingCleanupTask(cleanup_failures_before_success=1)
+    runner = TaskQueueRunner(
+        [task],
+        FakeADB(),  # type: ignore[arg-type]
+        VisionEngine(),
+    )
+
+    results = runner.run()
+
+    assert len(results) == runner.MAX_TASK_ATTEMPTS
+    assert len(task.cleanups) == runner.MAX_TASK_ATTEMPTS + 1
+    assert not runner._stop_requested
+    assert runner.current_role_index == 1
+
+
+def test_retry_exhaustion_abandons_remaining_tasks_and_runs_next_role() -> None:
+    executions: list[int] = []
+    switcher = RecordingRoleSwitcher()
+
+    runner = TaskQueueRunner(
+        [FailingCleanupTask(), RecordingTask(1, executions)],
+        FakeADB(),  # type: ignore[arg-type]
+        VisionEngine(),
+        role_indices=[0, 1],
+        task_factory=lambda: [
+            RecordingTask(2, executions),
+            RecordingTask(3, executions),
+        ],
+        role_switcher=switcher,
+    )
+
+    runner.run()
+
+    assert executions == [2, 3]
+    assert switcher.roles == [0, 1]
+    assert runner.get_run_summary() == {
+        "status": "completed_with_failures",
+        "successful_tasks": 2,
+        "failed_tasks": 1,
+        "abandoned_tasks": 1,
+        "skipped_tasks": 0,
+        "unexecuted_tasks": 0,
+    }
+
+
+def test_cleanup_failure_recovers_before_switching_to_next_role() -> None:
+    executions: list[int] = []
+    failing = FailingCleanupTask(cleanup_fails=True)
+    switcher = RecordingRoleSwitcher()
+    runner = TaskQueueRunner(
+        [failing],
+        FakeADB(),  # type: ignore[arg-type]
+        VisionEngine(),
+        role_indices=[0, 1],
+        task_factory=lambda: [RecordingTask(2, executions)],
+        role_switcher=switcher,
+    )
+
+    runner.run()
+
+    assert len(failing.recoveries) == 1
+    assert switcher.roles == [0, 1]
+    assert executions == [2]
 
 
 def test_pause_resume_preserves_selected_role_cursor() -> None:

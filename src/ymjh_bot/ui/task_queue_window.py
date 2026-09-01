@@ -97,6 +97,7 @@ class QueueRunnerWorker(QObject):
     """Worker for running task queue in background thread."""
     progress = Signal(str)
     progress_state = Signal(dict)
+    run_summary = Signal(dict)
     finished = Signal()
     error = Signal(str)
 
@@ -145,8 +146,11 @@ class QueueRunnerWorker(QObject):
             if self.initial_progress:
                 self.runner.load_progress(self.initial_progress)
             self.runner.run()
+            self.run_summary.emit(self.runner.get_run_summary())
             self.finished.emit()
         except Exception as exc:
+            if self.runner is not None:
+                self.run_summary.emit(self.runner.get_run_summary())
             self.error.emit(str(exc))
 
 
@@ -183,6 +187,7 @@ class TaskQueueWindow(QMainWindow):
         self._suppress_state_switch = False
         self._current_serial = str(self._state.get("serial") or "")
         self._stop_requested_by_user = False
+        self._latest_run_summary: dict = {}
         self._queue_editing_enabled = True
 
         root = QWidget()
@@ -806,6 +811,7 @@ class TaskQueueWindow(QMainWindow):
         self._save_state_from_ui()
         initial_progress = self._state.get("progress")
         self._stop_requested_by_user = False
+        self._latest_run_summary = {}
         run_lock = serial_run_lock(self.state_dir, serial)
         if not run_lock.acquire():
             QMessageBox.warning(self, "端口已占用", f"{serial} 已有任务运行中，请勿重复启动。")
@@ -827,6 +833,7 @@ class TaskQueueWindow(QMainWindow):
         self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(self._append_log)
         self.worker.progress_state.connect(self._on_progress_state)
+        self.worker.run_summary.connect(self._on_run_summary)
         self.worker.error.connect(self._on_run_error)
         self.worker.finished.connect(self._on_run_finished)
         self.worker.finished.connect(self.thread.quit)
@@ -892,20 +899,44 @@ class TaskQueueWindow(QMainWindow):
         else:
             self._append_log("[警告] 没有可停止的运行队列")
 
+    @Slot(dict)
+    def _on_run_summary(self, summary: dict) -> None:
+        """Remember the structured queue outcome before terminal UI signals."""
+        self._latest_run_summary = dict(summary)
+
+    @Slot()
     def _on_run_finished(self) -> None:
         """Called when queue execution finishes."""
-        if self._stop_requested_by_user:
+        summary = self._latest_run_summary
+        status = str(summary.get("status") or "completed")
+        if self._stop_requested_by_user or status == "user_stopped":
             self._append_log("任务队列已停止。")
         else:
             self._clear_saved_progress()
-            self._append_log("任务队列已完成。")
+            if status == "completed_with_failures":
+                self._append_log(
+                    "任务队列已完成，但存在失败："
+                    f"成功 {summary.get('successful_tasks', 0)} 个、"
+                    f"失败 {summary.get('failed_tasks', 0)} 个、"
+                    f"放弃 {summary.get('abandoned_tasks', 0)} 个。"
+                )
+            else:
+                self._append_log("任务队列已完成。")
         self._stop_requested_by_user = False
         self._reset_buttons()
         self._release_run_lock()
 
     def _on_run_error(self, message: str) -> None:
         """Called when queue execution errors."""
-        self._append_log(f"[错误] {message}")
+        summary = self._latest_run_summary
+        if str(summary.get("status")) == "recovery_failed":
+            self._append_log(
+                "[恢复失败] 游戏未能恢复到安全主界面，"
+                "队列已停止且当前角色进度已保留："
+                f"{message}"
+            )
+        else:
+            self._append_log(f"[错误] {message}")
         if self._stop_requested_by_user:
             self._clear_saved_progress()
         elif self.worker and self.worker.runner:

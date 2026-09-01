@@ -66,6 +66,8 @@ class YmGameTask(GameTask):
     LEAVE_TEAM_ON_START = False
     STARTUP_CLOSE_SETTLE_WAIT_MS = 0
     STARTUP_FINAL_CLOSE_TIMEOUT_MS = 3000
+    FAILURE_RECOVERY_FORCE_STOP_WAIT_MS = 1500
+    FAILURE_RECOVERY_MAIN_VERIFY_TIMEOUT_MS = 10000
     CLOSE_ALL_MAX_ATTEMPTS = 8
     CLOSE_MATCH_THRESHOLD = 0.8
     CLOSE_CANDIDATE_MERGE_RADIUS_PX = 18
@@ -289,12 +291,16 @@ class YmGameTask(GameTask):
     TASK_PANEL_ACTIVE_WAIT_MS = 6000
     TASK_PANEL_TITLE_THRESHOLD = 0.9
     TASK_SIDEBAR_THRESHOLD = 0.85
-    TASK_TAB_ACTIVE_THRESHOLD = 0.85
+    # Real-device captures put the active Jianghu tab around 0.807 while the
+    # inactive neighbours stay below 0.10. Keep this independent from the
+    # stricter sidebar-entry threshold so callers cannot accidentally raise it.
+    TASK_TAB_ACTIVE_THRESHOLD = 0.78
     TASK_SIDEBAR_POLL_INTERVAL_MS = 300
     TASK_SIDEBAR_UNKNOWN_FRAME_LIMIT = 2
     TASK_SIDEBAR_FULLSCREEN_RECOVERY_LIMIT = 1
     TASK_SIDEBAR_EXPAND_CLICK_LIMIT = 1
     TASK_SIDEBAR_ACTIVATION_CLICK_LIMIT = 1
+    TASK_SIDEBAR_FAILURE_SCREENSHOT_COOLDOWN_MS = 60000
     TASK_TAB_ORDER = ("任务", "江湖", "奇遇")
     TASK_TAB_PITCH_PX = 84
     TASK_TAB_TEMPLATE_SIZE = (85, 36)
@@ -391,6 +397,7 @@ class YmGameTask(GameTask):
         super().__init__(default_interval_ms=default_interval_ms)
         self._recovering_health = False
         self._health_recover_started_at: float | None = None
+        self._task_sidebar_failure_screenshot_cache: dict[str, tuple[float, str]] = {}
 
     def before_start(self) -> None:
         """Ensure the game is ready before task-specific setup runs."""
@@ -968,6 +975,30 @@ class YmGameTask(GameTask):
             self.start_game_app()
 
         self.enter_game()
+
+    def recover_after_cleanup_failure(
+        self,
+        failure: Exception | str | None = None,
+    ) -> None:
+        """Force-restart the game and require a clean, unteamed main scene."""
+        self._log(f"常规失败清理未能确认安全现场，开始强制重启游戏：{failure}")
+        self.shell(f"am force-stop {self.PACKAGE_NAME}")
+        self.wait(self.FAILURE_RECOVERY_FORCE_STOP_WAIT_MS)
+        self.start_game_app()
+        self.enter_game()
+        self.close_all_panels(timeout_ms=self.STARTUP_FINAL_CLOSE_TIMEOUT_MS)
+        self.leave_team(timeout_ms=5000, wait_after_click_ms=1000)
+        self.close_all_panels(timeout_ms=self.STARTUP_FINAL_CLOSE_TIMEOUT_MS)
+        if not self.is_game_main_ready(
+            timeout_ms=self.FAILURE_RECOVERY_MAIN_VERIFY_TIMEOUT_MS,
+            threshold=0.8,
+        ):
+            debug_path = self.save_debug_screenshot("cleanup_force_recovery_failed")
+            raise RuntimeError(
+                "强制重启后未确认无队伍的稳定主界面，"
+                f"已保存截图：{debug_path}"
+            )
+        self._log("强制重启恢复完成，已确认无队伍的稳定主界面")
 
     def start_game_app(self, wait_after_launch_ms: int = 5000) -> None:
         """Launch the Yi Meng Jiang Hu Android package."""
@@ -1972,6 +2003,10 @@ class YmGameTask(GameTask):
             debug_path = self.save_debug_screenshot("team_create_state_failed")
             raise RuntimeError(f"创建队伍后未进入组队状态，已保存截图：{debug_path}")
 
+        if min_member_count == 1:
+            self._log("创建队伍成功，当前单人已达到人数要求，不启动公开匹配")
+            return
+
         self._log("创建队伍成功，开始自动匹配")
         self.click_point(self.POINT_TEAM_START_MATCH[0], self.POINT_TEAM_START_MATCH[1], offset=0)
         self.wait(wait_after_click_ms)
@@ -2565,6 +2600,9 @@ class YmGameTask(GameTask):
                 [],
             )
 
+        if self.wake_from_power_saving_if_needed():
+            self._log("任务侧栏操作前已唤醒省电模式，重新识别当前界面")
+
         self.collapse_emotion_panel_if_open()
 
         if self.is_chat_open():
@@ -2872,7 +2910,7 @@ class YmGameTask(GameTask):
                 image,
                 template,
                 mode="otsu_dark",
-                threshold=max(self.TASK_TAB_ACTIVE_THRESHOLD, threshold),
+                threshold=self.TASK_TAB_ACTIVE_THRESHOLD,
                 roi=self._task_tab_search_roi(panel),
             )
             for panel, template in self.TASK_PANEL_ACTIVE_TEMPLATES.items()
@@ -3041,9 +3079,25 @@ class YmGameTask(GameTask):
                     cv2.LINE_AA,
                 )
 
-        logger = self._get_debug_logger()
-        path = logger.save_screenshot(canvas, prefix="task_sidebar_state_failed", label=reason)
-        self._log(f"任务侧栏状态失败：{reason}，已保存标注截图：{path}")
+        now = time.monotonic()
+        cached = self._task_sidebar_failure_screenshot_cache.get(reason)
+        cooldown_seconds = self.TASK_SIDEBAR_FAILURE_SCREENSHOT_COOLDOWN_MS / 1000.0
+        if (
+            cached is not None
+            and now - cached[0] < cooldown_seconds
+            and Path(cached[1]).is_file()
+        ):
+            path = cached[1]
+            self._log(f"任务侧栏状态失败：{reason}，复用近期标注截图：{path}")
+        else:
+            logger = self._get_debug_logger()
+            path = logger.save_screenshot(
+                canvas,
+                prefix="task_sidebar_state_failed",
+                label=reason,
+            )
+            self._task_sidebar_failure_screenshot_cache[reason] = (now, path)
+            self._log(f"任务侧栏状态失败：{reason}，已保存标注截图：{path}")
         raise TaskSidebarStateError(f"{reason}，已保存截图：{path}")
 
     def wait_auto_pathfinding(

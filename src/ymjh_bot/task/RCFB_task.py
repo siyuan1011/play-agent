@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-import time
+from typing import Literal
 
-from botCore import StepStopException, step
+import numpy as np
+
+from botCore import ImageMatchResult, StepStopException, step
 
 from ymjh_bot.ym_game_task import TaskSidebarStateError, YmGameTask
 
@@ -14,7 +16,7 @@ class RCFBTask(YmGameTask):
 
     task_key = "RCFB"
     task_name = "日常副本"
-    task_description = "匹配江湖纪事日常副本，跟随队伍完成后自动退队"
+    task_description = "创建单人队伍进入江湖纪事日常副本，完成后自动退队"
     auto_recover_health = False
     LEAVE_TEAM_ON_START = True
     STARTUP_CLOSE_SETTLE_WAIT_MS = 1000
@@ -30,25 +32,46 @@ class RCFBTask(YmGameTask):
         str(YmGameTask.TEMPLATES_DIR / "tab_dungeon_hangup_active_dark.png"),
         str(YmGameTask.TEMPLATES_DIR / "tab_dungeon_hangup_active_light.png"),
     )
+    TEXT_DAILY_PANEL_TITLE = str(
+        YmGameTask.TEMPLATES_DIR / "text_xsrw_daily_panel_title.png"
+    )
+    BTN_DAILY_CHALLENGE = str(
+        YmGameTask.TEMPLATES_DIR / "btn_xsrw_daily_challenge.png"
+    )
+    BTN_DAILY_CONFIRM = str(
+        YmGameTask.TEMPLATES_DIR / "btn_xsrw_daily_confirm.png"
+    )
 
-    POINT_TEAM_AUTO_MATCH = (990, 669)
-    POINT_QUICK_CATEGORY_JIANGHU = (180, 210)
+    POINT_ACTIVITY_DAILY_ENTRY = (888, 580)
     POINT_TASK_LIST_SCROLL_START = (190, 520)
     POINT_TASK_LIST_SCROLL_END = (190, 220)
 
     ROI_DUNGEON_EXIT = (960, 155, 85, 85)
     ROI_DUNGEON_HANGUP_ACTIVE = (145, 0, 105, 40)
+    ROI_DAILY_PANEL_TITLE = (0, 0, 260, 80)
+    ROI_DAILY_CHALLENGE = (1040, 600, 220, 110)
+    ROI_DAILY_CONFIRM = (930, 530, 270, 130)
 
     DUNGEON_TASK_THRESHOLD = 0.78
     DUNGEON_TRANSFER_OUT_THRESHOLD = 0.85
     DUNGEON_EXIT_THRESHOLD = 0.9
     DUNGEON_EXIT_TEAM_THRESHOLD = 0.9
     DUNGEON_HANGUP_ACTIVE_THRESHOLD = 0.95
+    DUNGEON_HANGUP_FALLBACK_THRESHOLD = 0.82
+    DUNGEON_HANGUP_CYAN_RATIO_THRESHOLD = 0.15
+    DAILY_PANEL_THRESHOLD = 0.90
+    DAILY_CHALLENGE_THRESHOLD = 0.90
+    DAILY_CONFIRM_THRESHOLD = 0.75
+    DAILY_ENTRY_TIMEOUT_MS = 15000
+    DAILY_ENTRY_SETTLE_MS = 5000
+    DAILY_ENTRY_VERIFY_TIMEOUT_MS = 10000
+    DAILY_ENTRY_VERIFY_POLL_MS = 500
+    DAILY_ENTRY_MAX_ATTEMPTS = 2
+    DAILY_ACTIVITY_SETTLE_MS = 1500
+    DAILY_ACTIVITY_ENTRY_ATTEMPTS = 2
+    DAILY_PANEL_POLL_INTERVAL_MS = 300
     DUNGEON_TASK_POLL_INTERVAL_MS = 3000
-    MATCH_WAIT_TIMEOUT_MS = 300000
-    MATCH_WAIT_POLL_INTERVAL_MS = 1000
-    MATCH_WAIT_HEARTBEAT_MS = 30000
-    MAX_LEADER_REMATCHES = 3
+    DAILY_START_TIMEOUT_MS = 300000
     TASK_FLOW_TIMEOUT_MS = 1800000
     TASK_FLOW_RETRY_WAIT_MS = 5000
     TASK_MISSING_CONFIRMATIONS = 6
@@ -61,48 +84,59 @@ class RCFBTask(YmGameTask):
     DUNGEON_AUTO_TRANSFER_TIMEOUT_MS = 330000
     DUNGEON_TRANSFER_POLL_INTERVAL_MS = 500
     DUNGEON_TRANSFER_STABLE_CONFIRMATIONS = 3
+    DUNGEON_ACTIVE_EXIT_TIMEOUT_MS = 60000
+    DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS = 5000
+    DUNGEON_OUTSIDE_VERIFY_TIMEOUT_MS = 8000
+    DUNGEON_OUTSIDE_VERIFY_INTERVAL_MS = 300
+    DUNGEON_OUTSIDE_STABLE_CONFIRMATIONS = 3
     DEFER_FOREGROUND_WAKE_TO_ON_START = True
 
     def __init__(self, default_interval_ms: int | None = None):
         super().__init__(default_interval_ms=default_interval_ms)
-        self._leader_rematch_count = 0
+        self._dungeon_entry_confirmed = False
+        self._dungeon_completion_confirmed = False
 
     def reset_startup_state(self) -> None:
-        """Reset the abnormal-leader rematch counter for each task run."""
-        self._leader_rematch_count = 0
+        """Reset tracked dungeon state for each task run."""
+        self._dungeon_entry_confirmed = False
+        self._dungeon_completion_confirmed = False
 
-    @step(retry=3, timeout_ms=MATCH_WAIT_TIMEOUT_MS)
+    def mark_dungeon_entered(self) -> None:
+        """Record that an explicit dungeon tracker confirmed entry."""
+        self._dungeon_entry_confirmed = True
+        self._dungeon_completion_confirmed = False
+
+    def mark_dungeon_completed(self) -> None:
+        """Record that the explicit transfer-out countdown confirmed completion."""
+        self._dungeon_entry_confirmed = True
+        self._dungeon_completion_confirmed = True
+
+    def mark_dungeon_exited(self) -> None:
+        """Clear dungeon state only after the outside scene is verified."""
+        self._dungeon_entry_confirmed = False
+        self._dungeon_completion_confirmed = False
+
+    @step(retry=3, timeout_ms=DAILY_START_TIMEOUT_MS)
     def start_daily_match(self) -> None:
-        """开始日常副本匹配，并等待入队跟随确认弹框。"""
-        self.start_daily_auto_match()
-        self.wait_for_team_follow_confirm(timeout_ms=self.MATCH_WAIT_TIMEOUT_MS)
+        """Create a one-player team and directly challenge the daily dungeon."""
+        self.create_team("日常", min_member_count=1)
+        self.close_all_panels(timeout_ms=self.DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS)
+        self.open_daily_dungeon_panel()
+        self.enter_daily_dungeon_challenge()
 
     @step(retry=0, timeout_ms=None)
     def wait_dungeon_task(self) -> None:
-        """等待左侧任务页出现日常副本追踪；5 分钟未出现则退队重组。"""
+        """Wait for the tracker that proves the self-created team entered."""
         if self.wait_for_dungeon_task(timeout_ms=300000):
+            self.mark_dungeon_entered()
             self._log("检测到江湖副本任务，确认已进入副本流程")
             return
 
         debug_path = self.save_debug_screenshot("rcfb_dungeon_task_missing")
-        self.leave_team_if_present()
-        if self._leader_rematch_count >= self.MAX_LEADER_REMATCHES:
-            self._log(
-                "5 分钟未检测到江湖副本任务，异常队长重组已达到上限；"
-                f"现场截图：{debug_path}"
-            )
-            raise RuntimeError(
-                f"连续 {self.MAX_LEADER_REMATCHES + 1} 支队伍未出现日常副本追踪，"
-                f"已退队并保存截图：{debug_path}"
-            )
-
-        self._leader_rematch_count += 1
-        self._log(
-            "5 分钟未检测到江湖副本任务，判定当前队长异常并退队，"
-            f"重新匹配 {self._leader_rematch_count}/{self.MAX_LEADER_REMATCHES}；"
-            f"现场截图：{debug_path}"
+        raise RuntimeError(
+            "自建单人队伍挑战后 5 分钟未出现日常副本追踪，"
+            f"已保存截图：{debug_path}"
         )
-        self.jump_to("start_daily_match")
 
     @step(retry=0, timeout_ms=TASK_FLOW_TIMEOUT_MS)
     def run_daily_raid_flow(self) -> None:
@@ -125,25 +159,51 @@ class RCFBTask(YmGameTask):
         """Keep a dungeon in hangup mode without resetting an active battle state."""
         if timeout_ms <= 0:
             raise ValueError("副本挂机监控超时时间必须大于 0")
+        if not self._dungeon_entry_confirmed:
+            raise RuntimeError(f"未确认进入{context}，禁止启动挂机监控")
 
         deadline = self._make_deadline(timeout_ms)
         consecutive_failures = 0
         verification_pending = False
         hangup_confirmed = False
+        outside_stable_confirmations = 0
 
         while not self._is_deadline_expired(deadline):
             if self.is_stopped():
                 raise StepStopException("Stop requested")
 
             if self.is_dungeon_transfer_out_visible():
+                self.mark_dungeon_completed()
                 self._log(f"检测到{context}传出倒计时，判断副本完成")
                 return
 
             if self.wake_from_power_saving_if_needed():
                 self._log(f"{context}挂机监控已唤醒省电模式，重新识别挂机状态")
                 if self.is_dungeon_transfer_out_visible():
+                    self.mark_dungeon_completed()
                     self._log(f"检测到{context}传出倒计时，判断副本完成")
                     return
+
+            if self.is_dungeon_outside_main_frame():
+                outside_stable_confirmations += 1
+                self._debug(
+                    f"{context}自动传出后主界面稳定确认 "
+                    f"({outside_stable_confirmations}/"
+                    f"{self.DUNGEON_OUTSIDE_STABLE_CONFIRMATIONS})"
+                )
+                if (
+                    outside_stable_confirmations
+                    >= self.DUNGEON_OUTSIDE_STABLE_CONFIRMATIONS
+                ):
+                    self.mark_dungeon_completed()
+                    self._log(
+                        f"未捕获到{context}传出倒计时，"
+                        "但已连续确认副本出口消失且回到主界面，"
+                        "判断副本已自动传出完成"
+                    )
+                    return
+            else:
+                outside_stable_confirmations = 0
 
             if self.is_dungeon_hangup_active():
                 if not hangup_confirmed or verification_pending or consecutive_failures:
@@ -199,42 +259,142 @@ class RCFBTask(YmGameTask):
     @step(retry=0, timeout_ms=420000)
     def leave_team_after_completion(self) -> None:
         """副本完成后选择退本退队，并等待传送回到稳定主界面。"""
-        exit_team_clicked = False
-        try:
-            exit_team_clicked = self.click_dungeon_exit_team_with_retries()
-        except StepStopException:
-            raise
-        except Exception as exc:
-            self._log(f"副本退出识别异常，改为等待自动传出：{exc}")
+        if not self._dungeon_entry_confirmed:
+            self._log("当前流程未确认进入副本，仅清理残留面板和队伍")
+            self.normalize_outside_dungeon_after_failure()
+            return
+
+        self.exit_team_dungeon_strict(
+            allow_auto_transfer=self._dungeon_completion_confirmed,
+            screenshot_prefix="rcfb_exit_team_button_missing",
+        )
+
+    def cleanup_after_failure(
+        self,
+        failure: Exception | str | None = None,
+    ) -> None:
+        """Leave a confirmed dungeon before the queue retries or advances."""
+        self._log(f"日常副本失败，开始安全清理现场：{failure}")
+        self.wake_from_power_saving_if_needed()
+        self.close_all_panels(timeout_ms=self.DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS)
+
+        if self._dungeon_entry_confirmed or self.detect_and_mark_dungeon_scene():
+            self.exit_team_dungeon_strict(
+                allow_auto_transfer=self._dungeon_completion_confirmed,
+                screenshot_prefix="rcfb_failure_exit_missing",
+            )
+            return
+
+        self.normalize_outside_dungeon_after_failure(panels_already_closed=True)
+
+    def detect_and_mark_dungeon_scene(self) -> bool:
+        """Recognize explicit dungeon controls and update tracked state."""
+        if self.is_dungeon_transfer_out_visible():
+            self.mark_dungeon_completed()
+            return True
+
+        in_dungeon = (
+            self.is_dungeon_exit_team_dialog_visible()
+            or self.is_dungeon_exit_visible()
+        )
+        if in_dungeon:
+            self.mark_dungeon_entered()
+        return in_dungeon
+
+    def normalize_outside_dungeon_after_failure(
+        self,
+        *,
+        panels_already_closed: bool = False,
+    ) -> None:
+        """Normalize a failed pre-entry scene and strictly verify the main scene."""
+        if not panels_already_closed:
+            self.wake_from_power_saving_if_needed()
+            self.close_all_panels(
+                timeout_ms=self.DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS
+            )
+
+        if not self.wait_for_verified_outside_dungeon():
+            if self.detect_and_mark_dungeon_scene():
+                raise RuntimeError("清理未入本现场时检测到副本界面，必须执行专用退本")
+            debug_path = self.save_debug_screenshot("rcfb_failure_scene_unknown")
+            raise RuntimeError(f"副本失败清理后未确认主界面，已保存截图：{debug_path}")
+
+        self.finish_verified_outside_dungeon_cleanup()
+
+    def wait_for_verified_outside_dungeon(self, *, timeout_ms: int | None = None) -> bool:
+        """Require a stable main HUD with no dungeon-only exit controls."""
+        effective_timeout_ms = (
+            self.DUNGEON_OUTSIDE_VERIFY_TIMEOUT_MS
+            if timeout_ms is None
+            else timeout_ms
+        )
+        deadline = self._make_deadline(effective_timeout_ms)
+        stable_confirmations = 0
+
+        while not self._is_deadline_expired(deadline):
+            if self.wake_from_power_saving_if_needed():
+                self._log("副本外主界面复核已唤醒省电模式")
+                stable_confirmations = 0
+
+            if self.is_dungeon_outside_main_frame():
+                stable_confirmations += 1
+                if stable_confirmations >= self.DUNGEON_OUTSIDE_STABLE_CONFIRMATIONS:
+                    return True
+            else:
+                stable_confirmations = 0
+
+            remaining_ms = self._remaining_ms(deadline)
+            if remaining_ms > 0:
+                self.wait(min(self.DUNGEON_OUTSIDE_VERIFY_INTERVAL_MS, remaining_ms))
+
+        return False
+
+    def finish_verified_outside_dungeon_cleanup(self) -> None:
+        """Leave a residual team and re-confirm the stable outside scene."""
+        self.leave_team(timeout_ms=5000, wait_after_click_ms=1000)
+        self.close_all_panels(timeout_ms=self.DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS)
+        if not self.wait_for_verified_outside_dungeon():
+            debug_path = self.save_debug_screenshot("rcfb_failure_main_not_ready")
+            raise RuntimeError(f"副本失败退队后未确认主界面，已保存截图：{debug_path}")
+        self.mark_dungeon_exited()
+
+    def exit_team_dungeon_strict(
+        self,
+        *,
+        allow_auto_transfer: bool,
+        screenshot_prefix: str,
+    ) -> None:
+        """Exit a team dungeon and require a verified stable main scene."""
+        self.wake_from_power_saving_if_needed()
+        exit_team_clicked = self.click_dungeon_exit_team_with_retries()
 
         if exit_team_clicked:
             self._log("已点击退本退队，等待传送结束")
-            transfer_timeout_ms = 60000
-        else:
-            try:
-                debug_path = self.save_debug_screenshot("rcfb_exit_team_button_missing")
-                self._log(
-                    f"连续 {self.DUNGEON_EXIT_MAX_ATTEMPTS} 次未能点击退本退队，"
-                    f"等待副本自动传出；现场截图：{debug_path}"
-                )
-            except Exception as exc:
-                self._log(f"副本退出现场截图保存失败，继续等待自动传出：{exc}")
-            transfer_timeout_ms = self.DUNGEON_AUTO_TRANSFER_TIMEOUT_MS
-
-        try:
-            self.wait_for_dungeon_transfer_complete(timeout_ms=transfer_timeout_ms)
-        except StepStopException:
-            raise
-        except Exception as exc:
-            self._log(
-                f"副本退出等待未完成，不重跑已完成副本并尝试通用退队：{exc}"
-            )
-            self.leave_team_if_present()
+            transfer_timeout_ms = self.DUNGEON_ACTIVE_EXIT_TIMEOUT_MS
+        elif self.wait_for_verified_outside_dungeon():
+            self._log("未找到退本按钮，但已连续确认处于副本外主界面")
+            self.finish_verified_outside_dungeon_cleanup()
             return
+        elif allow_auto_transfer:
+            debug_path = self.save_debug_screenshot(screenshot_prefix)
+            self._log(
+                f"连续 {self.DUNGEON_EXIT_MAX_ATTEMPTS} 次未能点击退本退队，"
+                f"副本已确认完成，等待自动传出；现场截图：{debug_path}"
+            )
+            transfer_timeout_ms = self.DUNGEON_AUTO_TRANSFER_TIMEOUT_MS
+        else:
+            debug_path = self.save_debug_screenshot(screenshot_prefix)
+            raise RuntimeError(
+                "副本尚未确认完成且未能点击退本退队，"
+                f"禁止依赖自动传出；已保存截图：{debug_path}"
+            )
 
+        self.wait_for_dungeon_transfer_complete(timeout_ms=transfer_timeout_ms)
         if not exit_team_clicked:
-            self._log("副本已自动传出，执行通用退队")
-            self.leave_team_if_present()
+            self._log("副本已自动传出，严格检查并退出残留队伍")
+            self.finish_verified_outside_dungeon_cleanup()
+            return
+        self.mark_dungeon_exited()
 
     def click_dungeon_exit_team_with_retries(self) -> bool:
         """Try to open the dungeon-exit dialog and click leave-dungeon-and-team."""
@@ -275,142 +435,193 @@ class RCFBTask(YmGameTask):
 
     def click_visible_dungeon_exit_team_button(self) -> bool:
         """Click an exit-team action that is already visible without toggling the dialog."""
-        if not self.find_image_once(
-            self.BTN_DUNGEON_EXIT_TEAM,
-            threshold=self.DUNGEON_EXIT_TEAM_THRESHOLD,
-            roi=self.scale_roi((300, 440, 700, 130)),
-        ):
+        if not self.is_dungeon_exit_team_dialog_visible():
             return False
 
         self.click(offset=0)
         return True
 
-    def start_daily_auto_match(self) -> None:
-        """Select daily raid in convenient teaming and start auto match."""
-        self.open_quick_team_panel(timeout_ms=5000, wait_after_click_ms=3000)
-        self.select_daily_raid_quick_target(wait_after_click_ms=800)
-        if not self.click_template_if_available(
-            self.BTN_TEAM_AUTO_MATCH,
-            timeout_ms=5000,
-            description="日常副本自动匹配按钮",
-            threshold=0.9,
-            roi=self.ROI_TEAM_QUICK_ACTIONS,
-            wait_after_click_ms=0,
-        ):
-            self._log("未识别到日常副本自动匹配按钮，使用固定坐标点击")
-            self.click_point(self.POINT_TEAM_AUTO_MATCH[0], self.POINT_TEAM_AUTO_MATCH[1], offset=0)
+    def is_dungeon_exit_team_dialog_visible(self) -> bool:
+        """Return whether the team-dungeon exit action is already visible."""
+        return self.find_image_once(
+            self.BTN_DUNGEON_EXIT_TEAM,
+            threshold=self.DUNGEON_EXIT_TEAM_THRESHOLD,
+            roi=self.scale_roi((300, 440, 700, 130)),
+        )
 
-        self._log("已开始江湖纪事日常副本自动匹配")
-
-    def select_daily_raid_quick_target(self, *, wait_after_click_ms: int = 800) -> None:
-        """Select the Jianghu Chronicle category used by daily dungeon matching."""
-        if not self.click_template_if_available(
-            [
-                self.TEXT_TEAM_QUICK_CATEGORY_JIANGHU,
-                self.TEXT_TEAM_QUICK_CATEGORY_JIANGHU_ACTIVE,
-            ],
-            timeout_ms=3000,
-            description="便捷组队分类 江湖纪事",
-            threshold=0.82,
-            roi=self.ROI_TEAM_QUICK_LEFT_PANEL,
-            wait_after_click_ms=wait_after_click_ms,
-        ):
-            self._log("未识别到江湖纪事分类，使用固定坐标点击")
-            self.click_point(
-                self.POINT_QUICK_CATEGORY_JIANGHU[0],
-                self.POINT_QUICK_CATEGORY_JIANGHU[1],
-                offset=0,
-            )
-            self.wait(wait_after_click_ms)
-
-        self._log("已选择便捷组队分类：江湖纪事")
-
-    def wait_for_team_follow_confirm(self, *, timeout_ms: int) -> None:
-        """Wait for the team-follow dialog until the matching deadline expires."""
-        started_at = time.perf_counter()
-        deadline = started_at + timeout_ms / 1000.0
-        next_heartbeat_at = started_at + self.MATCH_WAIT_HEARTBEAT_MS / 1000.0
-
-        while not self.is_stopped() and time.perf_counter() < deadline:
-            if self.confirm_center_modal_ok_if_visible("入队跟随确认", wait_after_click_ms=0):
-                self._log("已点击入队跟随确认")
-                return
-
-            now = time.perf_counter()
-            if now >= next_heartbeat_at:
-                if self.confirm_already_in_team():
-                    return
-                self._debug("日常副本匹配入队等待中...")
-                next_heartbeat_at = now + self.MATCH_WAIT_HEARTBEAT_MS / 1000.0
-
-            remaining_ms = max(0, int((deadline - now) * 1000))
-            if remaining_ms > 0:
-                self.wait(min(self.MATCH_WAIT_POLL_INTERVAL_MS, remaining_ms))
-
-        if self.is_stopped():
-            raise RuntimeError("日常副本匹配等待被停止")
-
-        if self.confirm_already_in_team():
+    def open_daily_dungeon_panel(self) -> None:
+        """Open Jianghu Chronicle from Activity and verify its challenge panel."""
+        if self.is_daily_dungeon_panel_visible(timeout_ms=0):
             return
 
-        debug_path = self.save_debug_screenshot("rcfb_team_follow_timeout")
-        cancelled = self.cancel_daily_match_after_timeout()
-        cancel_result = "已取消匹配" if cancelled else "未能确认取消匹配"
+        self.open_activity_panel(
+            "江湖",
+            wait_after_open_ms=self.DAILY_ACTIVITY_SETTLE_MS,
+        )
+        for attempt in range(1, self.DAILY_ACTIVITY_ENTRY_ATTEMPTS + 1):
+            self._log(
+                "点击活动面板江湖纪事入口 "
+                f"{attempt}/{self.DAILY_ACTIVITY_ENTRY_ATTEMPTS}"
+            )
+            self.click_point(*self.POINT_ACTIVITY_DAILY_ENTRY, offset=0)
+            self.wait(self.DAILY_ACTIVITY_SETTLE_MS)
+            if self.is_daily_dungeon_panel_visible(
+                timeout_ms=self.DAILY_ENTRY_TIMEOUT_MS,
+            ):
+                return
+
+        debug_path = self.save_debug_screenshot("rcfb_daily_panel_missing")
+        raise RuntimeError(f"未能打开江湖纪事日常副本面板，已保存截图：{debug_path}")
+
+    def enter_daily_dungeon_challenge(self) -> None:
+        """Challenge the selected daily dungeon as leader of the one-player team."""
+        for attempt in range(1, self.DAILY_ENTRY_MAX_ATTEMPTS + 1):
+            confirm = self._wait_daily_binary_match(
+                self.BTN_DAILY_CONFIRM,
+                mode="otsu_dark",
+                threshold=self.DAILY_CONFIRM_THRESHOLD,
+                roi=self.ROI_DAILY_CONFIRM,
+                timeout_ms=1000,
+            )
+            if not confirm.found:
+                if not self.is_daily_dungeon_panel_visible(
+                    timeout_ms=self.DAILY_ENTRY_TIMEOUT_MS,
+                ):
+                    debug_path = self.save_debug_screenshot(
+                        "rcfb_daily_panel_before_challenge_missing"
+                    )
+                    raise RuntimeError(
+                        "单人队伍挑战前日常副本面板不存在，"
+                        f"已保存截图：{debug_path}"
+                    )
+
+                challenge = self._wait_daily_binary_match(
+                    self.BTN_DAILY_CHALLENGE,
+                    mode="otsu_dark",
+                    threshold=self.DAILY_CHALLENGE_THRESHOLD,
+                    roi=self.ROI_DAILY_CHALLENGE,
+                    timeout_ms=self.DAILY_ENTRY_TIMEOUT_MS,
+                )
+                if not challenge.found or challenge.center is None:
+                    debug_path = self.save_debug_screenshot(
+                        "rcfb_daily_challenge_missing"
+                    )
+                    raise RuntimeError(
+                        f"日常副本面板未找到挑战按钮，已保存截图：{debug_path}"
+                    )
+
+                self._log("单人队伍点击江湖纪事日常副本挑战")
+                self.tap(*challenge.center)
+                confirm = self._wait_daily_binary_match(
+                    self.BTN_DAILY_CONFIRM,
+                    mode="otsu_dark",
+                    threshold=self.DAILY_CONFIRM_THRESHOLD,
+                    roi=self.ROI_DAILY_CONFIRM,
+                    timeout_ms=self.DAILY_ENTRY_TIMEOUT_MS,
+                )
+
+            if not confirm.found or confirm.center is None:
+                debug_path = self.save_debug_screenshot("rcfb_daily_confirm_missing")
+                raise RuntimeError(
+                    f"日常副本挑战未出现确认按钮，已保存截图：{debug_path}"
+                )
+
+            self._log(
+                "单人队伍确认进入江湖纪事日常副本，"
+                f"等待页面切换 {attempt}/{self.DAILY_ENTRY_MAX_ATTEMPTS}"
+            )
+            self.tap(*confirm.center)
+            self.wait(self.DAILY_ENTRY_SETTLE_MS)
+            if self.wait_for_daily_dungeon_panel_close():
+                self._log("日常副本选择页已消失，等待任务追踪确认真实入本")
+                return
+
+            if attempt < self.DAILY_ENTRY_MAX_ATTEMPTS:
+                self._log("进入确认后仍停留日常副本选择页，重新挑战一次")
+
+        debug_path = self.save_debug_screenshot("rcfb_daily_entry_transition_failed")
         raise RuntimeError(
-            f"日常副本匹配 5 分钟未检测到入队跟随确认弹框，{cancel_result}；"
+            "单人队伍确认后仍停留日常副本选择页，"
             f"已保存截图：{debug_path}"
         )
 
-    def confirm_already_in_team(self) -> bool:
-        """Confirm real team membership when the follow dialog never appears."""
-        panel_opened = False
-        try:
-            self.open_team_panel(timeout_ms=2500, wait_after_click_ms=800)
-            panel_opened = True
-            in_team = self.is_in_team()
-            if in_team:
-                self._log("检测到已处于队伍中，继续进入副本任务检测")
-            return in_team
-        except StepStopException:
-            raise
-        except Exception as exc:
-            self._log(f"队伍状态确认未完成，继续等待入队弹框：{exc}")
-            return False
-        finally:
-            if panel_opened:
-                try:
-                    self.close_all_panels(timeout_ms=2000)
-                except StepStopException:
-                    raise
-                except Exception as exc:
-                    self._log(f"队伍状态确认后关闭面板失败，继续后续检测：{exc}")
+    def is_daily_dungeon_panel_visible(self, *, timeout_ms: int) -> bool:
+        """Return whether the Jianghu Chronicle challenge panel is visible."""
+        return self._wait_daily_binary_match(
+            self.TEXT_DAILY_PANEL_TITLE,
+            mode="light_foreground",
+            threshold=self.DAILY_PANEL_THRESHOLD,
+            roi=self.ROI_DAILY_PANEL_TITLE,
+            timeout_ms=timeout_ms,
+        ).found
 
-    def cancel_daily_match_after_timeout(self) -> bool:
-        """Best-effort cancellation after the follow-dialog wait times out."""
-        cancelled = False
-        try:
-            self.open_quick_team_panel(timeout_ms=5000, wait_after_click_ms=800)
-            self.select_daily_raid_quick_target(wait_after_click_ms=500)
-            cancelled = self.click_template_if_available(
-                self.BTN_TEAM_CANCEL_MATCH,
-                timeout_ms=2000,
-                description="日常副本取消匹配按钮",
-                threshold=0.9,
-                roi=self.ROI_TEAM_QUICK_ACTIONS,
-                wait_after_click_ms=800,
+    def wait_for_daily_dungeon_panel_close(self) -> bool:
+        """Wait until the challenge panel disappears after entry confirmation."""
+        deadline = self._make_deadline(self.DAILY_ENTRY_VERIFY_TIMEOUT_MS)
+        while not self._is_deadline_expired(deadline):
+            if self.wake_from_power_saving_if_needed():
+                self._log("单人队伍入本复核已唤醒省电模式")
+
+            if not self._daily_binary_match(
+                self.screenshot(),
+                self.TEXT_DAILY_PANEL_TITLE,
+                mode="light_foreground",
+                threshold=self.DAILY_PANEL_THRESHOLD,
+                roi=self.ROI_DAILY_PANEL_TITLE,
+            ).found:
+                return True
+
+            remaining_ms = self._remaining_ms(deadline)
+            if remaining_ms > 0:
+                self.wait(min(self.DAILY_ENTRY_VERIFY_POLL_MS, remaining_ms))
+        return False
+
+    def _wait_daily_binary_match(
+        self,
+        template: str | list[str] | tuple[str, ...],
+        *,
+        mode: Literal["otsu_dark", "light_foreground"],
+        threshold: float,
+        roi: tuple[int, int, int, int],
+        timeout_ms: int,
+    ) -> ImageMatchResult:
+        deadline = self._make_deadline(timeout_ms)
+        last = self._daily_binary_match(
+            self.screenshot(),
+            template,
+            mode=mode,
+            threshold=threshold,
+            roi=roi,
+        )
+        while not last.found and not self._is_deadline_expired(deadline):
+            remaining_ms = self._remaining_ms(deadline)
+            if remaining_ms > 0:
+                self.wait(min(self.DAILY_PANEL_POLL_INTERVAL_MS, remaining_ms))
+            last = self._daily_binary_match(
+                self.screenshot(),
+                template,
+                mode=mode,
+                threshold=threshold,
+                roi=roi,
             )
-            if cancelled:
-                self._log("日常副本匹配超时，已点击取消匹配")
-            else:
-                self._log("日常副本匹配超时，未识别到取消匹配按钮")
-        except Exception as exc:
-            self._log(f"日常副本匹配超时，取消匹配检查未完成：{exc}")
-        finally:
-            try:
-                self.close_all_panels(timeout_ms=2000)
-            except Exception as exc:
-                self._log(f"取消匹配后的面板清理未完成：{exc}")
-        return cancelled
+        return last
+
+    def _daily_binary_match(
+        self,
+        screenshot: np.ndarray,
+        template: str | list[str] | tuple[str, ...],
+        *,
+        mode: Literal["otsu_dark", "light_foreground"],
+        threshold: float,
+        roi: tuple[int, int, int, int],
+    ) -> ImageMatchResult:
+        return self._vision.match_binary_template(
+            screenshot,
+            template,
+            mode=mode,
+            threshold=threshold,
+            roi=self.scale_roi(roi),
+        )
 
     def wait_for_dungeon_task(self, *, timeout_ms: int) -> bool:
         """Wait until the task tab shows a daily dungeon tracker."""
@@ -450,12 +661,49 @@ class RCFBTask(YmGameTask):
         )
 
     def is_dungeon_hangup_active(self) -> bool:
-        """Return whether the complete top-left hangup tab is highlighted."""
-        return self.find_image_once(
+        """Recognize the highlighted hangup tab across bright and dim scenes."""
+        screenshot = self.screenshot()
+        match = self._vision.match_template(
+            screenshot,
             self.TAB_DUNGEON_HANGUP_ACTIVE,
-            threshold=self.DUNGEON_HANGUP_ACTIVE_THRESHOLD,
+            threshold=self.DUNGEON_HANGUP_FALLBACK_THRESHOLD,
             roi=self.scale_roi(self.ROI_DUNGEON_HANGUP_ACTIVE),
         )
+        self._last_match_score = match.score
+        if not match.found or match.center is None:
+            self._last_match_center = None
+            return False
+
+        if match.score >= self.DUNGEON_HANGUP_ACTIVE_THRESHOLD:
+            self._last_match_center = match.center
+            return True
+
+        x, y, width, height = self.scale_roi(self.ROI_DUNGEON_HANGUP_ACTIVE)
+        crop = screenshot[y : y + height, x : x + width].astype("int16")
+        if crop.size == 0:
+            self._last_match_center = None
+            return False
+
+        blue = crop[:, :, 0]
+        green = crop[:, :, 1]
+        red = crop[:, :, 2]
+        cyan_ratio = float(
+            (
+                (blue > red + 20)
+                & (green > red + 20)
+                & (green > 70)
+            ).mean()
+        )
+        if cyan_ratio >= self.DUNGEON_HANGUP_CYAN_RATIO_THRESHOLD:
+            self._last_match_center = match.center
+            self._debug(
+                "通过青色高亮复核确认副本挂机已开启 "
+                f"(template={match.score:.3f}, cyan={cyan_ratio:.3f})"
+            )
+            return True
+
+        self._last_match_center = None
+        return False
 
     def is_dungeon_exit_visible(self) -> bool:
         """Return whether the top-right dungeon exit control is visible."""
@@ -464,6 +712,55 @@ class RCFBTask(YmGameTask):
             threshold=self.DUNGEON_EXIT_THRESHOLD,
             roi=self.scale_roi(self.ROI_DUNGEON_EXIT),
         )
+
+    def is_dungeon_outside_main_frame(self) -> bool:
+        """Use one screenshot to prove the dungeon already auto-transferred out."""
+        screenshot = self.screenshot()
+        dungeon_markers = (
+            (
+                self.TEXT_DUNGEON_TRANSFER_OUT,
+                self.DUNGEON_TRANSFER_OUT_THRESHOLD,
+                self.scale_roi((900, 170, 110, 60)),
+            ),
+            (
+                self.BTN_DUNGEON_EXIT_TEAM,
+                self.DUNGEON_EXIT_TEAM_THRESHOLD,
+                self.scale_roi((300, 440, 700, 130)),
+            ),
+            (
+                self.ICON_DUNGEON_EXIT,
+                self.DUNGEON_EXIT_THRESHOLD,
+                self.scale_roi(self.ROI_DUNGEON_EXIT),
+            ),
+        )
+        for template, threshold, roi in dungeon_markers:
+            if self._vision.match_template(
+                screenshot,
+                template,
+                threshold=threshold,
+                roi=roi,
+            ).found:
+                return False
+
+        calendar_match = self._vision.match_template(
+            screenshot,
+            self.TEXT_JIANGHU_CALENDAR,
+            threshold=self.JIANGHU_CALENDAR_MARKER_THRESHOLD,
+            roi=self.scale_roi(self.ROI_JIANGHU_CALENDAR_MARKER),
+        )
+        if calendar_match.found:
+            return False
+
+        for state_name, _, templates in self._login_state_targets(True):
+            match = self._vision.match_template(screenshot, templates, threshold=0.8)
+            if not match.found:
+                continue
+            self._last_match_score = match.score
+            self._last_match_center = match.center
+            return state_name == self.LOGIN_STATE_MAIN
+
+        self._last_match_center = None
+        return False
 
     def click_current_dungeon_task_if_visible(
         self,

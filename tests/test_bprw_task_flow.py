@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from botCore import StepJumpException
 from ymjh_bot.task.BPRW_task import BPRWTask
 from ymjh_bot.ym_game_task import TaskSidebarStateError
 
@@ -281,6 +282,88 @@ def test_task_flow_waits_and_retries_when_sidebar_title_is_missing(monkeypatch) 
     task.run_task_flow()
 
     assert waits == [task.TASK_FLOW_RETRY_WAIT_MS]
+
+
+def test_task_flow_reaccepts_at_carried_over_ring_boundary(monkeypatch) -> None:
+    task = BPRWTask()
+    calls: list[str] = []
+    task_titles = iter((None, None, "大宴宾客", None, None))
+    continuation_results = iter((True, False))
+
+    monkeypatch.setattr(task, "close_completion_dialog_if_visible", lambda: False)
+    monkeypatch.setattr(task, "handle_submit_panel_if_visible", lambda: False)
+    monkeypatch.setattr(task, "handle_trade_panel_if_visible", lambda: False)
+    monkeypatch.setattr(task, "handle_acquire_route_panel_if_visible", lambda: False)
+    monkeypatch.setattr(
+        task,
+        "click_bangpai_task_from_sidebar",
+        lambda **kwargs: next(task_titles),
+    )
+    monkeypatch.setattr(
+        task,
+        "handle_clicked_bangpai_task",
+        lambda title: calls.append(f"handle:{title}") or True,
+    )
+    monkeypatch.setattr(
+        task,
+        "continue_after_tracker_disappeared",
+        lambda: calls.append("boundary") or next(continuation_results),
+    )
+    monkeypatch.setattr(task, "wait", lambda ms: calls.append(f"wait:{ms}"))
+
+    task.run_task_flow()
+
+    assert calls == [
+        f"wait:{task.TASK_FLOW_RETRY_WAIT_MS}",
+        "boundary",
+        "handle:大宴宾客",
+        f"wait:{task.TASK_FLOW_RETRY_WAIT_MS}",
+        f"wait:{task.TASK_FLOW_RETRY_WAIT_MS}",
+        "boundary",
+    ]
+
+
+def test_tracker_boundary_reaccepts_next_available_segment(monkeypatch) -> None:
+    task = BPRWTask()
+    calls: list[str] = []
+
+    monkeypatch.setattr(task, "open_bangpai_activity", lambda: calls.append("open"))
+    monkeypatch.setattr(task, "auto_pathfinding", lambda: calls.append("path"))
+    monkeypatch.setattr(task, "accept_task", lambda: calls.append("accept"))
+    monkeypatch.setattr(task, "start_accepted_task", lambda: calls.append("start"))
+
+    assert task.continue_after_tracker_disappeared() is True
+    assert calls == ["open", "path", "accept", "start"]
+    assert task._tracker_boundary_reaccepts == 1
+
+
+def test_tracker_boundary_finishes_when_activity_is_no_longer_available(monkeypatch) -> None:
+    task = BPRWTask()
+
+    monkeypatch.setattr(
+        task,
+        "open_bangpai_activity",
+        lambda: (_ for _ in ()).throw(
+            StepJumpException(StepJumpException.JUMP_TO_END)
+        ),
+    )
+    monkeypatch.setattr(
+        task,
+        "auto_pathfinding",
+        lambda: pytest.fail("活动已不可接取时不应继续寻路"),
+    )
+
+    assert task.continue_after_tracker_disappeared() is False
+
+
+def test_tracker_boundary_stops_unexpected_second_reaccept(monkeypatch) -> None:
+    task = BPRWTask()
+    task._tracker_boundary_reaccepts = task.MAX_TRACKER_BOUNDARY_REACCEPTS
+    monkeypatch.setattr(task, "open_bangpai_activity", lambda: None)
+    monkeypatch.setattr(task, "save_debug_screenshot", lambda prefix: f"{prefix}.png")
+
+    with pytest.raises(RuntimeError, match="避免重复接取"):
+        task.continue_after_tracker_disappeared()
 
 
 def test_task_flow_propagates_unavailable_sidebar_without_waiting(monkeypatch) -> None:

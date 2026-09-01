@@ -1,6 +1,6 @@
 """帮派任务 - Python DSL 实现。"""
 
-from botCore import step
+from botCore import StepJumpException, step
 
 from ymjh_bot.ym_game_task import TaskSidebarStateError, YmGameTask
 
@@ -68,6 +68,8 @@ class BPRWTask(YmGameTask):
     TASK_LIST_SCROLL_UP_DURATION_MS = 400
     TASK_LIST_SCROLL_SETTLE_MS = 500
     TASK_LIST_SCROLL_UP_COUNT = 2
+    TRACKER_MISSING_CONFIRMATIONS = 2
+    MAX_TRACKER_BOUNDARY_REACCEPTS = 1
     ACQUIRE_ROUTE_OPEN_SETTLE_MS = 3500
     FLOW_DETECTION_INTERVAL_MS = 1000
     TRADE_ACTION_SETTLE_MS = 2500
@@ -76,10 +78,12 @@ class BPRWTask(YmGameTask):
     def __init__(self, default_interval_ms: int | None = None):
         super().__init__(default_interval_ms=default_interval_ms)
         self._warehouse_item_checked = False
+        self._tracker_boundary_reaccepts = 0
 
     def reset_startup_state(self) -> None:
         """Reset per-run item acquisition state before startup cleanup."""
         self._warehouse_item_checked = False
+        self._tracker_boundary_reaccepts = 0
 
     def after_startup_panel_close(self) -> None:
         """Close the Bangpai completion dialog after each startup cleanup pass."""
@@ -188,8 +192,9 @@ class BPRWTask(YmGameTask):
 
     @step(retry=1, timeout_ms=TASK_FLOW_TIMEOUT_MS)
     def run_task_flow(self) -> None:
-        """循环执行帮派任务，处理第五环任务物品。"""
+        """循环执行帮派任务，并在跨日残环边界补接当日剩余环数。"""
         deadline = self._make_deadline(self.TASK_FLOW_TIMEOUT_MS)
+        tracker_missing_confirmations = 0
         while not self._is_deadline_expired(deadline):
             if self.close_completion_dialog_if_visible():
                 return
@@ -204,12 +209,65 @@ class BPRWTask(YmGameTask):
 
             task_title = self.click_bangpai_task_from_sidebar(max_scrolls=2, required=False)
             if task_title is not None:
+                tracker_missing_confirmations = 0
                 self.handle_clicked_bangpai_task(task_title)
             else:
-                self._log("有效江湖任务栏暂未找到帮派任务，等待后重试")
+                tracker_missing_confirmations += 1
+                self._log(
+                    "有效江湖任务栏未找到帮派任务，"
+                    f"确认环数分段边界 {tracker_missing_confirmations}/"
+                    f"{self.TRACKER_MISSING_CONFIRMATIONS}"
+                )
+                if tracker_missing_confirmations >= self.TRACKER_MISSING_CONFIRMATIONS:
+                    if self.continue_after_tracker_disappeared():
+                        tracker_missing_confirmations = 0
+                        continue
+                    self._log("帮派活动已不可再次接取，确认今日帮派任务完成")
+                    return
             self.wait(self.TASK_FLOW_RETRY_WAIT_MS)
 
         raise RuntimeError("帮派任务执行流程超时：未检测到完成对话或明确任务追踪消失")
+
+    def continue_after_tracker_disappeared(self) -> bool:
+        """Reaccept once when a carried-over six-ring segment ends mid daily quota."""
+        self._log("帮派任务追踪连续消失，打开活动页核验是否存在下一段可接任务")
+        try:
+            self.open_bangpai_activity()
+        except StepJumpException as exc:
+            if exc.target == StepJumpException.JUMP_TO_END:
+                return False
+            raise
+
+        if self._tracker_boundary_reaccepts >= self.MAX_TRACKER_BOUNDARY_REACCEPTS:
+            debug_path = self.save_debug_screenshot("bprw_unexpected_extra_reaccept")
+            raise RuntimeError(
+                "帮派任务完成跨日补接后活动页仍显示可接取，"
+                f"为避免重复接取已停止；已保存截图：{debug_path}"
+            )
+
+        self._log("检测到昨日残环已结束且帮派任务仍可接取，补接今日剩余环数")
+        self.auto_pathfinding()
+        try:
+            self.accept_task()
+        except StepJumpException as exc:
+            if exc.target == StepJumpException.JUMP_TO_END:
+                return False
+            raise
+
+        try:
+            self.start_accepted_task()
+        except StepJumpException as exc:
+            if exc.target != StepJumpException.JUMP_TO_END:
+                raise
+            debug_path = self.save_debug_screenshot("bprw_reaccept_tracker_missing")
+            raise RuntimeError(
+                "帮派任务跨日补接后未检测到新任务追踪，"
+                f"已保存截图：{debug_path}"
+            ) from exc
+
+        self._tracker_boundary_reaccepts += 1
+        self._log("帮派任务跨日补接成功，继续执行当日剩余环数")
+        return True
 
     def click_bangpai_task_from_sidebar(
         self,

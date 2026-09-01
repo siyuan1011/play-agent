@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from dataclasses import asdict, dataclass
+from enum import Enum
 from typing import Any, Protocol
 
 from botCore import (
@@ -38,6 +40,30 @@ class RoleSwitcher(Protocol):
     def reset_stop(self) -> None: ...
 
 
+class TaskRunStatus(str, Enum):
+    """Terminal state of one task inside the account-role queue."""
+
+    COMPLETED = "completed"
+    RETRY_EXHAUSTED = "retry_exhausted"
+    CLEANUP_FAILED = "cleanup_failed"
+    STOPPED = "stopped"
+
+
+@dataclass(frozen=True, slots=True)
+class QueueRunSummary:
+    """Stable queue-level result consumed by the UI and diagnostics."""
+
+    status: str
+    successful_tasks: int
+    failed_tasks: int
+    abandoned_tasks: int
+    skipped_tasks: int
+    unexecuted_tasks: int
+
+    def to_dict(self) -> dict[str, int | str]:
+        return asdict(self)
+
+
 class TaskQueueRunner:
     """任务队列执行器。
 
@@ -50,6 +76,8 @@ class TaskQueueRunner:
     """
 
     MAX_TASK_ATTEMPTS = 3
+    MAX_FAILURE_CLEANUP_ATTEMPTS = 2
+
     def __init__(
         self,
         task_list: list[GameTask],
@@ -97,6 +125,19 @@ class TaskQueueRunner:
         self._started_task_index: int | None = None
         self._prepared_role_index: int | None = None
         self._last_failure_message: str | None = None
+        self._run_successful_tasks = 0
+        self._run_skipped_tasks = 0
+        self._run_failed_tasks = 0
+        self._run_abandoned_tasks = 0
+        self._run_planned_tasks = 0
+        self._last_run_summary = QueueRunSummary(
+            status="not_started",
+            successful_tasks=0,
+            failed_tasks=0,
+            abandoned_tasks=0,
+            skipped_tasks=0,
+            unexecuted_tasks=0,
+        )
         self._executor = DslStepExecutor(
             should_stop=lambda: self._stop_requested or self._paused,
             emit=self._emit,
@@ -126,7 +167,7 @@ class TaskQueueRunner:
         self._paused = False
         # 重置当前任务的停止状态，以便继续执行
         if 0 <= self.current_task_index < len(self.task_list):
-            self.task_list[self.current_task_index]._stop_requested = False
+            self.task_list[self.current_task_index].reset_stop()
         if self.role_switcher is not None:
             self.role_switcher.reset_stop()
 
@@ -141,6 +182,10 @@ class TaskQueueRunner:
             "current_task_index": self.current_task_index,
             "current_step_index": self.current_step_index,
         }
+
+    def get_run_summary(self) -> dict[str, int | str]:
+        """Return the most recent queue run summary without changing ``run()``."""
+        return self._last_run_summary.to_dict()
 
     def load_progress(self, progress: dict[str, Any] | None) -> None:
         """Restore queue position from a saved progress dictionary."""
@@ -191,6 +236,14 @@ class TaskQueueRunner:
         self._stop_requested = False
         self._paused = False
         self._last_failure_message = None
+        self._run_successful_tasks = 0
+        self._run_skipped_tasks = 0
+        self._run_failed_tasks = 0
+        self._run_abandoned_tasks = 0
+        self._run_planned_tasks = (
+            max(0, self.total_tasks - self.current_task_index)
+            + max(0, self.total_roles - self.current_role_index - 1) * self.total_tasks
+        )
         if self.role_switcher is not None:
             self.role_switcher.reset_stop()
         self._emit_progress()
@@ -239,6 +292,7 @@ class TaskQueueRunner:
                     f"（{self.current_role_index + 1}/{self.total_roles}） ==="
                 )
 
+            role_aborted = False
             while self.current_task_index < self.total_tasks:
                 if self._stop_requested:
                     break
@@ -260,7 +314,7 @@ class TaskQueueRunner:
                 )
 
                 # 执行当前任务，失败时从头重试，最多执行 MAX_TASK_ATTEMPTS 次。
-                task_results, task_completed = self._run_task_with_retries(task)
+                task_results, task_status = self._run_task_with_retries(task)
                 all_results.extend(task_results)
 
                 if self._stop_requested:
@@ -268,47 +322,145 @@ class TaskQueueRunner:
                 if self._paused:
                     continue
 
-                if not task_completed:
-                    self._emit("当前任务已跳过，继续执行下一个任务")
+                if task_status is TaskRunStatus.COMPLETED:
+                    self._run_successful_tasks += 1
+                    self._advance_current_task()
+                    continue
 
-                # 任务完成后，更新索引
-                self.current_task_index += 1
+                if task_status is TaskRunStatus.STOPPED:
+                    break
+
+                self._run_failed_tasks += 1
+                remaining_for_role = max(
+                    0,
+                    self.total_tasks - self.current_task_index - 1,
+                )
+                if task_status is TaskRunStatus.CLEANUP_FAILED:
+                    failure_message = self._last_failure_message or "失败现场清理失败"
+                    self._emit(
+                        f"任务 {getattr(task, 'task_name', task.__class__.__name__)} "
+                        "常规清理失败，开始强制恢复游戏"
+                    )
+                    try:
+                        task.recover_after_cleanup_failure(failure_message)
+                    except Exception as exc:
+                        self._set_run_summary("recovery_failed")
+                        self._emit(
+                            "失败现场强制恢复未完成，停止任务队列并保留当前进度："
+                            f"{exc}"
+                        )
+                        self._emit_progress()
+                        raise RuntimeError(
+                            f"任务失败现场强制恢复失败：{exc}"
+                        ) from exc
+                    self._emit("失败现场强制恢复完成，可以安全推进下一角色")
+
+                self._run_abandoned_tasks += remaining_for_role
+                self._emit(
+                    f"当前任务失败，放弃角色 {self._current_role_number()} "
+                    f"剩余 {remaining_for_role} 个任务并切换下一角色"
+                )
+                self.current_task_index = self.total_tasks
                 self.current_step_index = 0
                 self._started_task_index = None
+                role_aborted = True
                 self._emit_progress()
+                break
 
             if self._stop_requested:
                 break
             if self.current_task_index < self.total_tasks:
                 continue
 
-            if self.role_indices is not None:
+            if self.role_indices is not None and not role_aborted:
                 self._emit(
                     f"角色 {self._current_role_number()} 的任务图执行完成"
                     f"（{self.current_role_index + 1}/{self.total_roles}）"
                 )
-            self.current_role_index += 1
-            self.current_task_index = 0
-            self.current_step_index = 0
-            self._started_task_index = None
-            self._prepared_role_index = None
-            self._emit_progress()
-            if self.current_role_index < self.total_roles:
-                self._load_fresh_task_list()
+            self._advance_current_role()
 
         # 所有任务完成后
+        unexecuted_tasks = max(
+            0,
+            self._run_planned_tasks
+            - self._run_successful_tasks
+            - self._run_skipped_tasks
+            - self._run_failed_tasks
+            - self._run_abandoned_tasks,
+        )
         if self._stop_requested:
+            status = "user_stopped"
             self._emit(
                 f"任务队列已停止，停在角色 {self._current_role_number()}"
                 f"（{self.current_role_index + 1}/{self.total_roles}），"
-                f"完成 {self.current_task_index}/{self.total_tasks} 个任务"
+                f"本次运行成功 {self._run_successful_tasks} 个、"
+                f"跳过 {self._run_skipped_tasks} 个、"
+                f"当前失败 {self._run_failed_tasks} 个、"
+                f"因角色中断放弃 {self._run_abandoned_tasks} 个、"
+                f"未执行 {unexecuted_tasks} 个"
             )
-        elif self.role_indices is not None:
-            self._emit(f"全部 {self.total_roles} 个角色的任务队列执行完成")
+        elif self._run_failed_tasks:
+            status = "completed_with_failures"
+            self._emit(
+                "任务队列执行完成但存在失败："
+                f"成功 {self._run_successful_tasks} 个、"
+                f"失败 {self._run_failed_tasks} 个、"
+                f"因角色中断放弃 {self._run_abandoned_tasks} 个、"
+                f"未执行 {unexecuted_tasks} 个"
+            )
         else:
-            self._emit("任务队列执行完成")
+            status = "completed"
+            self._emit(
+                "任务队列执行完成："
+                f"成功 {self._run_successful_tasks} 个，跳过 {self._run_skipped_tasks} 个"
+            )
+
+        self._set_run_summary(status, unexecuted_tasks=unexecuted_tasks)
 
         return all_results
+
+    def _set_run_summary(
+        self,
+        status: str,
+        *,
+        unexecuted_tasks: int | None = None,
+    ) -> None:
+        """Record a terminal snapshot, including failures raised before run exits."""
+        if unexecuted_tasks is None:
+            unexecuted_tasks = max(
+                0,
+                self._run_planned_tasks
+                - self._run_successful_tasks
+                - self._run_skipped_tasks
+                - self._run_failed_tasks
+                - self._run_abandoned_tasks,
+            )
+        self._last_run_summary = QueueRunSummary(
+            status=status,
+            successful_tasks=self._run_successful_tasks,
+            failed_tasks=self._run_failed_tasks,
+            abandoned_tasks=self._run_abandoned_tasks,
+            skipped_tasks=self._run_skipped_tasks,
+            unexecuted_tasks=unexecuted_tasks,
+        )
+
+    def _advance_current_task(self) -> None:
+        """Persist completion of one task without changing the account role."""
+        self.current_task_index += 1
+        self.current_step_index = 0
+        self._started_task_index = None
+        self._emit_progress()
+
+    def _advance_current_role(self) -> None:
+        """Move to the next role and load a fresh task graph exactly once."""
+        self.current_role_index += 1
+        self.current_task_index = 0
+        self.current_step_index = 0
+        self._started_task_index = None
+        self._prepared_role_index = None
+        self._emit_progress()
+        if self.current_role_index < self.total_roles:
+            self._load_fresh_task_list()
 
     def _prepare_current_role(self, screen_size: tuple[int, int]) -> bool:
         """Select the persisted role before starting or resuming its task graph."""
@@ -358,7 +510,10 @@ class TaskQueueRunner:
         self.task_list = task_list
         self.total_tasks = len(task_list)
 
-    def _run_task_with_retries(self, task: GameTask) -> tuple[list[ExecutionResult], bool]:
+    def _run_task_with_retries(
+        self,
+        task: GameTask,
+    ) -> tuple[list[ExecutionResult], TaskRunStatus]:
         """执行当前任务，失败时在当前进程内从头重试。"""
         results: list[ExecutionResult] = []
         task_name = getattr(task, "task_name", task.__class__.__name__)
@@ -370,43 +525,51 @@ class TaskQueueRunner:
             results.extend(task_results)
 
             if self._stop_requested:
-                return results, False
+                return results, TaskRunStatus.STOPPED
 
             if self._paused:
                 self._wait_until_resumed_or_stopped()
                 if self._stop_requested:
-                    return results, False
+                    return results, TaskRunStatus.STOPPED
                 # Keep the current attempt and saved step progress after resuming.
                 continue
 
             if task_completed:
-                return results, True
+                return results, TaskRunStatus.COMPLETED
 
             failure_message = self._last_failure_message or f"任务 {task_name} 未完成"
             self._emit(
                 f"任务 {task_name} 第 {attempt}/{self.MAX_TASK_ATTEMPTS} 次完整流程失败："
                 f"{failure_message}"
             )
+            if not self._run_failure_cleanup_hook(task, failure_message):
+                self._emit(
+                    f"任务 {task_name} 失败现场未能通过常规清理确认安全，"
+                    "交由队列执行强制恢复"
+                )
+                return results, TaskRunStatus.CLEANUP_FAILED
+
             if attempt >= self.MAX_TASK_ATTEMPTS:
                 self._emit(
-                    f"任务 {task_name} 连续 {self.MAX_TASK_ATTEMPTS} 次未完成，跳过当前任务"
+                    f"任务 {task_name} 连续 {self.MAX_TASK_ATTEMPTS} 次未完成，"
+                    "放弃当前角色剩余任务"
                 )
-                return results, False
+                return results, TaskRunStatus.RETRY_EXHAUSTED
 
             self._run_before_retry_hook(task, failure_message)
             if self._stop_requested:
-                return results, False
+                return results, TaskRunStatus.STOPPED
             if self._paused:
                 self._wait_until_resumed_or_stopped()
                 if self._stop_requested:
-                    return results, False
+                    return results, TaskRunStatus.STOPPED
 
             attempt += 1
             self._reset_task_for_retry(task)
             self._emit(f"任务 {task_name} 将从头开始第 {attempt}/{self.MAX_TASK_ATTEMPTS} 次尝试")
             self._emit_task_attempt_start(task_name, attempt)
 
-        return results, False
+        return results, TaskRunStatus.RETRY_EXHAUSTED
 
     def _emit_task_attempt_start(self, task_name: str, attempt: int) -> None:
         self._emit(
@@ -427,13 +590,45 @@ class TaskQueueRunner:
             task_name = getattr(task, "task_name", task.__class__.__name__)
             self._emit(f"任务 {task_name} 异常重试前恢复失败，仍继续重试：{exc}")
 
+    def _run_failure_cleanup_hook(
+        self,
+        task: GameTask,
+        failure_message: str,
+    ) -> bool:
+        """Retry task-owned cleanup before declaring the queue scene unsafe."""
+        task_name = getattr(task, "task_name", task.__class__.__name__)
+        cleanup_failure = failure_message
+        for cleanup_attempt in range(1, self.MAX_FAILURE_CLEANUP_ATTEMPTS + 1):
+            try:
+                task.cleanup_after_failure(cleanup_failure)
+            except Exception as exc:
+                cleanup_failure = f"{failure_message}；任务 {task_name} 失败清理异常：{exc}"
+                self._last_failure_message = cleanup_failure
+                self._emit(
+                    f"任务 {task_name} 失败清理第 "
+                    f"{cleanup_attempt}/{self.MAX_FAILURE_CLEANUP_ATTEMPTS} 次异常：{exc}"
+                )
+                self._emit_progress()
+                if cleanup_attempt < self.MAX_FAILURE_CLEANUP_ATTEMPTS:
+                    self._emit(f"任务 {task_name} 清理失败，执行恢复后重试清理")
+                    self._run_before_retry_hook(task, cleanup_failure)
+                continue
+
+            self._emit(
+                f"任务 {task_name} 失败现场已安全清理"
+                f"（第 {cleanup_attempt}/{self.MAX_FAILURE_CLEANUP_ATTEMPTS} 次）"
+            )
+            return True
+
+        return False
+
     def _reset_task_for_retry(self, task: GameTask) -> None:
         """将任务恢复为一次完整流程的起点。"""
         self.current_step_index = 0
         self._started_task_index = None
         task._current_step_index = 0
         task._jump_target = None
-        task._stop_requested = False
+        task.reset_stop()
         self._last_failure_message = None
         self._emit_progress()
 

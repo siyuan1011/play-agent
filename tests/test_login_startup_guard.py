@@ -195,6 +195,75 @@ def test_enter_game_unknown_timeout_saves_debug_screenshot() -> None:
     assert task.saved_prefixes == ["login_unknown_scene_timeout"]
 
 
+class ForceRecoveryTask(YmGameTask):
+    def __init__(self, *, main_ready: bool = True) -> None:
+        super().__init__()
+        self.main_ready = main_ready
+        self.events: list[object] = []
+
+    def shell(self, command: str) -> str:
+        self.events.append(("shell", command))
+        return ""
+
+    def wait(self, ms: int | float) -> None:
+        self.events.append(("wait", ms))
+
+    def start_game_app(self, wait_after_launch_ms: int = 5000) -> None:
+        self.events.append("start")
+
+    def enter_game(self) -> None:
+        self.events.append("login")
+
+    def close_all_panels(self, *args, **kwargs) -> None:
+        self.events.append(("close", kwargs))
+
+    def leave_team(self, *args, **kwargs) -> None:
+        self.events.append(("leave", kwargs))
+
+    def is_game_main_ready(self, **kwargs) -> bool:
+        self.events.append(("verify", kwargs))
+        return self.main_ready
+
+    def save_debug_screenshot(self, prefix: str = "debug") -> str:
+        self.events.append(("screenshot", prefix))
+        return f"{prefix}.png"
+
+    def _log(self, message: str) -> None:
+        return None
+
+
+def test_cleanup_failure_recovery_restarts_and_verifies_unteamed_main() -> None:
+    task = ForceRecoveryTask()
+
+    task.recover_after_cleanup_failure("cleanup failed")
+
+    assert task.events == [
+        ("shell", f"am force-stop {task.PACKAGE_NAME}"),
+        ("wait", task.FAILURE_RECOVERY_FORCE_STOP_WAIT_MS),
+        "start",
+        "login",
+        ("close", {"timeout_ms": task.STARTUP_FINAL_CLOSE_TIMEOUT_MS}),
+        ("leave", {"timeout_ms": 5000, "wait_after_click_ms": 1000}),
+        ("close", {"timeout_ms": task.STARTUP_FINAL_CLOSE_TIMEOUT_MS}),
+        (
+            "verify",
+            {
+                "timeout_ms": task.FAILURE_RECOVERY_MAIN_VERIFY_TIMEOUT_MS,
+                "threshold": 0.8,
+            },
+        ),
+    ]
+
+
+def test_cleanup_failure_recovery_rejects_unknown_post_restart_scene() -> None:
+    task = ForceRecoveryTask(main_ready=False)
+
+    with pytest.raises(RuntimeError, match="cleanup_force_recovery_failed.png"):
+        task.recover_after_cleanup_failure("cleanup failed")
+
+    assert task.events[-1] == ("screenshot", "cleanup_force_recovery_failed")
+
+
 class StaticScreenshotTask(YmGameTask):
     def __init__(self, screenshot: np.ndarray) -> None:
         super().__init__()

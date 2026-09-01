@@ -88,8 +88,19 @@ class ADBClient:
         raise ADBError("Multiple devices found. Please select a device serial.")
 
     def get_screen_size(self) -> tuple[int, int]:
+        """Return the current logical display size, including active rotation."""
+        try:
+            display_dump = self.shell("dumpsys window displays")
+        except ADBError:
+            display_dump = ""
+
+        current_match = re.search(r"\bcur=(\d+)x(\d+)\b", display_dump)
+        if current_match:
+            return int(current_match.group(1)), int(current_match.group(2))
+
         out = self.shell("wm size")
-        match = re.search(r"(\d+)x(\d+)", out)
+        override_match = re.search(r"Override size:\s*(\d+)x(\d+)", out)
+        match = override_match or re.search(r"(?:Physical size:\s*)?(\d+)x(\d+)", out)
         if not match:
             raise ADBError(f"Unable to parse wm size output: {out}")
         return int(match.group(1)), int(match.group(2))

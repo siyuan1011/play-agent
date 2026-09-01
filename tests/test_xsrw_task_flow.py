@@ -9,9 +9,12 @@ import pytest
 from botCore import ImageMatchResult, VisionEngine, load_task_class
 from ymjh_bot.run_queue import _load_available_tasks
 from ymjh_bot.task.JYPY_task import JYPYTask
+from ymjh_bot.task.RCFB_task import RCFBTask
 from ymjh_bot.task.XSRW_task import (
     BountyCardSnapshot,
     BountyPanelSnapshot,
+    DailyBountyContext,
+    DailyBountyPhase,
     XSRWTask,
 )
 from ymjh_bot.ym_game_task import YmGameTask
@@ -70,11 +73,6 @@ def test_xsrw_templates_are_packaged() -> None:
         XSRWTask.TEXT_DAILY_PANEL_TITLE,
         XSRWTask.BTN_DAILY_CHALLENGE,
         XSRWTask.BTN_DAILY_CONFIRM,
-        XSRWTask.BTN_DAILY_FIND_TEAM,
-        XSRWTask.TEXT_DAILY_TEAM_LIST,
-        XSRWTask.BTN_DAILY_JOIN_TEAM,
-        XSRWTask.BTN_DAILY_TEAM_REFRESH,
-        XSRWTask.BTN_DAILY_EXIT_SOLO,
     ]
 
     assert all(Path(template).is_file() for template in templates)
@@ -147,51 +145,22 @@ def test_daily_bounty_entry_templates_match_real_device_states() -> None:
     assert confirm_match.found and confirm_match.center == (1067, 597)
 
 
-def test_daily_team_templates_match_real_device_state() -> None:
-    vision = VisionEngine()
-    team_list = load_image("daily_team_list.webp")
-
-    title_match = vision.match_binary_template(
-        team_list,
-        XSRWTask.TEXT_DAILY_TEAM_LIST,
-        mode="light_foreground",
-        threshold=XSRWTask.DAILY_TEAM_THRESHOLD,
-        roi=XSRWTask.ROI_DAILY_TEAM_LIST,
-    )
-    refresh_match = vision.match_binary_template(
-        team_list,
-        XSRWTask.BTN_DAILY_TEAM_REFRESH,
+@pytest.mark.parametrize(
+    "fixture_name",
+    ["daily_panel.webp", "daily_team_list.webp", "panel_accepted.webp", "jypy_victory.webp"],
+)
+def test_daily_bounty_confirm_rejects_non_confirmation_scenes(
+    fixture_name: str,
+) -> None:
+    match = VisionEngine().match_binary_template(
+        load_image(fixture_name),
+        XSRWTask.BTN_DAILY_CONFIRM,
         mode="otsu_dark",
-        threshold=XSRWTask.DAILY_TEAM_THRESHOLD,
-        roi=XSRWTask.ROI_DAILY_TEAM_REFRESH,
-    )
-    join_matches = vision.match_all_templates(
-        team_list,
-        XSRWTask.BTN_DAILY_JOIN_TEAM,
-        threshold=XSRWTask.DAILY_JOIN_THRESHOLD,
-        roi=XSRWTask.ROI_DAILY_JOIN_ACTIONS,
+        threshold=XSRWTask.DAILY_CONFIRM_THRESHOLD,
+        roi=XSRWTask.ROI_DAILY_CONFIRM,
     )
 
-    assert title_match.found and title_match.center == (830, 32)
-    assert refresh_match.found and refresh_match.center == (1205, 689)
-    assert [match.center for match in join_matches[:3]] == [
-        (1216, 154),
-        (1216, 304),
-        (1216, 454),
-    ]
-
-
-def test_daily_solo_exit_template_matches_real_device_state() -> None:
-    match = VisionEngine().match_template(
-        load_image("daily_solo_exit.webp"),
-        XSRWTask.BTN_DAILY_EXIT_SOLO,
-        threshold=XSRWTask.DAILY_SOLO_EXIT_THRESHOLD,
-        roi=XSRWTask.ROI_DAILY_EXIT_SOLO,
-    )
-
-    assert match.found
-    assert match.score >= 0.99
-    assert match.center == (855, 508)
+    assert not match.found
 
 
 def test_deposit_notice_template_matches_real_device_state() -> None:
@@ -593,7 +562,7 @@ def test_pending_categories_repeat_only_while_refreshed_cards_remain(monkeypatch
     monkeypatch.setattr(
         task,
         "_run_category_delegate",
-        lambda category: categories.append(category),
+        lambda card: categories.append(card.category),
     )
     monkeypatch.setattr(
         task,
@@ -645,129 +614,149 @@ def test_daily_bounty_entry_clicks_challenge_then_confirm(monkeypatch) -> None:
     monkeypatch.setattr(task, "_wait_binary_match", lambda *args, **kwargs: next(matches))
     monkeypatch.setattr(task, "tap", lambda x, y: taps.append((x, y)))
     monkeypatch.setattr(task, "wait", waits.append)
+    monkeypatch.setattr(task, "_wait_for_daily_bounty_panel_to_close", lambda: True)
     monkeypatch.setattr(task, "_log", lambda *args: None)
 
-    task.enter_daily_bounty_solo()
+    task.enter_daily_bounty_challenge()
 
     assert taps == [(1165, 660), (1067, 597)]
     assert waits == [task.DAILY_ENTRY_SETTLE_MS]
 
 
-def test_daily_bounty_prefers_exact_dungeon_team(monkeypatch) -> None:
+def test_daily_bounty_entry_retries_when_panel_does_not_close(monkeypatch) -> None:
     task = XSRWTask()
-    task._vision = VisionEngine()
     matches = iter(
         (
-            ImageMatchResult(True, 0.99, (122, 30), (25, 5, 220, 55)),
-            ImageMatchResult(True, 0.99, (987, 660), (915, 625, 1059, 695)),
-            ImageMatchResult(True, 1.0, (830, 32), (771, 8, 889, 56)),
+            ImageMatchResult(True, 0.99, (1067, 597), (975, 560, 1160, 635)),
+            ImageMatchResult(True, 0.99, (1067, 597), (975, 560, 1160, 635)),
         )
     )
     taps: list[tuple[int, int]] = []
-
+    screenshots: list[str] = []
     monkeypatch.setattr(task, "_wait_binary_match", lambda *args, **kwargs: next(matches))
-    monkeypatch.setattr(task, "screenshot", lambda: load_image("daily_team_list.webp"))
     monkeypatch.setattr(task, "tap", lambda x, y: taps.append((x, y)))
+    monkeypatch.setattr(task, "wait", lambda *args: None)
+    monkeypatch.setattr(task, "_wait_for_daily_bounty_panel_to_close", lambda: False)
     monkeypatch.setattr(
         task,
-        "_wait_daily_team_follow_confirm",
-        lambda **kwargs: True,
+        "save_debug_screenshot",
+        lambda prefix: screenshots.append(prefix) or "entry-failed.png",
     )
     monkeypatch.setattr(task, "_log", lambda *args: None)
 
-    assert task.try_join_daily_bounty_team()
-    assert taps == [(987, 660), (1216, 154)]
+    with pytest.raises(RuntimeError, match="仍停留日常副本选择页"):
+        task.enter_daily_bounty_challenge()
+
+    assert taps == [(1067, 597), (1067, 597)]
+    assert screenshots == ["xsrw_daily_entry_transition_failed"]
 
 
-def test_daily_bounty_applies_to_all_visible_teams_before_refresh(monkeypatch) -> None:
+def test_daily_bounty_panel_close_verification_rejects_visible_panel(monkeypatch) -> None:
     task = XSRWTask()
     task._vision = VisionEngine()
-    matches = iter(
-        (
-            ImageMatchResult(True, 0.99, (122, 30), (25, 5, 220, 55)),
-            ImageMatchResult(True, 0.99, (987, 660), (915, 625, 1059, 695)),
-            ImageMatchResult(True, 1.0, (830, 32), (771, 8, 889, 56)),
-        )
-    )
-    confirm_states = iter((False, False, False, True))
-    taps: list[tuple[int, int]] = []
+    deadline_states = iter((False, True))
+    monkeypatch.setattr(task, "_make_deadline", lambda timeout_ms: 1.0)
+    monkeypatch.setattr(task, "_is_deadline_expired", lambda deadline: next(deadline_states))
+    monkeypatch.setattr(task, "_remaining_ms", lambda deadline: 0)
+    monkeypatch.setattr(task, "wake_from_power_saving_if_needed", lambda: False)
+    monkeypatch.setattr(task, "screenshot", lambda: load_image("daily_panel.webp"))
 
-    monkeypatch.setattr(task, "_wait_binary_match", lambda *args, **kwargs: next(matches))
-    monkeypatch.setattr(task, "screenshot", lambda: load_image("daily_team_list.webp"))
-    monkeypatch.setattr(task, "tap", lambda x, y: taps.append((x, y)))
+    assert not task._wait_for_daily_bounty_panel_to_close()
+
+
+def test_daily_bounty_creates_one_player_team_before_direct_challenge(monkeypatch) -> None:
+    task = XSRWTask()
+    events: list[object] = []
+
     monkeypatch.setattr(
         task,
-        "_wait_daily_team_follow_confirm",
-        lambda **kwargs: next(confirm_states),
+        "close_all_panels",
+        lambda **kwargs: events.append(("close", kwargs)),
+    )
+    monkeypatch.setattr(
+        task,
+        "create_team",
+        lambda target, **kwargs: events.append(("create", target, kwargs)),
+    )
+    monkeypatch.setattr(
+        task,
+        "_restore_daily_panel_from_main_scene",
+        lambda card: events.append(("restore", card.slot_index)),
+    )
+    monkeypatch.setattr(
+        task,
+        "enter_daily_bounty_challenge",
+        lambda: events.append("enter"),
     )
     monkeypatch.setattr(task, "_log", lambda *args: None)
 
-    assert task.try_join_daily_bounty_team()
-    assert taps == [
-        (987, 660),
-        (1216, 154),
-        (1216, 304),
-        (1216, 454),
+    context = DailyBountyContext(
+        card=make_card(2, category="江湖纪事", action="前往"),
+        delegate=RCFBTask(),
+    )
+    task.enter_daily_bounty_dungeon(context)
+
+    assert context.phase is DailyBountyPhase.PANEL_RESTORED
+    assert events == [
+        (
+            "close",
+            {"timeout_ms": RCFBTask.DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS},
+        ),
+        ("create", "日常", {"min_member_count": 1}),
+        (
+            "close",
+            {"timeout_ms": RCFBTask.DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS},
+        ),
+        ("restore", 2),
+        "enter",
     ]
 
 
-def test_daily_bounty_falls_back_to_solo_after_team_search(monkeypatch) -> None:
+def test_restore_daily_panel_clicks_only_original_card(monkeypatch) -> None:
     task = XSRWTask()
-    clicks: list[tuple[int, int, int]] = []
-    solo_entries: list[bool] = []
-    waits: list[int] = []
-
-    monkeypatch.setattr(task, "try_join_daily_bounty_team", lambda: False)
+    original = make_card(2, category="江湖纪事", action="前往")
+    restored = make_card(2, category="江湖纪事", action="前往")
+    taps: list[tuple[int, int]] = []
     monkeypatch.setattr(
         task,
-        "click_point",
-        lambda x, y, *, offset: clicks.append((x, y, offset)),
+        "open_bounty_panel",
+        lambda **kwargs: make_snapshot(
+            make_card(0, category="江湖纪事", action="前往"),
+            restored,
+            make_card(3, category="江湖纪事", action="前往"),
+        ),
     )
-    monkeypatch.setattr(task, "enter_daily_bounty_solo", lambda: solo_entries.append(True))
-    monkeypatch.setattr(task, "wait", waits.append)
+    monkeypatch.setattr(task, "tap", lambda x, y: taps.append((x, y)))
+    monkeypatch.setattr(task, "wait", lambda *args: None)
     monkeypatch.setattr(task, "_log", lambda *args: None)
 
-    joined_team = task.enter_daily_bounty_dungeon()
+    task._restore_daily_panel_from_main_scene(original)
 
-    assert not joined_team
-    assert clicks == [(1234, 30, 0)]
-    assert waits == [task.DAILY_TEAM_LIST_SETTLE_MS]
-    assert solo_entries == [True]
+    assert taps == [restored.action_center]
 
 
-def test_daily_bounty_solo_exit_uses_right_side_action(monkeypatch) -> None:
+def test_restore_daily_panel_fails_when_original_card_changes(monkeypatch) -> None:
     task = XSRWTask()
-    self_clicks: list[str] = []
-    delegate_clicks: list[str] = []
-    transfer_waits: list[int] = []
-
-    class FakeDailyDelegate:
-        ICON_DUNGEON_EXIT = "exit.png"
-        DUNGEON_EXIT_ACTION_TIMEOUT_MS = 5000
-        DUNGEON_EXIT_THRESHOLD = 0.9
-        ROI_DUNGEON_EXIT = (960, 155, 85, 85)
-
-        @staticmethod
-        def click_template_if_available(template, **kwargs) -> bool:
-            delegate_clicks.append(template)
-            return True
-
-        @staticmethod
-        def wait_for_dungeon_transfer_complete(*, timeout_ms: int) -> None:
-            transfer_waits.append(timeout_ms)
-
+    original = make_card(2, category="江湖纪事", action="前往")
+    screenshots: list[str] = []
     monkeypatch.setattr(
         task,
-        "click_template_if_available",
-        lambda template, **kwargs: self_clicks.append(template) or True,
+        "open_bounty_panel",
+        lambda **kwargs: make_snapshot(
+            make_card(0, category="江湖纪事", action="前往"),
+            make_card(2, category="聚义平冤", action="前往"),
+        ),
     )
-    monkeypatch.setattr(task, "_log", lambda *args: None)
+    monkeypatch.setattr(
+        task,
+        "save_debug_screenshot",
+        lambda prefix: screenshots.append(prefix) or "changed.png",
+    )
 
-    task.leave_daily_bounty_solo(FakeDailyDelegate())  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="原第 3 卡位"):
+        task._restore_daily_panel_from_main_scene(original)
 
-    assert delegate_clicks == ["exit.png"]
-    assert self_clicks == [task.BTN_DAILY_EXIT_SOLO]
-    assert transfer_waits == [60000]
+    assert screenshots == ["xsrw_daily_original_card_changed"]
 
 
 def test_daily_bounty_flow_reuses_shared_hangup_monitor(monkeypatch) -> None:
@@ -797,6 +786,195 @@ def test_daily_bounty_flow_reuses_shared_hangup_monitor(monkeypatch) -> None:
             "timeout_screenshot_prefix": "xsrw_daily_raid_timeout",
         }
     ]
+
+
+def test_daily_context_exists_before_first_forward_click(monkeypatch) -> None:
+    task = XSRWTask()
+    task._adb = object()  # type: ignore[assignment]
+    task._vision = VisionEngine()
+    delegate = RCFBTask()
+    card = make_card(1, category="江湖纪事", action="前往")
+    cleaned_contexts: list[DailyBountyContext] = []
+    monkeypatch.setattr("ymjh_bot.task.XSRW_task.RCFBTask", lambda: delegate)
+    monkeypatch.setattr(delegate, "setup", lambda *args, **kwargs: None)
+    monkeypatch.setattr(delegate, "reset_startup_state", lambda: None)
+    monkeypatch.setattr(
+        task,
+        "tap",
+        lambda *args: (_ for _ in ()).throw(RuntimeError("forward failed")),
+    )
+    monkeypatch.setattr(
+        task,
+        "cleanup_daily_bounty_after_failure",
+        cleaned_contexts.append,
+    )
+
+    with pytest.raises(RuntimeError, match="forward failed"):
+        task._run_category_delegate(card)
+
+    assert len(cleaned_contexts) == 1
+    assert cleaned_contexts[0].card is card
+    assert cleaned_contexts[0].phase is DailyBountyPhase.TARGET_OPENED
+    assert task._daily_context is None
+
+
+def test_daily_bounty_delegate_failure_cleans_dungeon_before_reraising(
+    monkeypatch,
+) -> None:
+    task = XSRWTask()
+    task._adb = object()  # type: ignore[assignment]
+    task._vision = VisionEngine()
+    delegate = RCFBTask()
+    card = make_card(1, category="江湖纪事", action="前往")
+    cleaned_phases: list[DailyBountyPhase] = []
+    monkeypatch.setattr(task, "enter_daily_bounty_dungeon", lambda context: None)
+    monkeypatch.setattr(task, "tap", lambda *args: None)
+    monkeypatch.setattr(task, "wait", lambda *args: None)
+    monkeypatch.setattr("ymjh_bot.task.XSRW_task.RCFBTask", lambda: delegate)
+    monkeypatch.setattr(delegate, "setup", lambda *args, **kwargs: None)
+    monkeypatch.setattr(delegate, "reset_startup_state", lambda: None)
+    monkeypatch.setattr(
+        task,
+        "wait_for_daily_bounty_task",
+        lambda current, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        task,
+        "run_daily_bounty_raid_flow",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("raid failed")),
+    )
+    monkeypatch.setattr(
+        task,
+        "cleanup_daily_bounty_after_failure",
+        lambda context: cleaned_phases.append(context.phase),
+    )
+
+    with pytest.raises(RuntimeError, match="raid failed"):
+        task._run_category_delegate(card)
+
+    assert cleaned_phases == [DailyBountyPhase.ENTRY_CONFIRMED]
+    assert task._daily_context is None
+    assert task._active_delegate is None
+
+
+def test_daily_bounty_cleanup_failure_is_retained_for_queue_cleanup(monkeypatch) -> None:
+    task = XSRWTask()
+    task._adb = object()  # type: ignore[assignment]
+    task._vision = VisionEngine()
+    delegate = RCFBTask()
+    card = make_card(1, category="江湖纪事", action="前往")
+    cleanup_calls: list[DailyBountyPhase] = []
+    monkeypatch.setattr(task, "enter_daily_bounty_dungeon", lambda context: None)
+    monkeypatch.setattr(task, "tap", lambda *args: None)
+    monkeypatch.setattr(task, "wait", lambda *args: None)
+    monkeypatch.setattr("ymjh_bot.task.XSRW_task.RCFBTask", lambda: delegate)
+    monkeypatch.setattr(delegate, "setup", lambda *args, **kwargs: None)
+    monkeypatch.setattr(delegate, "reset_startup_state", lambda: None)
+    monkeypatch.setattr(
+        task,
+        "wait_for_daily_bounty_task",
+        lambda current, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        task,
+        "run_daily_bounty_raid_flow",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("raid failed")),
+    )
+
+    def cleanup(context: DailyBountyContext) -> None:
+        cleanup_calls.append(context.phase)
+        if len(cleanup_calls) == 1:
+            raise RuntimeError("exit failed")
+
+    monkeypatch.setattr(task, "cleanup_daily_bounty_after_failure", cleanup)
+
+    with pytest.raises(RuntimeError, match="阶段 entry_confirmed 清理异常：exit failed"):
+        task._run_category_delegate(card)
+
+    assert task._daily_context is not None
+    assert task._daily_context.delegate is delegate
+
+    task.cleanup_after_failure("queue retry")
+
+    assert cleanup_calls == [
+        DailyBountyPhase.ENTRY_CONFIRMED,
+        DailyBountyPhase.ENTRY_CONFIRMED,
+    ]
+    assert task._daily_context is None
+
+
+def test_pre_entry_cleanup_dismisses_known_panel_before_normalizing(monkeypatch) -> None:
+    task = XSRWTask()
+    delegate = RCFBTask()
+    context = DailyBountyContext(
+        card=make_card(0, category="江湖纪事", action="前往"),
+        delegate=delegate,
+        phase=DailyBountyPhase.TEAM_CREATED,
+    )
+    events: list[object] = []
+    monkeypatch.setattr(delegate, "wake_from_power_saving_if_needed", lambda: False)
+    monkeypatch.setattr(
+        delegate,
+        "close_all_panels",
+        lambda **kwargs: events.append(("close", kwargs)),
+    )
+    monkeypatch.setattr(delegate, "detect_and_mark_dungeon_scene", lambda: False)
+    monkeypatch.setattr(
+        delegate,
+        "normalize_outside_dungeon_after_failure",
+        lambda **kwargs: events.append(("normalize", kwargs)),
+    )
+    monkeypatch.setattr(
+        task,
+        "_dismiss_known_daily_bounty_panels",
+        lambda: events.append("dismiss"),
+    )
+    monkeypatch.setattr(task, "_log", lambda *args: None)
+
+    task.cleanup_daily_bounty_after_failure(context)
+
+    assert events == [
+        "dismiss",
+        (
+            "close",
+            {"timeout_ms": delegate.DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS},
+        ),
+        ("normalize", {"panels_already_closed": True}),
+    ]
+
+
+def test_known_bounty_panel_cleanup_clicks_outside_without_forward(monkeypatch) -> None:
+    task = XSRWTask()
+    visible = make_snapshot(
+        make_card(0, category="江湖纪事", action="前往"),
+        make_card(1, category="江湖纪事", action="前往"),
+    )
+    hidden = BountyPanelSnapshot(
+        screenshot=visible.screenshot,
+        visible=False,
+        daily_complete=False,
+        cards=(),
+    )
+    panel_states = iter((visible, hidden))
+    clicks: list[tuple[int, int]] = []
+    monkeypatch.setattr(task, "screenshot", lambda: visible.screenshot)
+    monkeypatch.setattr(task, "read_bounty_panel", lambda screenshot: next(panel_states))
+    monkeypatch.setattr(
+        task,
+        "_binary_match",
+        lambda *args, **kwargs: ImageMatchResult(False, 0.0, None, None),
+    )
+    monkeypatch.setattr(
+        task,
+        "click_point",
+        lambda x, y, *, offset: clicks.append((x, y)),
+    )
+    monkeypatch.setattr(task, "wait", lambda *args: None)
+    monkeypatch.setattr(task, "_log", lambda *args: None)
+
+    task._dismiss_known_daily_bounty_panels()
+
+    assert clicks == [task.DAILY_BOUNTY_PANEL_DISMISS_POINT]
 
 
 def test_stop_propagates_to_active_delegate() -> None:

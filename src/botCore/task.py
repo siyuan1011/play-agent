@@ -150,6 +150,10 @@ class GameTask:
     def stop(self) -> None:
         self._stop_requested = True
 
+    def reset_stop(self) -> None:
+        """Clear a propagated stop flag before resume or a fresh retry."""
+        self._stop_requested = False
+
     def is_stopped(self) -> bool:
         return self._stop_requested
 
@@ -162,6 +166,21 @@ class GameTask:
         failure: Exception | str | None = None,
     ) -> None:
         """Hook called after an abnormal failure and before an actual retry."""
+
+    def cleanup_after_failure(
+        self,
+        failure: Exception | str | None = None,
+    ) -> None:
+        """Clean task-owned external state after a failed full task attempt."""
+
+    def recover_after_cleanup_failure(
+        self,
+        failure: Exception | str | None = None,
+    ) -> None:
+        """Recover external state when normal task cleanup cannot prove safety."""
+        raise RuntimeError(
+            f"任务 {self.__class__.__name__} 不支持失败清理后的强制恢复"
+        )
 
     def jump_to(self, step_name: str) -> None:
         raise StepJumpException(step_name)

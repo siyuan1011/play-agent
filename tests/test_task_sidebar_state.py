@@ -262,7 +262,7 @@ def test_collapsed_sidebar_expands_once_then_activates_entry_once() -> None:
     assert task.taps == [(22, 358), (22, 218)]
 
 
-@pytest.mark.parametrize("state", ["activity", "power", "battle"])
+@pytest.mark.parametrize("state", ["activity", "battle"])
 def test_unsafe_negative_states_never_use_default_activation(
     state: str,
     tmp_path: Path,
@@ -273,6 +273,17 @@ def test_unsafe_negative_states_never_use_default_activation(
         task.ensure_task_sidebar_open()
 
     assert task.taps == []
+
+
+def test_power_saving_is_woken_before_sidebar_detection() -> None:
+    task = SidebarTask(
+        "power",
+        {("power", task_point := YmGameTask.POINT_RIGHT_JOYSTICK_CENTER): "task_active"},
+    )
+
+    task.ensure_task_sidebar_open()
+
+    assert task.taps == [task_point]
 
 
 def test_fullscreen_after_activation_closes_once_but_never_activates_again(
@@ -366,6 +377,17 @@ def test_caller_cannot_lower_task_sidebar_threshold() -> None:
     task.switch_task_panel("任务", threshold=0.2)
 
     assert task._vision.thresholds
-    assert min(task._vision.thresholds) >= 0.85
-    active_thresholds = task._vision.thresholds[:3]
-    assert min(active_thresholds) >= 0.85
+    active_thresholds = task._vision.thresholds[1:4]
+    assert active_thresholds == [task.TASK_TAB_ACTIVE_THRESHOLD] * 3
+    assert min(task._vision.thresholds[4:]) >= task.TASK_SIDEBAR_THRESHOLD
+
+
+def test_repeated_sidebar_failure_reuses_recent_screenshot(tmp_path: Path) -> None:
+    task = SidebarTask("power", logger=RunLogger(tmp_path, retention_days=None))
+
+    for _ in range(2):
+        with pytest.raises(TaskSidebarStateError, match="省电状态下"):
+            task.ensure_task_sidebar_open()
+
+    screenshots = list(task._logger.shots_dir.glob("task_sidebar_state_failed_*.png"))
+    assert len(screenshots) == 1
