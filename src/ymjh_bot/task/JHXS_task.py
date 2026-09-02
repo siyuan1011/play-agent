@@ -32,6 +32,9 @@ class JHXSTask(YmGameTask):
     TEXT_PUBLISH_PANEL_TITLE = str(
         YmGameTask.TEMPLATES_DIR / "text_bounty_publish_title.png"
     )
+    TEXT_PUBLISH_REMAINING_ZERO = str(
+        YmGameTask.TEMPLATES_DIR / "text_bounty_remaining_zero.png"
+    )
     BTN_PUBLISH_CONFIRM = str(
         YmGameTask.TEMPLATES_DIR / "btn_bounty_publish_confirm.png"
     )
@@ -48,6 +51,7 @@ class JHXSTask(YmGameTask):
     ROI_BOUNTY_PANEL_TITLE = (250, 105, 250, 70)
     ROI_PUBLISH_ENTRY = (990, 540, 140, 90)
     ROI_PUBLISH_PANEL_TITLE = (540, 140, 210, 80)
+    ROI_PUBLISH_REMAINING_ZERO = (768, 302, 34, 40)
     ROI_TARGET_OPTIONS = (510, 250, 260, 150)
     ROI_TARGET_SELECTED = (510, 200, 370, 60)
     ROI_PUBLISH_CONFIRM = (770, 500, 210, 100)
@@ -59,6 +63,7 @@ class JHXSTask(YmGameTask):
     BOUNTY_PANEL_THRESHOLD = 0.80
     PUBLISH_ENTRY_THRESHOLD = 0.90
     PUBLISH_PANEL_THRESHOLD = 0.90
+    PUBLISH_REMAINING_ZERO_THRESHOLD = 0.90
     TARGET_OPTION_THRESHOLD = 0.90
     TARGET_SELECTED_THRESHOLD = 0.90
     PUBLISH_CONFIRM_THRESHOLD = 0.90
@@ -123,6 +128,9 @@ class JHXSTask(YmGameTask):
     def open_bounty_publish_panel(self) -> None:
         """3. Click the lower-right Publish entry."""
         self.ensure_bounty_publish_panel_open()
+        if self._is_bounty_publish_quota_exhausted():
+            self._log_bounty_publish_quota_exhausted()
+            self.jump_to_end()
 
     @step(retry=3, timeout_ms=30000)
     def open_bounty_target_dropdown(self) -> None:
@@ -184,6 +192,9 @@ class JHXSTask(YmGameTask):
 
         if not self.is_bounty_publish_panel_visible():
             self.ensure_bounty_publish_panel_open()
+        if self._is_bounty_publish_quota_exhausted():
+            self._log_bounty_publish_quota_exhausted()
+            return
         if not self.is_bounty_target_selected():
             self.select_bounty_target()
 
@@ -201,6 +212,9 @@ class JHXSTask(YmGameTask):
         self.tap(*publish.center)
         self.wait(self.PUBLISH_PANEL_SETTLE_MS)
         if not self.confirm_publish_modal_if_visible(timeout_ms=self.PANEL_TIMEOUT_MS):
+            if self._is_bounty_publish_quota_exhausted():
+                self._log_bounty_publish_quota_exhausted()
+                return
             self._raise_publish_error(
                 "modal_confirm_missing",
                 "发布江湖行商悬赏后未找到二次确认按钮",
@@ -307,6 +321,24 @@ class JHXSTask(YmGameTask):
             roi=self.ROI_PUBLISH_PANEL_TITLE,
             timeout_ms=timeout_ms,
         ).found
+
+    def _is_bounty_publish_quota_exhausted(
+        self,
+        screenshot: np.ndarray | None = None,
+    ) -> bool:
+        image = self.screenshot() if screenshot is None else screenshot
+        if not self.is_bounty_publish_panel_visible(image):
+            return False
+        return self._match_bounty_template(
+            image,
+            self.TEXT_PUBLISH_REMAINING_ZERO,
+            mode="light_foreground",
+            threshold=self.PUBLISH_REMAINING_ZERO_THRESHOLD,
+            roi=self.ROI_PUBLISH_REMAINING_ZERO,
+        ).found
+
+    def _log_bounty_publish_quota_exhausted(self) -> None:
+        self._log("悬赏发布次数已用完，按今日已完成处理")
 
     def is_bounty_target_dropdown_open(
         self,
