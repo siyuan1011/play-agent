@@ -81,16 +81,16 @@ class BPRWTask(YmGameTask):
         self._tracker_boundary_reaccepts = 0
 
     def reset_startup_state(self) -> None:
-        """Reset per-run item acquisition state before startup cleanup."""
+        """在启动清理前重置本次运行的物品获取状态。"""
         self._warehouse_item_checked = False
         self._tracker_boundary_reaccepts = 0
 
     def after_startup_panel_close(self) -> None:
-        """Close the Bangpai completion dialog after each startup cleanup pass."""
+        """每轮启动清理后关闭帮派任务完成弹窗。"""
         self.close_completion_dialog_if_visible()
 
     def close_purchase_dialog_if_needed(self) -> bool:
-        """Close a leftover PvP extra-challenge purchase dialog before generic panel closing."""
+        """通用面板关闭前，先关闭残留的 PvP 额外挑战购买弹窗。"""
         if not self.find_image(
             [self.BTN_CLOSE, self.BTN_PANE_CLOSE],
             threshold=0.85,
@@ -169,7 +169,7 @@ class BPRWTask(YmGameTask):
         self.wait(1500)
 
     def is_bangpai_list_visible(self) -> bool:
-        """Return whether the account is on the guild-join list instead of a guild task dialog."""
+        """返回当前是否处于帮派加入列表，而非帮派任务对话框。"""
         return self.find_image(
             self.TITLE_BANGPAI_LIST,
             threshold=0.85,
@@ -229,7 +229,7 @@ class BPRWTask(YmGameTask):
         raise RuntimeError("帮派任务执行流程超时：未检测到完成对话或明确任务追踪消失")
 
     def continue_after_tracker_disappeared(self) -> bool:
-        """Reaccept once when a carried-over six-ring segment ends mid daily quota."""
+        """跨次保留的六环任务在每日次数中途结束时重新接取一次。"""
         self._log("帮派任务追踪连续消失，打开活动页核验是否存在下一段可接任务")
         try:
             self.open_bangpai_activity()
@@ -275,7 +275,7 @@ class BPRWTask(YmGameTask):
         max_scrolls: int,
         required: bool,
     ) -> str | None:
-        """Find and click the BPRW task in the Jianghu task sidebar."""
+        """在江湖任务侧栏中查找并点击帮派任务。"""
         task_title = self.find_bangpai_task_in_sidebar(max_scrolls=max_scrolls)
         if task_title is None:
             if required:
@@ -316,7 +316,7 @@ class BPRWTask(YmGameTask):
         return None
 
     def _ensure_bangpai_sidebar_ready(self) -> None:
-        """Confirm the Jianghu sidebar before any fixed-coordinate scan or scroll."""
+        """在固定坐标扫描或滚动前确认已打开江湖侧栏。"""
         try:
             self.switch_task_panel("江湖", timeout_ms=6000, threshold=0.8)
         except TaskSidebarStateError as exc:
@@ -330,7 +330,7 @@ class BPRWTask(YmGameTask):
         threshold: float,
         interval_ms: int,
     ) -> str | None:
-        """Return the exact BPRW sidebar title while preserving its click center."""
+        """返回精确的帮派任务侧栏标题，并保留其点击中心。"""
         deadline = self._make_deadline(timeout_ms)
         roi = self.scale_roi((40, 135, 330, 430))
         while not self._is_deadline_expired(deadline):
@@ -358,21 +358,21 @@ class BPRWTask(YmGameTask):
         return None
 
     def handle_clicked_bangpai_task(self, task_title: str) -> bool:
-        """Advance a clicked tracker according to its exact BPRW title."""
+        """根据已点击追踪项的精确帮派任务标题推进流程。"""
         self.wait_bangpai_task_transition(f"点击帮派任务“{task_title}”后")
         if task_title == self.SIDEBAR_BANGPAI_RETURN_TITLE:
             return self.handle_return_task_item_after_click()
         return True
 
     def wait_bangpai_task_transition(self, description: str) -> None:
-        """Wait for pathfinding/loading to settle or fail before any sidebar operation."""
+        """执行侧栏操作前，等待寻路或加载稳定完成或失败。"""
         if self.wait_auto_pathfinding(timeout_ms=120000):
             return
         screenshot_path = self.save_debug_screenshot("bangpai_task_transition_timeout")
         raise RuntimeError(f"{description}等待自动寻路或过图结束超时，已保存截图：{screenshot_path}")
 
     def handle_return_task_item_after_click(self) -> bool:
-        """Submit or acquire the final task item opened by Return to Guild."""
+        """提交或获取“返回帮派”打开的最终任务物品。"""
         self._log("检测到回帮复命，优先处理第五环任务物品")
         if self.handle_submit_panel_if_visible():
             return True
@@ -385,7 +385,7 @@ class BPRWTask(YmGameTask):
         return False
 
     def confirm_sidebar_task_popup_if_needed(self) -> bool:
-        """Confirm transient prompts that can appear after clicking a sidebar tracker."""
+        """确认点击侧栏追踪项后可能出现的临时提示。"""
         if not self.click_template_if_available(
             self.BTN_MODAL_OK,
             timeout_ms=2000,
@@ -397,7 +397,7 @@ class BPRWTask(YmGameTask):
         return True
 
     def scroll_task_list_down(self) -> None:
-        """Drag the task list slowly to reveal lower entries without fling momentum."""
+        """缓慢拖动任务列表以显示较低条目，避免惯性滑动。"""
         start = self.POINT_TASK_LIST_SCROLL_START
         end = self.POINT_TASK_LIST_SCROLL_END
         self.swipe(
@@ -410,7 +410,7 @@ class BPRWTask(YmGameTask):
         self.wait(self.TASK_LIST_SCROLL_SETTLE_MS)
 
     def scroll_task_list_up(self) -> None:
-        """Drag the task list down by one page while normalizing to its first page."""
+        """将任务列表下拖一页，同时归一到其第一页。"""
         start = self.POINT_TASK_LIST_SCROLL_UP_START
         end = self.POINT_TASK_LIST_SCROLL_UP_END
         self.swipe(
@@ -423,7 +423,7 @@ class BPRWTask(YmGameTask):
         self.wait(self.TASK_LIST_SCROLL_SETTLE_MS)
 
     def close_completion_dialog_if_visible(self) -> bool:
-        """Close the final Bangpai completion dialog when it is visible."""
+        """最终帮派任务完成弹窗可见时将其关闭。"""
         if not self.find_image(
             self.TEXT_TASK_COMPLETE,
             threshold=0.9,
@@ -437,7 +437,7 @@ class BPRWTask(YmGameTask):
         return True
 
     def handle_acquire_route_panel_if_visible(self) -> bool:
-        """Handle the item acquisition panel with warehouse-first priority."""
+        """按仓库优先策略处理物品获取面板。"""
         if not self.is_acquire_route_panel_visible():
             return False
 
@@ -462,7 +462,7 @@ class BPRWTask(YmGameTask):
         return True
 
     def handle_submit_panel_if_visible(self) -> bool:
-        """Submit the final task item when the one-key submit panel appears."""
+        """一键提交面板出现时提交最终任务物品。"""
         if not self.click_template_if_available(
             self.BTN_ONE_KEY_SUBMIT,
             timeout_ms=600,
@@ -479,7 +479,7 @@ class BPRWTask(YmGameTask):
         return True
 
     def try_warehouse_route(self, *, route_panel_ready: bool = False) -> bool:
-        """Try to submit the requested item from gang warehouse."""
+        """尝试从帮派仓库提交所需物品。"""
         if not route_panel_ready and not self.ensure_acquire_route_panel_open():
             return False
 
@@ -512,7 +512,7 @@ class BPRWTask(YmGameTask):
         return False
 
     def try_mall_route(self) -> bool:
-        """Buy the requested item from mall using the default quantity."""
+        """按默认数量从商城购买所需物品。"""
         if not self.ensure_acquire_route_panel_open():
             return False
 
@@ -545,7 +545,7 @@ class BPRWTask(YmGameTask):
         return True
 
     def try_stall_route(self) -> bool:
-        """Try to buy the requested item from stall or all-server stall."""
+        """尝试从本服摊位或全服摊位购买所需物品。"""
         if not self.ensure_acquire_route_panel_open():
             return False
 
@@ -584,7 +584,7 @@ class BPRWTask(YmGameTask):
         return False
 
     def handle_trade_panel_if_visible(self) -> bool:
-        """Handle a trade panel that the game opens automatically."""
+        """处理游戏自动打开的交易面板。"""
         if self.buy_from_current_trade_panel("自动打开的交易购买按钮", timeout_ms=1000):
             return True
 
@@ -607,7 +607,7 @@ class BPRWTask(YmGameTask):
         return True
 
     def buy_from_current_trade_panel(self, description: str, *, timeout_ms: int) -> bool:
-        """Click Buy in the current trade panel and confirm the secondary prompt if needed."""
+        """在当前交易面板点击购买，必要时确认二次提示。"""
         if not self.click_template_if_available(
             self.BTN_BUY,
             timeout_ms=timeout_ms,
@@ -634,7 +634,7 @@ class BPRWTask(YmGameTask):
         return True
 
     def ensure_acquire_route_panel_open(self) -> bool:
-        """Ensure the task item acquisition route panel is visible."""
+        """确保任务物品获取途径面板可见。"""
         if self.is_acquire_route_panel_visible():
             return True
 
@@ -650,7 +650,7 @@ class BPRWTask(YmGameTask):
         return self.wait_acquire_route_panel_visible(timeout_ms=5000)
 
     def wait_acquire_route_panel_visible(self, timeout_ms: int = 3000) -> bool:
-        """Wait until any supported acquisition route appears."""
+        """等待任一受支持的获取途径出现。"""
         return self.wait_find_image_in_roi(
             [self.ROUTE_WAREHOUSE, self.ROUTE_MALL, self.ROUTE_STALL],
             self.ROI_ROUTE_PANEL,
@@ -661,7 +661,7 @@ class BPRWTask(YmGameTask):
         )
 
     def is_acquire_route_panel_visible(self) -> bool:
-        """Return whether the task item acquisition route panel is visible."""
+        """返回任务物品获取途径面板是否可见。"""
         return self.find_image(
             [self.ROUTE_WAREHOUSE, self.ROUTE_MALL, self.ROUTE_STALL],
             threshold=0.8,
@@ -669,7 +669,7 @@ class BPRWTask(YmGameTask):
         )
 
     def confirm_purchase_if_needed(self) -> bool:
-        """Confirm the secondary purchase prompt if present."""
+        """若存在二次购买提示则确认。"""
         return self.click_template_if_available(
             self.BTN_MODAL_OK,
             timeout_ms=2000,
@@ -680,7 +680,7 @@ class BPRWTask(YmGameTask):
         )
 
     def confirm_submit_if_needed(self) -> bool:
-        """Confirm a secondary task-submit prompt if present."""
+        """若存在二次任务提交提示则确认。"""
         return self.click_template_if_available(
             [self.BTN_MODAL_OK, self.BTN_OK],
             timeout_ms=3000,
@@ -691,7 +691,7 @@ class BPRWTask(YmGameTask):
         )
 
     def close_transient_panels(self, max_attempts: int = 4) -> bool:
-        """Close temporary panels after item acquisition actions."""
+        """物品获取操作后关闭临时面板。"""
         closed = False
         for _ in range(max_attempts):
             if self.wait_image_appear([self.BTN_CLOSE, self.BTN_PANE_CLOSE], timeout_ms=800, threshold=0.8):
@@ -713,7 +713,7 @@ class BPRWTask(YmGameTask):
         roi: tuple[int, int, int, int] | None = None,
         interval_ms: int = 500,
     ) -> bool:
-        """Click a template if it appears within an optional design-resolution ROI."""
+        """模板出现在可选的设计分辨率区域内时点击它。"""
         if roi is None:
             found = self.wait_image_appear(
                 template,

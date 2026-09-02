@@ -59,7 +59,7 @@ class MKSYTask(BanquetAcquireMixin, YmGameTask):
         self._started_banquet = False
 
     def reset_startup_state(self) -> None:
-        """Reset banquet state before the shared startup cleanup."""
+        """在通用启动清理前重置宴席状态。"""
         super().reset_startup_state()
         self._started_banquet = False
 

@@ -89,28 +89,28 @@ class RCFBTask(YmGameTask):
         self._dungeon_completion_confirmed = False
 
     def reset_startup_state(self) -> None:
-        """Reset tracked dungeon state for each task run."""
+        """每次任务运行时重置追踪的副本状态。"""
         self._dungeon_entry_confirmed = False
         self._dungeon_completion_confirmed = False
 
     def mark_dungeon_entered(self) -> None:
-        """Record that an explicit dungeon tracker confirmed entry."""
+        """记录由明确副本追踪项确认的进入状态。"""
         self._dungeon_entry_confirmed = True
         self._dungeon_completion_confirmed = False
 
     def mark_dungeon_completed(self) -> None:
-        """Record that the explicit transfer-out countdown confirmed completion."""
+        """记录由明确传出倒计时确认的完成状态。"""
         self._dungeon_entry_confirmed = True
         self._dungeon_completion_confirmed = True
 
     def mark_dungeon_exited(self) -> None:
-        """Clear dungeon state only after the outside scene is verified."""
+        """仅在外部场景已验证后清除副本状态。"""
         self._dungeon_entry_confirmed = False
         self._dungeon_completion_confirmed = False
 
     @step(retry=3, timeout_ms=DAILY_START_TIMEOUT_MS)
     def start_daily_match(self) -> None:
-        """Create a one-player team and directly challenge the daily dungeon."""
+        """创建单人队伍并直接挑战日常副本。"""
         self.create_team("日常", min_member_count=1)
         self.close_all_panels(timeout_ms=self.DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS)
         self.open_daily_dungeon_panel()
@@ -118,7 +118,7 @@ class RCFBTask(YmGameTask):
 
     @step(retry=0, timeout_ms=None)
     def wait_dungeon_task(self) -> None:
-        """Wait for the tracker that proves the self-created team entered."""
+        """等待能够证明自建队伍已进入副本的追踪项。"""
         if self.wait_for_dungeon_task(timeout_ms=300000):
             self.mark_dungeon_entered()
             self._log("检测到江湖副本任务，确认已进入副本流程")
@@ -132,7 +132,7 @@ class RCFBTask(YmGameTask):
 
     @step(retry=0, timeout_ms=TASK_FLOW_TIMEOUT_MS)
     def run_daily_raid_flow(self) -> None:
-        """Periodically refresh the tracker until the dungeon explicitly completes."""
+        """定期刷新追踪项，直到副本明确完成。"""
         self.monitor_dungeon_hangup_flow(
             timeout_ms=self.TASK_FLOW_TIMEOUT_MS,
             context="日常副本",
@@ -146,7 +146,7 @@ class RCFBTask(YmGameTask):
         context: str,
         timeout_screenshot_prefix: str,
     ) -> None:
-        """Periodically refresh the dungeon tracker until completion is explicit."""
+        """定期刷新副本追踪项，直到完成状态明确。"""
         if timeout_ms <= 0:
             raise ValueError("副本挂机监控超时时间必须大于 0")
         if not self._dungeon_entry_confirmed:
@@ -244,7 +244,7 @@ class RCFBTask(YmGameTask):
         self,
         failure: Exception | str | None = None,
     ) -> None:
-        """Leave a confirmed dungeon before the queue retries or advances."""
+        """队列重试或推进前离开已确认进入的副本。"""
         self._log(f"日常副本失败，开始安全清理现场：{failure}")
         self.wake_from_power_saving_if_needed()
         self.close_all_panels(timeout_ms=self.DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS)
@@ -259,7 +259,7 @@ class RCFBTask(YmGameTask):
         self.normalize_outside_dungeon_after_failure(panels_already_closed=True)
 
     def detect_and_mark_dungeon_scene(self) -> bool:
-        """Recognize explicit dungeon controls and update tracked state."""
+        """识别明确的副本控件并更新追踪状态。"""
         if self.is_dungeon_transfer_out_visible():
             self.mark_dungeon_completed()
             return True
@@ -277,7 +277,7 @@ class RCFBTask(YmGameTask):
         *,
         panels_already_closed: bool = False,
     ) -> None:
-        """Normalize a failed pre-entry scene and strictly verify the main scene."""
+        """恢复进入失败前的场景，并严格验证主场景。"""
         if not panels_already_closed:
             self.wake_from_power_saving_if_needed()
             self.close_all_panels(
@@ -293,7 +293,7 @@ class RCFBTask(YmGameTask):
         self.finish_verified_outside_dungeon_cleanup()
 
     def wait_for_verified_outside_dungeon(self, *, timeout_ms: int | None = None) -> bool:
-        """Require a stable main HUD with no dungeon-only exit controls."""
+        """要求主界面 HUD 稳定，且不存在副本专属退出控件。"""
         effective_timeout_ms = (
             self.DUNGEON_OUTSIDE_VERIFY_TIMEOUT_MS
             if timeout_ms is None
@@ -321,7 +321,7 @@ class RCFBTask(YmGameTask):
         return False
 
     def finish_verified_outside_dungeon_cleanup(self) -> None:
-        """Leave a residual team and re-confirm the stable outside scene."""
+        """离开残留队伍，并重新确认稳定的外部场景。"""
         self.leave_team(timeout_ms=5000, wait_after_click_ms=1000)
         self.close_all_panels(timeout_ms=self.DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS)
         if not self.wait_for_verified_outside_dungeon():
@@ -335,7 +335,7 @@ class RCFBTask(YmGameTask):
         allow_auto_transfer: bool,
         screenshot_prefix: str,
     ) -> None:
-        """Exit a team dungeon and require a verified stable main scene."""
+        """退出队伍副本，并要求验证后的稳定主场景。"""
         self.wake_from_power_saving_if_needed()
         exit_team_clicked = self.click_dungeon_exit_team_with_retries()
 
@@ -368,7 +368,7 @@ class RCFBTask(YmGameTask):
         self.mark_dungeon_exited()
 
     def click_dungeon_exit_team_with_retries(self) -> bool:
-        """Try to open the dungeon-exit dialog and click leave-dungeon-and-team."""
+        """尝试打开副本退出对话框，并点击离开副本和队伍。"""
         for attempt in range(1, self.DUNGEON_EXIT_MAX_ATTEMPTS + 1):
             if self.click_visible_dungeon_exit_team_button():
                 self._log("检测到已打开的副本退出弹框，点击退本退队")
@@ -405,7 +405,7 @@ class RCFBTask(YmGameTask):
         return False
 
     def click_visible_dungeon_exit_team_button(self) -> bool:
-        """Click an exit-team action that is already visible without toggling the dialog."""
+        """点击已可见的退队操作，不切换对话框。"""
         if not self.is_dungeon_exit_team_dialog_visible():
             return False
 
@@ -413,7 +413,7 @@ class RCFBTask(YmGameTask):
         return True
 
     def is_dungeon_exit_team_dialog_visible(self) -> bool:
-        """Return whether the team-dungeon exit action is already visible."""
+        """返回队伍副本退出操作是否已可见。"""
         return self.find_image_once(
             self.BTN_DUNGEON_EXIT_TEAM,
             threshold=self.DUNGEON_EXIT_TEAM_THRESHOLD,
@@ -421,7 +421,7 @@ class RCFBTask(YmGameTask):
         )
 
     def open_daily_dungeon_panel(self) -> None:
-        """Open Jianghu Chronicle from Activity and verify its challenge panel."""
+        """从活动中打开江湖纪事，并验证其挑战面板。"""
         if self.is_daily_dungeon_panel_visible(timeout_ms=0):
             return
 
@@ -445,7 +445,7 @@ class RCFBTask(YmGameTask):
         raise RuntimeError(f"未能打开江湖纪事日常副本面板，已保存截图：{debug_path}")
 
     def enter_daily_dungeon_challenge(self) -> None:
-        """Challenge the selected daily dungeon as leader of the one-player team."""
+        """以单人队伍队长身份挑战选定的日常副本。"""
         for attempt in range(1, self.DAILY_ENTRY_MAX_ATTEMPTS + 1):
             confirm = self._wait_daily_binary_match(
                 self.BTN_DAILY_CONFIRM,
@@ -517,7 +517,7 @@ class RCFBTask(YmGameTask):
         )
 
     def is_daily_dungeon_panel_visible(self, *, timeout_ms: int) -> bool:
-        """Return whether the Jianghu Chronicle challenge panel is visible."""
+        """返回江湖纪事挑战面板是否可见。"""
         return self._wait_daily_binary_match(
             self.TEXT_DAILY_PANEL_TITLE,
             mode="light_foreground",
@@ -527,7 +527,7 @@ class RCFBTask(YmGameTask):
         ).found
 
     def wait_for_daily_dungeon_panel_close(self) -> bool:
-        """Wait until the challenge panel disappears after entry confirmation."""
+        """进入确认后等待挑战面板消失。"""
         deadline = self._make_deadline(self.DAILY_ENTRY_VERIFY_TIMEOUT_MS)
         while not self._is_deadline_expired(deadline):
             if self.wake_from_power_saving_if_needed():
@@ -595,7 +595,7 @@ class RCFBTask(YmGameTask):
         )
 
     def wait_for_dungeon_task(self, *, timeout_ms: int) -> bool:
-        """Wait until the task tab shows a daily dungeon tracker."""
+        """等待任务页签显示日常副本追踪项。"""
         deadline = self._make_deadline(timeout_ms)
         valid_scan_count = 0
         last_sidebar_error: TaskSidebarStateError | None = None
@@ -624,7 +624,7 @@ class RCFBTask(YmGameTask):
         return False
 
     def is_dungeon_transfer_out_visible(self) -> bool:
-        """Return whether the explicit dungeon-completion countdown is visible."""
+        """返回明确的副本完成倒计时是否可见。"""
         return self.find_image_once(
             self.TEXT_DUNGEON_TRANSFER_OUT,
             threshold=self.DUNGEON_TRANSFER_OUT_THRESHOLD,
@@ -632,7 +632,7 @@ class RCFBTask(YmGameTask):
         )
 
     def is_dungeon_exit_visible(self) -> bool:
-        """Return whether the top-right dungeon exit control is visible."""
+        """返回右上角副本退出控件是否可见。"""
         return self.find_image_once(
             self.ICON_DUNGEON_EXIT,
             threshold=self.DUNGEON_EXIT_THRESHOLD,
@@ -640,7 +640,7 @@ class RCFBTask(YmGameTask):
         )
 
     def is_dungeon_outside_main_frame(self) -> bool:
-        """Use one screenshot to prove the dungeon already auto-transferred out."""
+        """使用单张截图确认已自动传出副本。"""
         screenshot = self.screenshot()
         dungeon_markers = (
             (
@@ -693,7 +693,7 @@ class RCFBTask(YmGameTask):
         *,
         wait_after_click_ms: int | None = None,
     ) -> bool:
-        """Click the visible tracker without opening, switching, or scrolling the sidebar."""
+        """点击可见追踪项，不打开、切换或滚动侧栏。"""
         if wait_after_click_ms is not None and wait_after_click_ms < 0:
             raise ValueError("任务追踪点击后等待时间不能小于 0")
         if not self.find_dungeon_task_candidate():
@@ -711,7 +711,7 @@ class RCFBTask(YmGameTask):
         return True
 
     def wait_for_dungeon_transfer_complete(self, *, timeout_ms: int) -> None:
-        """Wait until dungeon-only controls disappear and the main scene is stable."""
+        """等待副本专属控件消失且主场景稳定。"""
         deadline = self._make_deadline(timeout_ms)
         stable_confirmations = 0
 
@@ -745,7 +745,7 @@ class RCFBTask(YmGameTask):
         raise RuntimeError(f"退本后等待传送结束超时，已保存截图：{debug_path}")
 
     def click_dungeon_task_from_sidebar(self, *, max_scrolls: int, required: bool) -> bool:
-        """Find and click the daily dungeon tracker in the left task sidebar."""
+        """在左侧任务栏中查找并点击日常副本追踪项。"""
         if not self.find_dungeon_task_in_sidebar(max_scrolls=max_scrolls):
             if required:
                 self._log("任务栏未找到副本任务")
@@ -758,7 +758,7 @@ class RCFBTask(YmGameTask):
         return True
 
     def find_dungeon_task_in_sidebar(self, max_scrolls: int = 2) -> bool:
-        """Find the ``[副本]日常·`` tracker in the task tab, scrolling if needed."""
+        """在任务页签中查找 ``[副本]日常·`` 追踪项，必要时滚动。"""
         self.collapse_chat_if_open()
         self.switch_task_panel("任务", timeout_ms=6000, threshold=0.8)
 
@@ -773,7 +773,7 @@ class RCFBTask(YmGameTask):
         return False
 
     def find_dungeon_task_candidate(self) -> bool:
-        """Detect the stable daily-dungeon title prefix across dark and light cards."""
+        """在深浅卡片中识别稳定的日常副本标题前缀。"""
         if not self.find_image(
             self.TEXT_DAILY_DUNGEON_TRACKERS,
             threshold=self.DUNGEON_TASK_THRESHOLD,
@@ -788,14 +788,14 @@ class RCFBTask(YmGameTask):
         return True
 
     def scroll_task_list_down(self) -> None:
-        """Scroll the task list down to reveal lower tracker entries."""
+        """向下滚动任务列表以显示较低的追踪项。"""
         start = self.POINT_TASK_LIST_SCROLL_START
         end = self.POINT_TASK_LIST_SCROLL_END
         self.swipe(start[0], start[1], end[0], end[1], duration_ms=350)
         self.wait(800)
 
     def leave_team_if_present(self) -> None:
-        """Leave any existing team, but do not fail when already unteamed."""
+        """离开已有队伍；已未组队时不视为失败。"""
         try:
             self.leave_team(timeout_ms=5000, wait_after_click_ms=1000)
         except StepStopException:

@@ -93,7 +93,7 @@ class JHXSTask(YmGameTask):
 
     @classmethod
     def get_steps(cls) -> list[tuple[str, object, dict]]:
-        """Return the Jianghu Xingshang publisher steps in a stable order."""
+        """按稳定顺序返回江湖行商悬赏发布步骤。"""
         steps: list[tuple[str, object, dict]] = []
         for name in cls.STEP_ORDER:
             func = getattr(cls, name)
@@ -108,7 +108,7 @@ class JHXSTask(YmGameTask):
         retry_scope: str,
         failure: Exception | str | None = None,
     ) -> None:
-        """Finish a pending Jianghu Xingshang confirmation before recovery."""
+        """恢复流程前先完成待处理的江湖行商确认。"""
         if self.confirm_publish_modal_if_visible(timeout_ms=1000):
             self._log("重试前已处理待确认的江湖行商悬赏发布弹框")
             return
@@ -223,7 +223,7 @@ class JHXSTask(YmGameTask):
         self._verify_publish_success()
 
     def confirm_publish_modal_if_visible(self, *, timeout_ms: int = 0) -> bool:
-        """Confirm a pending Jianghu Xingshang publish summary modal."""
+        """确认待处理的江湖行商悬赏发布摘要弹窗。"""
         modal_confirm = self._wait_bounty_match(
             self.BTN_PUBLISH_MODAL_CONFIRM,
             mode="otsu_dark",
@@ -249,7 +249,7 @@ class JHXSTask(YmGameTask):
         self._log("江湖行商悬赏发布成功")
 
     def ensure_bounty_panel_open(self) -> None:
-        """Recover Activity/Bounty prerequisites for Jianghu Xingshang."""
+        """恢复进入江湖行商所需的活动和悬赏面板前置状态。"""
         if self.is_bounty_publish_panel_visible() or self.is_bounty_panel_visible():
             return
 
@@ -271,7 +271,7 @@ class JHXSTask(YmGameTask):
             self._raise_publish_error("panel_missing", "未能确认悬赏面板")
 
     def ensure_bounty_publish_panel_open(self) -> None:
-        """Recover the Bounty panel and open the Jianghu Xingshang publisher."""
+        """恢复悬赏面板并打开江湖行商悬赏发布页。"""
         if self.is_bounty_publish_panel_visible():
             return
 

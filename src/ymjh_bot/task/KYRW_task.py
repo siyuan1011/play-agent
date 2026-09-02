@@ -12,7 +12,7 @@ from ymjh_bot.ym_game_task import TaskSidebarStateError, YmGameTask
 
 @dataclass(frozen=True, slots=True)
 class _YinshiState:
-    """One screenshot-derived state of the keye poetry sorting panel."""
+    """从一张科举诗词排序面板截图推导出的状态。"""
 
     visible: bool
     screenshot: np.ndarray
@@ -116,12 +116,12 @@ class KYRWTask(YmGameTask):
         self._npc_accept_recoveries = 0
 
     def reset_startup_state(self) -> None:
-        """Reset per-run counters before the shared startup cleanup."""
+        """在通用启动清理前重置本次运行计数器。"""
         self._item_acquire_rounds = 0
         self._npc_accept_recoveries = 0
 
     def after_startup_panel_close(self) -> None:
-        """Close the keye completion dialog after each startup cleanup pass."""
+        """每轮启动清理后关闭科举完成弹窗。"""
         self.close_keye_completion_dialog_if_visible()
 
     @step(retry=1, timeout_ms=60000)
@@ -225,7 +225,7 @@ class KYRWTask(YmGameTask):
         raise RuntimeError("进入课业面板后未检测到可执行课业，且接取恢复次数已耗尽")
 
     def try_continue_after_keye_panel_opened(self) -> bool:
-        """Continue once the keye panel may have opened."""
+        """科举面板可能已打开时继续流程。"""
         if self.cancel_refresh_confirm_if_visible():
             self.jump_to("resume_existing_keye")
 
@@ -240,7 +240,7 @@ class KYRWTask(YmGameTask):
         timeout_ms: int,
         wait_after_click_ms: int = 1500,
     ) -> bool:
-        """Click the NPC keye action button when it is visible."""
+        """角色科举操作按钮可见时点击它。"""
         if not self.wait_image_appear(
             self.BTN_NPC_KEYE_ACTION_TEMPLATES,
             timeout_ms=timeout_ms,
@@ -255,7 +255,7 @@ class KYRWTask(YmGameTask):
         return True
 
     def _handle_keye_flow_state_once(self) -> str:
-        """Handle one stable keye screen and return its resulting state."""
+        """处理一个稳定的科举界面，并返回其结果状态。"""
         if self.close_keye_completion_dialog_if_visible():
             return self.KEYE_FLOW_STATE_HANDLED
         if self.cancel_refresh_confirm_if_visible():
@@ -279,7 +279,7 @@ class KYRWTask(YmGameTask):
         return self.KEYE_FLOW_STATE_IDLE
 
     def handle_yinshi_task_if_visible(self) -> bool:
-        """Sort a visible poetry panel using only card positions and correct marks."""
+        """仅根据卡片位置和正确标记，对可见诗词面板进行排序。"""
         state = self._read_yinshi_state()
         if not state.visible:
             return False
@@ -398,7 +398,7 @@ class KYRWTask(YmGameTask):
         return True
 
     def _read_yinshi_state(self, screenshot: np.ndarray | None = None) -> _YinshiState:
-        """Read poetry panel visibility, dynamic card positions, and correct slots."""
+        """读取诗词面板可见性、动态卡片位置和正确槽位。"""
         frame = self.screenshot() if screenshot is None else screenshot
         marker = self._vision.match_template(
             frame,
@@ -434,7 +434,7 @@ class KYRWTask(YmGameTask):
         self,
         matches: list[ImageMatchResult],
     ) -> list[ImageMatchResult]:
-        """Merge duplicate peaks and return card matches ordered from left to right."""
+        """合并重复峰值，并返回从左到右排序的卡片匹配结果。"""
         selected: list[ImageMatchResult] = []
         for match in sorted(matches, key=lambda item: item.score, reverse=True):
             if match.center is None or match.bbox is None:
@@ -453,7 +453,7 @@ class KYRWTask(YmGameTask):
         cards: tuple[ImageMatchResult, ...],
         correct_matches: list[ImageMatchResult],
     ) -> set[int]:
-        """Map each red correct mark to the nearest dynamically detected card."""
+        """将每个红色正确标记映射到最近的动态识别卡片。"""
         if not correct_matches:
             return set()
         if not cards:
@@ -491,7 +491,7 @@ class KYRWTask(YmGameTask):
         source: ImageMatchResult,
         target: ImageMatchResult,
     ) -> None:
-        """Drag one dynamically detected card into another card's slot."""
+        """将一张动态识别的卡片拖入另一张卡片的槽位。"""
         if source.center is None or source.bbox is None or target.center is None or target.bbox is None:
             raise RuntimeError("吟诗作对卡片坐标不完整")
         source_y = source.bbox[3] + self.YINSHI_DRAG_Y_OFFSET_FROM_TOP_BOTTOM
@@ -510,7 +510,7 @@ class KYRWTask(YmGameTask):
         screenshot: np.ndarray,
         card: ImageMatchResult,
     ) -> np.ndarray:
-        """Extract a card's text-only visual fingerprint without recognizing text."""
+        """在不识别文字内容的情况下提取卡片的纯文本视觉指纹。"""
         if card.center is None or card.bbox is None:
             return np.empty((0, 0), dtype=np.uint8)
         height, width = screenshot.shape[:2]
@@ -529,7 +529,7 @@ class KYRWTask(YmGameTask):
         expected: np.ndarray,
         actual: np.ndarray,
     ) -> float:
-        """Return normalized visual similarity between two card fingerprints."""
+        """返回两张卡片指纹之间归一化的视觉相似度。"""
         if expected.size == 0 or actual.size == 0:
             return 0.0
         if actual.shape != expected.shape:
@@ -540,7 +540,7 @@ class KYRWTask(YmGameTask):
         return float(result[0, 0])
 
     def _validate_yinshi_card_count(self, state: _YinshiState, expected_count: int) -> None:
-        """Reject a visible poetry panel whose card count changed unexpectedly."""
+        """拒绝卡片数量发生意外变化的可见诗词面板。"""
         if len(state.cards) == expected_count:
             return
         self._raise_yinshi_error(
@@ -549,7 +549,7 @@ class KYRWTask(YmGameTask):
         )
 
     def _raise_yinshi_error(self, message: str, screenshot_prefix: str) -> None:
-        """Save the current poetry panel before raising a clear failure."""
+        """抛出明确失败前保存当前诗词面板截图。"""
         debug_path = self.save_debug_screenshot(screenshot_prefix)
         raise RuntimeError(f"{message}，已保存截图：{debug_path}")
 
@@ -610,7 +610,7 @@ class KYRWTask(YmGameTask):
         self._log("完成验证：活动页课业入口已消失")
 
     def try_select_default_keye_card(self) -> bool:
-        """Click the visible keye card and handle the existing-keye toast if it appears."""
+        """点击可见的科举卡片；若出现已有科举提示则处理。"""
         if not self.find_image_once([self.BTN_CLOSE, self.BTN_PANE_CLOSE], threshold=0.8):
             return False
 
@@ -635,7 +635,7 @@ class KYRWTask(YmGameTask):
         return self.click_keye_task_from_sidebar(max_scrolls=5, required=False)
 
     def click_keye_task_from_sidebar(self, *, max_scrolls: int, required: bool) -> bool:
-        """Find and click the keye task in the left sidebar."""
+        """在左侧任务栏中查找并点击科举任务。"""
         if not self.find_keye_task_in_sidebar(max_scrolls=max_scrolls):
             if required:
                 self._log("任务栏未找到课业任务")
@@ -647,7 +647,7 @@ class KYRWTask(YmGameTask):
         return True
 
     def find_keye_task_in_sidebar(self, *, max_scrolls: int) -> bool:
-        """Find the keye task text in the Jianghu task panel."""
+        """在江湖任务面板中查找科举任务文本。"""
         self.ensure_left_task_sidebar_visible()
         self._confirm_keye_sidebar_jianghu()
         for _ in range(self.TASK_LIST_SCROLL_UP_COUNT):
@@ -671,7 +671,7 @@ class KYRWTask(YmGameTask):
         return False
 
     def _confirm_keye_sidebar_jianghu(self) -> None:
-        """Confirm that keye sidebar scanning remains on the Jianghu tab."""
+        """确认科举侧栏扫描仍位于江湖页签。"""
         try:
             self.switch_task_panel("江湖", timeout_ms=6000, threshold=0.8)
         except TaskSidebarStateError as exc:
@@ -681,11 +681,11 @@ class KYRWTask(YmGameTask):
             ) from exc
 
     def ensure_left_task_sidebar_visible(self) -> None:
-        """Compatibility wrapper around the shared verified sidebar opener."""
+        """围绕通用已验证侧栏打开器的兼容包装。"""
         self.ensure_task_sidebar_open(timeout_ms=6000, threshold=0.85)
 
     def scroll_task_list_down(self) -> None:
-        """Scroll the task list down to reveal lower entries."""
+        """向下滚动任务列表以显示较低条目。"""
         start = self.POINT_TASK_LIST_SCROLL_START
         end = self.POINT_TASK_LIST_SCROLL_END
         self.swipe(
@@ -698,7 +698,7 @@ class KYRWTask(YmGameTask):
         self.wait(self.TASK_LIST_SCROLL_SETTLE_MS)
 
     def scroll_task_list_up(self) -> None:
-        """Scroll the task list up by one page while normalizing to its first page."""
+        """将任务列表上滚一页，同时归一到其第一页。"""
         start = self.POINT_TASK_LIST_SCROLL_UP_START
         end = self.POINT_TASK_LIST_SCROLL_UP_END
         self.swipe(
@@ -711,7 +711,7 @@ class KYRWTask(YmGameTask):
         self.wait(self.TASK_LIST_SCROLL_SETTLE_MS)
 
     def handle_acquire_route_panel_if_visible(self) -> bool:
-        """Handle supported item acquisition route panels."""
+        """处理受支持的物品获取途径面板。"""
         if not self.is_acquire_route_panel_visible():
             return False
 
@@ -731,7 +731,7 @@ class KYRWTask(YmGameTask):
         raise RuntimeError("课业物品未找到支持的获取途径")
 
     def is_acquire_route_panel_visible(self) -> bool:
-        """Return whether any supported item acquisition route appears."""
+        """返回是否出现任一受支持的物品获取途径。"""
         return self.find_image(
             [self.ROUTE_MALL, self.ROUTE_STALL],
             threshold=0.8,
@@ -739,7 +739,7 @@ class KYRWTask(YmGameTask):
         )
 
     def ensure_acquire_route_panel_open(self) -> bool:
-        """Ensure the acquire-route panel is currently visible."""
+        """确保获取途径面板当前可见。"""
         if self.is_acquire_route_panel_visible():
             return True
         if self.click_keye_task_from_sidebar(max_scrolls=2, required=False):
@@ -747,7 +747,7 @@ class KYRWTask(YmGameTask):
         return False
 
     def wait_acquire_route_panel_visible(self, timeout_ms: int = 3000) -> bool:
-        """Wait until any supported acquire route appears."""
+        """等待任一受支持的获取途径出现。"""
         return self.wait_image_appear(
             [self.ROUTE_MALL, self.ROUTE_STALL],
             timeout_ms=timeout_ms,
@@ -756,7 +756,7 @@ class KYRWTask(YmGameTask):
         )
 
     def try_mall_route(self) -> bool:
-        """Buy the selected task item from mall using the default quantity."""
+        """按默认数量从商城购买所选任务物品。"""
         if not self.ensure_acquire_route_panel_open():
             return False
         if not self.click_template_if_available(
@@ -777,7 +777,7 @@ class KYRWTask(YmGameTask):
         return True
 
     def buy_from_mall_default_quantity(self) -> bool:
-        """Click the mall buy area once without changing item quantity."""
+        """点击一次商城购买区域，不改变物品数量。"""
         if self.click_template_if_available(
             self.BTN_MALL_BUY_AREA,
             timeout_ms=5000,
@@ -794,7 +794,7 @@ class KYRWTask(YmGameTask):
         return True
 
     def try_stall_route(self) -> bool:
-        """Buy the selected task item from local stall or all-server stall."""
+        """从本服摊位或全服摊位购买所选任务物品。"""
         if not self.ensure_acquire_route_panel_open():
             return False
         if not self.click_template_if_available(
@@ -832,7 +832,7 @@ class KYRWTask(YmGameTask):
         raise RuntimeError("本服/全服摆摊均未找到可购买商品")
 
     def handle_trade_panel_if_visible(self) -> bool:
-        """Handle an already-open trade panel."""
+        """处理已经打开的交易面板。"""
         if self.buy_from_current_trade_panel("自动打开的交易购买按钮", timeout_ms=600):
             self.handle_submit_panel_if_visible(timeout_ms=1500)
             return True
@@ -856,7 +856,7 @@ class KYRWTask(YmGameTask):
         return True
 
     def buy_from_current_trade_panel(self, description: str, *, timeout_ms: int) -> bool:
-        """Click Buy in the current trade panel and confirm the secondary prompt if needed."""
+        """在当前交易面板点击购买，必要时确认二次提示。"""
         if not self.click_template_if_available(
             self.BTN_BUY,
             timeout_ms=timeout_ms,
@@ -883,7 +883,7 @@ class KYRWTask(YmGameTask):
         return True
 
     def handle_submit_panel_if_visible(self, *, timeout_ms: int = 600) -> bool:
-        """Submit the final task item when the one-key submit panel appears."""
+        """一键提交面板出现时提交最终任务物品。"""
         if not self.click_template_if_available(
             self.BTN_ONE_KEY_SUBMIT,
             timeout_ms=timeout_ms,
@@ -899,7 +899,7 @@ class KYRWTask(YmGameTask):
         return True
 
     def click_dialog_confirm_if_visible(self) -> bool:
-        """Click the required dialogue confirm button before the generic next arrow."""
+        """在通用下一步箭头前点击必需的对话确认按钮。"""
         return self.click_template_if_available(
             self.BTN_OK,
             timeout_ms=600,
@@ -910,7 +910,7 @@ class KYRWTask(YmGameTask):
         )
 
     def click_dialog_next_if_visible(self) -> bool:
-        """Click the lower-right story/dialogue next arrow when visible."""
+        """右下角剧情或对话下一步箭头可见时点击它。"""
         if not self.click_template_if_available(
             self.BTN_DIALOG_NEXT,
             timeout_ms=600,
@@ -923,7 +923,7 @@ class KYRWTask(YmGameTask):
         return True
 
     def click_keye_use_if_visible(self) -> bool:
-        """Click the keye Use button when it appears anywhere on screen."""
+        """科举“使用”按钮出现在屏幕任意位置时点击它。"""
         return self.click_template_if_available(
             self.BTN_KEYE_USE,
             timeout_ms=600,
@@ -933,7 +933,7 @@ class KYRWTask(YmGameTask):
         )
 
     def close_keye_completion_dialog_if_visible(self) -> bool:
-        """Close the final keye completion dialog when it is visible."""
+        """最终科举完成弹窗可见时关闭它。"""
         if not self.find_image(
             self.TEXT_KEYE_COMPLETE,
             threshold=0.85,
@@ -947,7 +947,7 @@ class KYRWTask(YmGameTask):
         return True
 
     def cancel_refresh_confirm_if_visible(self) -> bool:
-        """Cancel the Flying Snow Sword refresh prompt to avoid consuming items."""
+        """取消飞雪剑刷新提示，避免消耗物品。"""
         if not self.find_image_once(
             self.BTN_MODAL_CANCEL,
             threshold=0.85,
@@ -961,7 +961,7 @@ class KYRWTask(YmGameTask):
         return True
 
     def confirm_purchase_if_needed(self) -> bool:
-        """Confirm a purchase prompt if present."""
+        """若存在购买提示则确认。"""
         return self.click_template_if_available(
             self.BTN_MODAL_OK,
             timeout_ms=2000,
@@ -971,7 +971,7 @@ class KYRWTask(YmGameTask):
         )
 
     def confirm_submit_if_needed(self) -> bool:
-        """Confirm a task-submit prompt if present."""
+        """若存在任务提交提示则确认。"""
         return self.click_template_if_available(
             [self.BTN_MODAL_OK, self.BTN_OK],
             timeout_ms=3000,
@@ -981,7 +981,7 @@ class KYRWTask(YmGameTask):
         )
 
     def close_transient_panels(self, max_attempts: int = 4) -> bool:
-        """Close temporary panels after acquisition actions."""
+        """获取操作后关闭临时面板。"""
         closed = False
         for _ in range(max_attempts):
             if self.wait_image_appear([self.BTN_CLOSE, self.BTN_PANE_CLOSE], timeout_ms=800, threshold=0.8):
@@ -1002,7 +1002,7 @@ class KYRWTask(YmGameTask):
         wait_after_click_ms: int = 1000,
         roi: tuple[int, int, int, int] | None = None,
     ) -> bool:
-        """Click a template if it appears within an optional design-resolution ROI."""
+        """模板出现在可选的设计分辨率区域内时点击它。"""
         scaled_roi = None if roi is None else self.scale_roi(roi)
         found = self.wait_image_appear(
             template,

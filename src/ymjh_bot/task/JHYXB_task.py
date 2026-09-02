@@ -119,7 +119,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         raise RuntimeError(f"江湖英雄榜首战宝箱领取后未确认已领取状态，已保存截图：{debug_path}")
 
     def _open_jhyxb_panel_via_activity(self) -> None:
-        """Open Jianghu Yingxiongbang through a verified Activity - Fen Zheng panel."""
+        """通过已验证的活动-纷争面板打开江湖英雄榜。"""
         self.open_activity_panel(
             "纷争",
             wait_after_open_ms=2500,
@@ -145,7 +145,7 @@ class JianghuYingxiongbangTask(YmGameTask):
             raise RuntimeError(f"未进入江湖英雄榜面板，已保存截图：{debug_path}")
 
     def ensure_jhyxb_panel_ready(self, *, timeout_ms: int) -> None:
-        """Ensure the Jianghu Yingxiongbang panel is visible, reopening it if needed."""
+        """确保江湖英雄榜面板可见；必要时重新打开。"""
         if self.ensure_jhyxb_panel_visible(timeout_ms=timeout_ms):
             return
 
@@ -154,7 +154,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         self._open_jhyxb_panel_via_activity()
 
     def close_purchase_dialog_if_needed(self) -> bool:
-        """Close the extra challenge purchase dialog without hitting the panel close button behind it."""
+        """关闭额外挑战购买弹窗，避免误点其后的面板关闭按钮。"""
         if not self.find_image(
             [self.BTN_CLOSE, self.BTN_PANE_CLOSE],
             threshold=0.85,
@@ -168,7 +168,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         return True
 
     def ensure_jhyxb_panel_visible(self, *, timeout_ms: int) -> bool:
-        """Wait for the Jianghu Yingxiongbang panel title."""
+        """等待江湖英雄榜面板标题出现。"""
         return self.wait_find_image_in_roi(
             self.TITLE_JHYXB,
             self.ROI_PANEL_TITLE,
@@ -179,7 +179,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         )
 
     def is_jhyxb_panel_visible(self) -> bool:
-        """Return whether the Jianghu Yingxiongbang panel is currently visible."""
+        """返回江湖英雄榜面板当前是否可见。"""
         return self.find_image(
             self.TITLE_JHYXB,
             threshold=0.85,
@@ -187,7 +187,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         )
 
     def click_match_button(self) -> float:
-        """Click the panel match button and start the five-minute match deadline."""
+        """点击面板匹配按钮，并开始五分钟匹配倒计时。"""
         if self.wait_find_image_in_roi(
             self.BTN_JHYXB_MATCH,
             self.ROI_MATCH_BUTTON,
@@ -204,7 +204,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         return self._make_deadline(self.MATCH_READY_TIMEOUT_MS)
 
     def is_challenge_count_zero(self) -> bool:
-        """Return whether the remaining challenge count is visibly zero."""
+        """返回剩余挑战次数是否可见为零。"""
         return self.find_image(
             self.TEXT_JHYXB_CHALLENGE_ZERO,
             threshold=0.85,
@@ -212,7 +212,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         )
 
     def detect_first_battle_reward_state(self) -> tuple[str, dict[str, float]]:
-        """Detect the first-battle chest state and retain scores for diagnostics."""
+        """识别首战宝箱状态，并保留分数供诊断使用。"""
         scores = {"claimed": 0.0, "ready": 0.0, "initial": 0.0}
         if self.is_first_battle_reward_claimed():
             scores["claimed"] = getattr(self, "_last_match_score", 0.0)
@@ -231,7 +231,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         return self.FIRST_BATTLE_REWARD_STATE_UNKNOWN, scores
 
     def is_first_battle_reward_claimed(self) -> bool:
-        """Return whether the first-battle chest has already been claimed."""
+        """返回首战宝箱是否已领取。"""
         return self.find_image_once(
             self.ICON_JHYXB_FIRST_WIN_CHEST,
             threshold=0.85,
@@ -239,7 +239,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         )
 
     def is_first_battle_reward_ready(self) -> bool:
-        """Return whether the first-battle chest can be claimed."""
+        """返回首战宝箱当前是否可领取。"""
         return self.find_image_once(
             self.ICON_JHYXB_FIRST_WIN_READY,
             threshold=0.85,
@@ -247,7 +247,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         )
 
     def is_first_battle_reward_initial(self) -> bool:
-        """Return whether the first-battle chest is still unavailable."""
+        """返回首战宝箱是否仍不可领取。"""
         return self.find_image_once(
             self.ICON_JHYXB_FIRST_WIN,
             threshold=0.85,
@@ -255,11 +255,11 @@ class JianghuYingxiongbangTask(YmGameTask):
         )
 
     def is_first_battle_reward_claim_context_safe(self) -> bool:
-        """Return whether the panel is stable enough for a coordinate fallback click."""
+        """返回面板是否已足够稳定，可进行坐标兜底点击。"""
         return self.is_jhyxb_panel_visible_quiet()
 
     def confirm_first_battle_reward_claimed(self) -> bool:
-        """Dismiss the reward overlay and verify the claimed chest state."""
+        """关闭奖励遮罩，并确认宝箱已领取状态。"""
         self.wait(1500)
         self.close_reward_dialogs(max_attempts=3, include_close_buttons=False)
         self._log("关闭江湖英雄榜首战奖励面板")
@@ -282,7 +282,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         )
 
     def run_match_battle(self, match_index: int, *, match_deadline: float | None = None) -> None:
-        """Run one matched Jianghu Yingxiongbang battle and return to the ranking panel."""
+        """完成一场已匹配的江湖英雄榜战斗，并返回排行榜面板。"""
         self._battle_result_deadline: float | None = None
         ready_state = self.click_ready_button(match_index, deadline=match_deadline)
         if ready_state == self.MATCH_READY_STATE_READY:
@@ -303,7 +303,7 @@ class JianghuYingxiongbangTask(YmGameTask):
             raise RuntimeError("战斗退出后未回到江湖英雄榜面板")
 
     def click_ready_button(self, match_index: int, *, deadline: float | None = None) -> str:
-        """Wait for ready, matching completion, or a returned panel."""
+        """等待准备就绪、匹配完成或返回面板。"""
         if deadline is None:
             deadline = self._make_deadline(self.MATCH_READY_TIMEOUT_MS)
         last_heartbeat_at = 0.0
@@ -342,7 +342,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         raise RuntimeError(f"第 {match_index} 次江湖英雄榜匹配/准备等待超时，已保存截图：{debug_path}")
 
     def is_ready_button_visible(self) -> bool:
-        """Return whether the preparation button is visible without noisy miss logs."""
+        """无冗余未命中日志地返回准备按钮是否可见。"""
         return self.find_image_once(
             self.BTN_JHYXB_READY,
             threshold=0.85,
@@ -350,7 +350,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         )
 
     def is_match_button_visible_quiet(self) -> bool:
-        """Return whether the panel has returned to a clickable match state."""
+        """返回面板是否已恢复到可点击匹配状态。"""
         return self.find_image_once(
             self.BTN_JHYXB_MATCH,
             threshold=0.85,
@@ -358,7 +358,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         )
 
     def is_jhyxb_panel_visible_quiet(self) -> bool:
-        """Return whether the ranking panel is visible without noisy miss logs."""
+        """无冗余未命中日志地返回排行榜面板是否可见。"""
         return self.find_image_once(
             self.TITLE_JHYXB,
             threshold=0.85,
@@ -366,7 +366,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         )
 
     def is_challenge_count_zero_quiet(self) -> bool:
-        """Return whether challenge count is zero without noisy miss logs."""
+        """无冗余未命中日志地返回挑战次数是否为零。"""
         return self.find_image_once(
             self.TEXT_JHYXB_CHALLENGE_ZERO,
             threshold=0.85,
@@ -374,7 +374,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         )
 
     def is_result_panel_visible_quiet(self) -> bool:
-        """Return whether the result panel is visible without noisy miss logs."""
+        """无冗余未命中日志地返回结果面板是否可见。"""
         if not self.BTN_JHYXB_RESULT_EXIT:
             return False
         return self.find_image_once(
@@ -384,14 +384,14 @@ class JianghuYingxiongbangTask(YmGameTask):
         )
 
     def walk_forward_for_battle(self, duration_ms: int) -> None:
-        """Walk forward in battle without requiring the clean main-scene guard."""
+        """在战斗中向前移动，无需通过干净主场景检查。"""
         start = self.POINT_DIRECTION_JOYSTICK_CENTER
         end = self.POINT_DIRECTION_JOYSTICK_FORWARD
         self._log(f"江湖英雄榜战斗中向前走 {duration_ms}ms")
         self.swipe(start[0], start[1], end[0], end[1], duration_ms=duration_ms)
 
     def wait_until_battle_complete(self, match_index: int, *, deadline: float | None = None) -> str:
-        """Auto-battle until the result panel appears or the ranking panel returns."""
+        """自动战斗，直到结果面板出现或返回排行榜面板。"""
         if deadline is None:
             deadline = self._make_deadline(self.RESULT_TIMEOUT_MS)
         missing_template_logged = False
@@ -422,7 +422,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         raise RuntimeError(f"第 {match_index} 次江湖英雄榜战斗结果等待超时，已保存截图：{debug_path}")
 
     def is_result_panel_visible(self) -> bool:
-        """Return whether the post-battle result panel is visible."""
+        """返回战后结果面板是否可见。"""
         if not self.BTN_JHYXB_RESULT_EXIT:
             return False
         return self.find_image(
@@ -432,7 +432,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         )
 
     def click_result_panel_exit(self) -> None:
-        """Click the exit button inside the post-battle result panel."""
+        """点击战后结果面板中的退出按钮。"""
         if not self.BTN_JHYXB_RESULT_EXIT:
             self._log("结果面板退出按钮模板尚未配置，跳过模板点击")
             return
@@ -451,7 +451,7 @@ class JianghuYingxiongbangTask(YmGameTask):
         self.wait(3000)
 
     def close_reward_dialogs(self, max_attempts: int = 4, *, include_close_buttons: bool = True) -> bool:
-        """Close reward and confirmation dialogs if they appear."""
+        """若出现奖励或确认弹窗则关闭。"""
         closed = False
         for _ in range(max_attempts):
             if self.wait_image_appear([self.BTN_MODAL_OK, self.BTN_OK], timeout_ms=800, threshold=0.85):

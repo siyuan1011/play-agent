@@ -1,4 +1,4 @@
-"""Shared helpers for banquet-style gang activity tasks."""
+"""宴席类帮派活动任务的通用辅助方法。"""
 
 from __future__ import annotations
 
@@ -8,15 +8,15 @@ from ymjh_bot.ym_game_task import YmGameTask
 
 
 class StallPurchaseConfirmationError(RuntimeError):
-    """Raised when a stall purchase cannot be confirmed safely."""
+    """摊位购买无法安全确认时抛出。"""
 
 
 class StallPurchaseCancelError(RuntimeError):
-    """Raised when a stuck stall-purchase prompt cannot be cancelled."""
+    """卡住的摊位购买提示无法取消时抛出。"""
 
 
 class BanquetAcquireMixin:
-    """Reusable item-acquisition flow for banquet tasks."""
+    """可复用于宴席任务的物品获取流程。"""
 
     ROUTE_MENKE_WAREHOUSE_RECOMMENDED = str(YmGameTask.TEMPLATES_DIR / "route_menke_warehouse_recommended.png")
     ROUTE_MENKE_MALL = str(YmGameTask.TEMPLATES_DIR / "route_mall.png")
@@ -41,7 +41,7 @@ class BanquetAcquireMixin:
     BANQUET_NAME = "设宴"
 
     def _raise_banquet_invite_failure(self, reason: str, stage: str) -> None:
-        """Preserve invite failure context for the next complete task retry."""
+        """保留邀请失败上下文，供下一次完整任务重试使用。"""
         task_key = str(getattr(self, "task_key", "banquet")).lower()
         try:
             self.save_debug_screenshot(f"{task_key}_{stage}")
@@ -52,7 +52,7 @@ class BanquetAcquireMixin:
         raise RuntimeError(reason)
 
     def process_banquet_items(self) -> None:
-        """Process every configured banquet item slot once."""
+        """依次处理每个已配置的宴席物品槽位。"""
         for index, (x, y) in enumerate(self.POINT_BANQUET_ITEM_SLOTS, start=1):
             self._log(f"处理第 {index} 个设宴物品")
             self.click_point(x, y, offset=0)
@@ -60,14 +60,14 @@ class BanquetAcquireMixin:
             self.process_selected_item(index)
 
     def start_banquet_if_ready(self) -> None:
-        """Start the banquet when the start button is enabled."""
+        """开始按钮可用时启动宴席。"""
         if self.try_start_banquet_once():
             return
 
         self._log("物品不足，跳过开始设宴")
 
     def try_start_banquet_once(self) -> bool:
-        """Click the start button and confirm the prompt when it is enabled."""
+        """开始按钮可用时点击并确认提示。"""
         if not self.is_start_banquet_enabled():
             return False
 
@@ -78,7 +78,7 @@ class BanquetAcquireMixin:
         return True
 
     def process_selected_item(self, slot_index: int) -> None:
-        """Submit or acquire the currently selected banquet item once."""
+        """提交或获取当前选中的宴席物品一次。"""
         one_key_template = getattr(self, "BTN_BANQUET_ONE_KEY_SUBMIT", None)
         if one_key_template and self.click_template_if_available(
             one_key_template,
@@ -106,7 +106,7 @@ class BanquetAcquireMixin:
         self._log(f"第 {slot_index} 个物品未找到可执行按钮，跳过")
 
     def submit_selected_item_if_available(self, slot_index: int) -> bool:
-        """Submit the selected item after acquisition if the task exposes a submit button."""
+        """获取完成后，若任务显示提交按钮则提交所选物品。"""
         one_key_template = getattr(self, "BTN_BANQUET_ONE_KEY_SUBMIT", None)
         if not one_key_template:
             return False
@@ -125,7 +125,7 @@ class BanquetAcquireMixin:
         return True
 
     def acquire_selected_item(self, slot_index: int) -> None:
-        """Acquire one item, retrying once when a purchase leaves the get button visible."""
+        """获取一个物品；购买后“获取”按钮仍可见时重试一次。"""
         self._log(f"开始获取第 {slot_index} 个物品")
 
         for purchase_attempt in range(self.PURCHASE_RETRY_LIMIT + 1):
@@ -159,7 +159,7 @@ class BanquetAcquireMixin:
             self.wait(800)
 
     def try_recommended_warehouse_route(self) -> bool:
-        """Use recommended gang warehouse if available."""
+        """可用时使用推荐的帮派仓库。"""
         if not self.ensure_route_panel_open():
             return False
         if not self.click_template_if_available(
@@ -188,7 +188,7 @@ class BanquetAcquireMixin:
         return False
 
     def try_mall_route(self) -> bool:
-        """Buy the selected item from mall when the route is available."""
+        """路线可用时从商城购买所选物品。"""
         if not self.ensure_route_panel_open():
             return False
         if not self.click_template_if_available(
@@ -226,7 +226,7 @@ class BanquetAcquireMixin:
         return True
 
     def try_stall_route(self) -> bool:
-        """Buy the selected item from stall or all-server stall."""
+        """从本服摊位或全服摊位购买所选物品。"""
         if not self.ensure_route_panel_open():
             return False
         if not self.click_template_if_available(
@@ -284,7 +284,7 @@ class BanquetAcquireMixin:
         max_attempts: int = 3,
         retry_interval_ms: int = 3000,
     ) -> bool:
-        """Confirm one stall purchase and require its prompt to disappear."""
+        """确认一次摊位购买，并要求对应提示消失。"""
         if max_attempts <= 0:
             raise ValueError("max_attempts 必须大于 0")
         if retry_interval_ms <= 0:
@@ -355,7 +355,7 @@ class BanquetAcquireMixin:
         )
 
     def confirm_purchase_if_needed(self) -> bool:
-        """Confirm the secondary purchase prompt if the game shows one."""
+        """若游戏显示二次购买提示则确认。"""
         return self.click_template_if_available(
             self.BTN_MODAL_OK,
             timeout_ms=2000,
@@ -365,7 +365,7 @@ class BanquetAcquireMixin:
         )
 
     def confirm_start_banquet_if_needed(self) -> bool:
-        """Confirm the final banquet-start prompt if the game shows one."""
+        """若游戏显示最终开宴提示则确认。"""
         return self.click_template_if_available(
             self.BTN_MODAL_OK,
             timeout_ms=3000,
@@ -375,7 +375,7 @@ class BanquetAcquireMixin:
         )
 
     def ensure_route_panel_open(self) -> bool:
-        """Ensure the acquire-route panel is visible for the selected item."""
+        """确保所选物品的获取途径面板可见。"""
         if self.is_route_panel_visible():
             return True
 
@@ -392,7 +392,7 @@ class BanquetAcquireMixin:
         return self.wait_route_panel_visible(timeout_ms=3000)
 
     def wait_route_panel_visible(self, timeout_ms: int = 3000) -> bool:
-        """Wait for any supported acquire-route option to appear."""
+        """等待任一受支持的获取途径选项出现。"""
         return self.wait_find_image_in_roi(
             [self.ROUTE_MENKE_WAREHOUSE_RECOMMENDED, self.ROUTE_MENKE_MALL, self.ROUTE_MENKE_STALL],
             self.ROI_ROUTE_PANEL,
@@ -402,7 +402,7 @@ class BanquetAcquireMixin:
         )
 
     def is_route_panel_visible(self) -> bool:
-        """Return whether any supported acquire route is currently visible."""
+        """返回当前是否有受支持的获取途径可见。"""
         return self.find_image(
             [self.ROUTE_MENKE_WAREHOUSE_RECOMMENDED, self.ROUTE_MENKE_MALL, self.ROUTE_MENKE_STALL],
             threshold=0.8,
@@ -410,7 +410,7 @@ class BanquetAcquireMixin:
         )
 
     def return_to_banquet_panel(self, max_attempts: int = 4) -> bool:
-        """Close transient panels until the banquet item panel is visible."""
+        """关闭临时面板，直到宴席物品面板可见。"""
         for _ in range(max_attempts):
             if self.is_banquet_panel_visible():
                 return True
@@ -424,7 +424,7 @@ class BanquetAcquireMixin:
         return False
 
     def is_banquet_panel_visible(self) -> bool:
-        """Return whether the main banquet item panel is visible."""
+        """返回宴席主物品面板是否可见。"""
         action_roi = self.scale_roi(self.ROI_BANQUET_ACTION)
         start_roi = self.scale_roi(self.ROI_START_BANQUET_BUTTON)
         action_templates = self._banquet_action_templates()
@@ -435,7 +435,7 @@ class BanquetAcquireMixin:
         )
 
     def is_start_banquet_enabled(self) -> bool:
-        """Detect the enabled start button by brightness; template alone can match disabled states."""
+        """通过亮度识别可用的开始按钮；仅靠模板可能命中禁用状态。"""
         x, y, width, height = self.scale_roi(self.ROI_START_BANQUET_BUTTON)
         screenshot = self.screenshot()
         region = screenshot[y : y + height, x : x + width]
@@ -456,7 +456,7 @@ class BanquetAcquireMixin:
         wait_after_click_ms: int = 1000,
         roi: tuple[int, int, int, int] | None = None,
     ) -> bool:
-        """Click a template if it appears within an optional design-resolution ROI."""
+        """模板出现在可选的设计分辨率区域内时点击它。"""
         if roi is None:
             found = self.wait_image_appear(template, timeout_ms=timeout_ms, threshold=threshold)
         else:

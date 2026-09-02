@@ -22,7 +22,7 @@ BountyAction = Literal["接取", "前往", "未知"]
 
 @dataclass(frozen=True, slots=True)
 class BountyCardSnapshot:
-    """One fixed card slot read from a bounty-panel screenshot."""
+    """从悬赏面板截图读取的一个固定卡槽。"""
 
     slot_index: int
     category: BountyCategory | None
@@ -36,7 +36,7 @@ class BountyCardSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class BountyPanelSnapshot:
-    """Visual state derived from one bounty-panel screenshot."""
+    """从一张悬赏面板截图推导出的视觉状态。"""
 
     screenshot: np.ndarray
     visible: bool
@@ -57,7 +57,7 @@ class BountyPanelSnapshot:
 
 
 class DailyBountyPhase(str, Enum):
-    """Verified milestones for one Jianghu daily bounty execution."""
+    """一次江湖日常悬赏执行中已验证的里程碑。"""
 
     TARGET_OPENED = "target_opened"
     TEAM_CREATED = "team_created"
@@ -68,7 +68,7 @@ class DailyBountyPhase(str, Enum):
 
 @dataclass(slots=True)
 class DailyBountyContext:
-    """Cleanup context retained from the first forward click until safe exit."""
+    """从首次点击前往到安全退出期间保留的清理上下文。"""
 
     card: BountyCardSnapshot
     delegate: RCFBTask
@@ -186,7 +186,7 @@ class XSRWTask(YmGameTask):
         self._daily_context: DailyBountyContext | None = None
 
     def before_start(self) -> None:
-        """Recover a stranded bounty deposit modal before shared startup checks."""
+        """在通用启动检查前处理滞留的悬赏押金弹窗。"""
         try:
             self.resolve_bounty_deposit_modal_if_visible(
                 timeout_ms=self.DEPOSIT_STARTUP_RECOVERY_MS,
@@ -202,7 +202,7 @@ class XSRWTask(YmGameTask):
         self._daily_context = None
 
     def stop(self) -> None:
-        """Propagate queue stop/pause requests to the active delegated flow."""
+        """将队列停止或暂停请求传递给当前委托流程。"""
         super().stop()
         if self._active_delegate is not None:
             self._active_delegate.stop()
@@ -210,7 +210,7 @@ class XSRWTask(YmGameTask):
             self._daily_context.delegate.stop()
 
     def reset_stop(self) -> None:
-        """Clear stop state for this task and any retained daily delegate."""
+        """清除此任务及保留的日常委托流程的停止状态。"""
         super().reset_stop()
         if self._active_delegate is not None:
             self._active_delegate.reset_stop()
@@ -221,7 +221,7 @@ class XSRWTask(YmGameTask):
         self,
         failure: Exception | str | None = None,
     ) -> None:
-        """Finish retained daily-bounty cleanup before a queue-level retry."""
+        """队列级重试前完成保留的日常悬赏清理。"""
         if self._daily_context is None:
             return
 
@@ -235,7 +235,7 @@ class XSRWTask(YmGameTask):
         self._daily_context = None
     @step(retry=1, timeout_ms=None)
     def run_bounty_flow(self) -> None:
-        """Run accept/execute/verify rounds until today's bounty work is done."""
+        """循环执行接取、完成和验证，直到今日悬赏完成。"""
         snapshot = self.open_bounty_panel(refresh=True)
 
         while not self.is_stopped():
@@ -262,7 +262,7 @@ class XSRWTask(YmGameTask):
         raise StepStopException("Stop requested")
 
     def leave_team_if_present(self) -> None:
-        """Normalize startup state without failing when already unteamed."""
+        """归一化启动状态；已未组队时不视为失败。"""
         try:
             self.leave_team(timeout_ms=5000, wait_after_click_ms=1000)
         except StepStopException:
@@ -271,7 +271,7 @@ class XSRWTask(YmGameTask):
             self._log(f"悬赏启动退队检查未完成，按未组队继续：{exc}")
 
     def open_bounty_panel(self, *, refresh: bool) -> BountyPanelSnapshot:
-        """Open the bounty panel from any Activity category and optionally refresh it."""
+        """从任意活动分类打开悬赏面板，并按需刷新。"""
         deposit_confirmed = self.resolve_bounty_deposit_modal_if_visible(
             timeout_ms=self.DEPOSIT_STARTUP_RECOVERY_MS,
         )
@@ -306,7 +306,7 @@ class XSRWTask(YmGameTask):
         self,
         snapshot: BountyPanelSnapshot | None = None,
     ) -> BountyPanelSnapshot:
-        """Refresh the panel and return the new canonical visual state."""
+        """刷新面板并返回新的规范视觉状态。"""
         deposit_confirmed = self.resolve_bounty_deposit_modal_if_visible(timeout_ms=0)
         current = (
             self._wait_bounty_panel(timeout_ms=self.PANEL_OPEN_TIMEOUT_MS)
@@ -333,7 +333,7 @@ class XSRWTask(YmGameTask):
         return self._wait_bounty_panel(timeout_ms=self.PANEL_OPEN_TIMEOUT_MS)
 
     def read_bounty_panel(self, screenshot: np.ndarray | None = None) -> BountyPanelSnapshot:
-        """Read panel/card state from exactly one screenshot."""
+        """仅从一张截图读取面板和卡片状态。"""
         image = self.screenshot() if screenshot is None else screenshot
         panel_match = self._binary_match(
             image,
@@ -364,7 +364,7 @@ class XSRWTask(YmGameTask):
         self,
         snapshot: BountyPanelSnapshot,
     ) -> BountyPanelSnapshot:
-        """Fill one round to four pending cards or stop early at the daily cap."""
+        """将一轮补至四张待处理卡片，或在达到每日上限时提前停止。"""
         current = snapshot
         no_progress = 0
 
@@ -422,7 +422,7 @@ class XSRWTask(YmGameTask):
         before: BountyPanelSnapshot,
         card: BountyCardSnapshot,
     ) -> tuple[bool, BountyPanelSnapshot]:
-        """Click one accept action and always refresh before returning."""
+        """点击一次接取操作，并在返回前始终刷新。"""
         if card.action != "接取" or card.action_center is None:
             raise ValueError("Only a confirmed accept card can be clicked")
         if card.category is None or not card.reward_eligible:
@@ -451,8 +451,8 @@ class XSRWTask(YmGameTask):
                 immediate,
             )
         finally:
-            # The game can accept, reject, or race another player's claim.
-            # Always make the next decision from a freshly refreshed panel.
+            # 游戏可能接受、拒绝或与其他玩家的领取操作发生竞争。
+            # 后续决策始终基于刚刷新过的面板。
             refreshed = self.refresh_bounty_panel()
 
         assert refreshed is not None
@@ -463,7 +463,7 @@ class XSRWTask(YmGameTask):
         self,
         screenshot: np.ndarray | None = None,
     ) -> bool:
-        """Confirm the deposit only after the bounty-specific notice is visible."""
+        """仅在悬赏专属提示可见后确认押金。"""
         image = self.screenshot() if screenshot is None else screenshot
         match = self._binary_match(
             image,
@@ -486,7 +486,7 @@ class XSRWTask(YmGameTask):
         timeout_ms: int,
         initial_screenshot: np.ndarray | None = None,
     ) -> bool:
-        """Poll briefly for a bounty deposit modal and confirm it once."""
+        """短暂轮询悬赏押金弹窗，并确认一次。"""
         if timeout_ms < 0:
             raise ValueError("押金弹框等待时间不能小于 0")
 
@@ -506,7 +506,7 @@ class XSRWTask(YmGameTask):
         self,
         snapshot: BountyPanelSnapshot,
     ) -> BountyPanelSnapshot:
-        """Execute pending cards until a refreshed panel has none left."""
+        """执行待处理卡片，直到刷新后的面板中没有剩余卡片。"""
         current = snapshot
         while current.pending_cards and not self.is_stopped():
             card = current.pending_cards[0]
@@ -555,9 +555,8 @@ class XSRWTask(YmGameTask):
         self._daily_context = context
         self._active_delegate = delegate
         try:
-            # Retain cleanup ownership before the very first forward click. Any
-            # click, transition, team creation, or challenge failure below can
-            # therefore be normalized by the same stage-aware cleanup path.
+            # 在首次点击前往前保留清理控制权。下方任一点击、场景切换、建队或
+            # 挑战失败，都可由同一条识别阶段的清理路径归一化处理。
             self.tap(*card.action_center)
             self.wait(self.FORWARD_SETTLE_MS)
             self.enter_daily_bounty_dungeon(context)
@@ -592,7 +591,7 @@ class XSRWTask(YmGameTask):
         self,
         context: DailyBountyContext,
     ) -> None:
-        """Normalize every known pre-entry or in-dungeon bounty failure state."""
+        """归一化所有已知的进入前或副本中的悬赏失败状态。"""
         delegate = context.delegate
         self._log(
             "江湖纪事悬赏异常，开始按阶段安全清理："
@@ -613,9 +612,8 @@ class XSRWTask(YmGameTask):
             )
             return
 
-        # These are legitimate pre-entry pages, not unknown dungeon residue.
-        # Dismiss them before generic panel cleanup so cleanup never clicks a
-        # different bounty card's “前往” action.
+        # 这些是正常的进入前页面，并非未知的副本残留状态。
+        # 在通用面板清理前关闭它们，避免清理流程点击到其他悬赏卡片的“前往”。
         self._dismiss_known_daily_bounty_panels()
         delegate.close_all_panels(
             timeout_ms=delegate.DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS
@@ -629,7 +627,7 @@ class XSRWTask(YmGameTask):
         delegate.normalize_outside_dungeon_after_failure(panels_already_closed=True)
 
     def _dismiss_known_daily_bounty_panels(self) -> None:
-        """Dismiss known bounty overlays without treating them as dungeon scenes."""
+        """关闭已知悬赏遮罩，不将其视为副本场景。"""
         for attempt in range(1, self.DAILY_KNOWN_PANEL_DISMISS_ATTEMPTS + 1):
             screenshot = self.screenshot()
             bounty_panel = self.read_bounty_panel(screenshot)
@@ -675,7 +673,7 @@ class XSRWTask(YmGameTask):
             raise RuntimeError(f"江湖纪事副本页清理后仍可见，已保存截图：{debug_path}")
 
     def enter_daily_bounty_dungeon(self, context: DailyBountyContext) -> None:
-        """Create a private one-player team, then challenge the bounty dungeon."""
+        """创建私有单人队伍，再挑战悬赏副本。"""
         self._log("关闭江湖纪事副本页，创建人数要求为 1 的自有队伍")
         self.close_all_panels(
             timeout_ms=RCFBTask.DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS
@@ -693,7 +691,7 @@ class XSRWTask(YmGameTask):
         self,
         original_card: BountyCardSnapshot,
     ) -> None:
-        """Reopen and click only the exact card slot selected before team creation."""
+        """重新打开面板后，仅点击建队前选中的精确卡槽。"""
         snapshot = self.open_bounty_panel(refresh=False)
         restored = next(
             (
@@ -722,7 +720,7 @@ class XSRWTask(YmGameTask):
         self.wait(self.FORWARD_SETTLE_MS)
 
     def enter_daily_bounty_challenge(self) -> None:
-        """Challenge from the self-created one-player team and verify transition."""
+        """从自建单人队伍发起挑战，并验证场景切换。"""
         for attempt in range(1, self.DAILY_ENTRY_MAX_ATTEMPTS + 1):
             confirm = self._wait_binary_match(
                 self.BTN_DAILY_CONFIRM,
@@ -792,7 +790,7 @@ class XSRWTask(YmGameTask):
         )
 
     def _wait_for_daily_bounty_panel_to_close(self) -> bool:
-        """Confirm that the self-team challenge panel is no longer visible."""
+        """确认自建队伍挑战面板已不可见。"""
         deadline = self._make_deadline(self.DAILY_ENTRY_VERIFY_TIMEOUT_MS)
         while not self._is_deadline_expired(deadline):
             if self.wake_from_power_saving_if_needed():
@@ -814,7 +812,7 @@ class XSRWTask(YmGameTask):
         return False
 
     def wait_for_daily_bounty_task(self, delegate: RCFBTask) -> None:
-        """Wait for the bounty dungeon tracker without rematching a different target."""
+        """等待悬赏副本追踪项，且不重新匹配其他目标。"""
         if delegate.wait_for_dungeon_task(timeout_ms=self.DAILY_TASK_WAIT_TIMEOUT_MS):
             delegate.mark_dungeon_entered()
             self._log("检测到江湖纪事悬赏副本任务追踪")
@@ -831,7 +829,7 @@ class XSRWTask(YmGameTask):
         *,
         timeout_ms: int | None = None,
     ) -> None:
-        """Reuse periodic dungeon tracker refresh for a bounty raid."""
+        """为悬赏副本复用定期刷新副本追踪项的逻辑。"""
         if self.is_stopped() or delegate.is_stopped():
             raise StepStopException("Stop requested")
         delegate.monitor_dungeon_hangup_flow(
@@ -841,7 +839,7 @@ class XSRWTask(YmGameTask):
         )
 
     def run_jypy_bounty_challenge(self) -> None:
-        """Wait for the direct bounty challenge and close its victory screen."""
+        """等待直接悬赏挑战完成，并关闭胜利界面。"""
         deadline = self._make_deadline(self.CHALLENGE_TIMEOUT_MS)
         while not self._is_deadline_expired(deadline):
             if self.is_stopped():
@@ -1009,7 +1007,7 @@ class XSRWTask(YmGameTask):
         screenshot: np.ndarray,
         roi: tuple[int, int, int, int],
     ) -> int:
-        """Count the brown fixed-font reward glyphs without recognizing text."""
+        """在不识别文本内容的情况下统计棕色固定字体奖励字形。"""
         x, y, width, height = roi
         crop = screenshot[y : y + height, x : x + width]
         if crop.size == 0:
@@ -1021,10 +1019,8 @@ class XSRWTask(YmGameTask):
             bgr = crop[:, :, :3]
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
 
-        # Reward text keeps the same brown hue while the translucent panel can
-        # make its background either very light or almost black.  Derive the
-        # saturation cutoff from the stable leading ``x`` glyph, then count
-        # shapes only; no character value is decoded.
+        # 奖励文字保持相同的棕色色调，但半透明面板可使背景变得很亮或近黑。
+        # 根据稳定的前导 ``x`` 字形推导饱和度阈值，再只统计形状；不解析字符值。
         base_mask = (
             (hsv[:, :, 0] >= 5)
             & (hsv[:, :, 0] <= 35)
@@ -1044,7 +1040,7 @@ class XSRWTask(YmGameTask):
         screenshot: np.ndarray,
         roi: tuple[int, int, int, int],
     ) -> int:
-        """Count dark progress glyphs against either opaque or translucent panels."""
+        """在不透明或半透明面板上统计深色进度字形。"""
         x, y, width, height = roi
         crop = screenshot[y : y + height, x : x + width]
         if crop.size == 0:
@@ -1067,7 +1063,7 @@ class XSRWTask(YmGameTask):
         screenshot: np.ndarray,
         roi: tuple[int, int, int, int],
     ) -> int:
-        """Count fixed-threshold dark glyphs in a controlled test/image region."""
+        """在受控测试或图像区域中统计固定阈值的深色字形。"""
         x, y, width, height = roi
         crop = screenshot[y : y + height, x : x + width]
         if crop.size == 0:

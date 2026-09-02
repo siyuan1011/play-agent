@@ -54,7 +54,7 @@ class PZSYTask(BanquetAcquireMixin, YmGameTask):
         self._started_banquet = False
 
     def reset_startup_state(self) -> None:
-        """Reset banquet state before the shared startup cleanup."""
+        """在通用启动清理前重置宴席状态。"""
         super().reset_startup_state()
         self._started_banquet = False
 
@@ -208,7 +208,7 @@ class PZSYTask(BanquetAcquireMixin, YmGameTask):
         self._log("完成验证：未发现可继续邀约的破阵设宴")
 
     def is_banquet_panel_visible(self) -> bool:
-        """Return whether the main Pozhen banquet item panel is visible."""
+        """返回破阵设宴主物品面板是否可见。"""
         return (
             self.find_image(self.BTN_POZHEN_GET_ITEM, threshold=0.8, roi=self.scale_roi(self.ROI_BANQUET_ACTION))
             or self.find_image(

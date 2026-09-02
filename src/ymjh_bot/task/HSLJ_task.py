@@ -108,7 +108,7 @@ class HSLJTask(YmGameTask):
             legacy_count=lunjian_count,
             legacy_infinite=lunjian_infinite,
         )
-        # Backwards-compatible attributes used by older tests and callers.
+        # 兼容旧版测试和调用方使用的属性。
         self.lunjian_count = self.mode_count(self.MODE_3V3)
         self.lunjian_infinite = self.mode_strategy(self.MODE_3V3) == self.STRATEGY_INFINITE
 
@@ -120,7 +120,7 @@ class HSLJTask(YmGameTask):
         legacy_count: int = DEFAULT_LUNJIAN_COUNT,
         legacy_infinite: bool = False,
     ) -> dict[str, dict[str, Any]]:
-        """Normalize per-mode Huashan Lunjian strategy settings."""
+        """归一化各模式的华山论剑策略配置。"""
         normalized = {
             mode: dict(defaults)
             for mode, defaults in cls.DEFAULT_MODE_SETTINGS.items()
@@ -153,7 +153,7 @@ class HSLJTask(YmGameTask):
         *,
         defaults: dict[str, Any],
     ) -> dict[str, Any]:
-        """Normalize a single mode setting dictionary."""
+        """归一化单个模式的配置字典。"""
         normalized = dict(defaults)
         if not isinstance(settings, dict):
             return normalized
@@ -178,7 +178,7 @@ class HSLJTask(YmGameTask):
         lunjian_count: Any,
         lunjian_infinite: bool,
     ) -> dict[str, dict[str, Any]]:
-        """Migrate legacy 3v3-only count/infinite settings."""
+        """迁移旧版仅适用于 3v3 的次数和无限模式配置。"""
         try:
             count = int(lunjian_count)
         except (TypeError, ValueError):
@@ -190,11 +190,11 @@ class HSLJTask(YmGameTask):
         return normalized
 
     def mode_strategy(self, mode: str) -> str:
-        """Return the configured strategy for a mode."""
+        """返回指定模式的已配置策略。"""
         return str(self.lunjian_mode_settings[mode]["strategy"])
 
     def mode_count(self, mode: str) -> int:
-        """Return the configured fixed count for a mode."""
+        """返回指定模式已配置的固定次数。"""
         return int(self.lunjian_mode_settings[mode]["count"])
 
     @step(retry=0, timeout_ms=60000)
@@ -219,7 +219,7 @@ class HSLJTask(YmGameTask):
         self.complete_mode_fixed_count(self.MODE_1V1)
 
     def complete_mode_until_first_win(self, mode: str) -> None:
-        """Run a mode until the first-win chest is confirmed claimed."""
+        """运行一个模式，直到确认首胜宝箱已领取。"""
         match_index = 1
         while not self.is_stopped():
             first_state = self.resolve_first_win_reward(mode)
@@ -236,7 +236,7 @@ class HSLJTask(YmGameTask):
         self._log(f"华山论剑 {mode} 首胜匹配已停止")
 
     def complete_mode_infinite(self, mode: str) -> None:
-        """Run a mode until the task is stopped."""
+        """运行一个模式，直到任务被停止。"""
         index = 1
         self._log(f"华山论剑 {mode} 无限匹配模式已启用")
         while not self.is_stopped():
@@ -249,7 +249,7 @@ class HSLJTask(YmGameTask):
         self._log(f"华山论剑 {mode} 无限匹配已停止")
 
     def complete_mode_fixed_count(self, mode: str) -> None:
-        """Run a mode for its configured fixed count."""
+        """按已配置的固定次数运行一个模式。"""
         count = self.mode_count(mode)
         for index in range(1, count + 1):
             if self.is_stopped():
@@ -280,7 +280,7 @@ class HSLJTask(YmGameTask):
 
     @step(retry=0, timeout_ms=None)
     def complete_3v3_matches(self) -> None:
-        """Complete configured 3v3 matches."""
+        """完成已配置次数的 3v3 匹配。"""
         self.ensure_hslj_mode_ready_for_match(self.MODE_3V3)
 
         strategy = self.mode_strategy(self.MODE_3V3)
@@ -300,7 +300,7 @@ class HSLJTask(YmGameTask):
         self.close_reward_dialogs(max_attempts=2)
 
     def _open_hslj_panel_via_activity(self) -> None:
-        """Open Huashan Lunjian through a freshly verified Activity - Fen Zheng panel."""
+        """通过刚验证过的活动-纷争面板打开华山论剑。"""
         self.open_activity_panel(
             "纷争",
             wait_after_open_ms=2500,
@@ -339,7 +339,7 @@ class HSLJTask(YmGameTask):
             raise RuntimeError(f"未进入华山论剑面板，已保存截图：{debug_path}")
 
     def ensure_hslj_panel_ready(self, *, mode: str, timeout_ms: int) -> None:
-        """Ensure the Huashan Lunjian panel is visible, reopening it if needed."""
+        """确保华山论剑面板可见；必要时重新打开。"""
         if self.ensure_hslj_panel_visible(timeout_ms=timeout_ms):
             return
 
@@ -351,7 +351,7 @@ class HSLJTask(YmGameTask):
         self._open_hslj_panel_via_activity()
 
     def ensure_hslj_mode_ready_for_match(self, mode: str) -> None:
-        """Ensure the Huashan panel and target mode are ready before matching."""
+        """匹配前确保华山面板和目标模式已就绪。"""
         self.settle_hslj_reward_dialogs()
         self.ensure_hslj_panel_ready(mode=mode, timeout_ms=10000)
         if not self.is_hslj_mode_selected_quiet(mode):
@@ -359,7 +359,7 @@ class HSLJTask(YmGameTask):
             self.select_hslj_mode(mode)
 
     def select_hslj_mode(self, mode: str) -> None:
-        """Select the requested Huashan Lunjian right-side tab."""
+        """选择所请求的华山论剑右侧页签。"""
         active_template, point, description = self._tab_mode_target(mode)
         for attempt in range(1, self.MODE_SWITCH_MAX_ATTEMPTS + 1):
             self._log(f"切换华山论剑到 {description} 页签，第 {attempt} 次")
@@ -374,7 +374,7 @@ class HSLJTask(YmGameTask):
         raise RuntimeError(f"切换华山论剑 {description} 后未确认真实页签，已保存截图：{debug_path}")
 
     def ensure_hslj_panel_visible(self, *, timeout_ms: int) -> bool:
-        """Wait for the Huashan Lunjian panel title."""
+        """等待华山论剑面板标题出现。"""
         return self.wait_find_image_in_roi(
             self.TITLE_HSLJ,
             self.ROI_PANEL_TITLE,
@@ -385,7 +385,7 @@ class HSLJTask(YmGameTask):
         )
 
     def ensure_hslj_mode_selected(self, mode: str, *, timeout_ms: int) -> bool:
-        """Wait until the Huashan panel and requested mode tab are both stable."""
+        """等待华山面板和所请求的模式页签均稳定。"""
         deadline = self._make_deadline(timeout_ms)
         while not self._is_deadline_expired(deadline):
             if self.is_hslj_mode_selected_quiet(mode):
@@ -394,7 +394,7 @@ class HSLJTask(YmGameTask):
         return False
 
     def is_hslj_mode_selected_quiet(self, mode: str) -> bool:
-        """Return whether the requested Huashan mode tab is active and exclusive."""
+        """返回所请求的华山模式页签是否已激活且唯一。"""
         active_template, _, _ = self._tab_mode_target(mode)
         other_mode = self.MODE_3V3 if mode == self.MODE_1V1 else self.MODE_1V1
         other_template, _, _ = self._tab_mode_target(other_mode)
@@ -413,7 +413,7 @@ class HSLJTask(YmGameTask):
         )
 
     def is_hslj_panel_visible(self) -> bool:
-        """Return whether the Huashan Lunjian panel is currently visible."""
+        """返回华山论剑面板当前是否可见。"""
         return self.find_image(
             self.TITLE_HSLJ,
             threshold=0.85,
@@ -421,11 +421,11 @@ class HSLJTask(YmGameTask):
         )
 
     def claim_first_win_reward(self, mode: str) -> bool:
-        """Try once to claim the first-win reward for the current Huashan mode."""
+        """尝试领取一次当前华山模式的首胜奖励。"""
         return self.resolve_first_win_reward(mode) == self.FIRST_WIN_REWARD_CLAIMED
 
     def resolve_first_win_reward(self, mode: str) -> str:
-        """Resolve whether a first-win reward allows another match to start."""
+        """判断首胜奖励状态是否允许开始下一场匹配。"""
         self.settle_hslj_reward_dialogs()
         if not self.is_first_win_claim_context_safe(mode):
             self._log(f"当前不在可领取华山论剑 {mode} 首胜奖励的稳定面板，跳过领取")
@@ -465,7 +465,7 @@ class HSLJTask(YmGameTask):
         return self.FIRST_WIN_REWARD_BLOCKED
 
     def is_first_win_claim_context_safe(self, mode: str) -> bool:
-        """Return whether it is safe to read/click the first-win chest."""
+        """返回当前是否可安全读取或点击首胜宝箱。"""
         if self.is_ready_button_visible():
             return False
         if self.is_result_panel_visible_quiet():
@@ -479,7 +479,7 @@ class HSLJTask(YmGameTask):
         return True
 
     def detect_first_win_reward_state(self) -> tuple[str, dict[str, float]]:
-        """Detect first-win chest state and keep scores for diagnostics."""
+        """识别首胜宝箱状态，并保留分数供诊断使用。"""
         scores = {"claimed": 0.0, "ready": 0.0, "initial": 0.0}
         if self.is_first_win_reward_claimed():
             scores["claimed"] = getattr(self, "_last_match_score", 0.0)
@@ -498,7 +498,7 @@ class HSLJTask(YmGameTask):
         return "unknown", scores
 
     def describe_hslj_runtime_state(self, mode: str) -> str:
-        """Describe current visible Huashan runtime state for logs."""
+        """描述当前可见的华山运行状态，用于日志。"""
         if self.is_ready_button_visible():
             return "ready"
         if self.is_result_panel_visible_quiet():
@@ -512,7 +512,7 @@ class HSLJTask(YmGameTask):
         return "unknown"
 
     def confirm_first_win_reward_claimed(self, mode: str) -> bool:
-        """Close reward dialogs and verify whether the first-win chest is claimed."""
+        """关闭奖励弹窗，并验证首胜宝箱是否已领取。"""
         self.wait(1500)
         self.settle_hslj_reward_dialogs()
 
@@ -538,7 +538,7 @@ class HSLJTask(YmGameTask):
         return False
 
     def is_first_win_reward_claimed(self) -> bool:
-        """Return whether the first-win reward is already claimed."""
+        """返回首胜奖励是否已领取。"""
         return self.find_image_once(
             self.ICON_HSLJ_FIRST_WIN_CHEST,
             threshold=0.85,
@@ -546,7 +546,7 @@ class HSLJTask(YmGameTask):
         )
 
     def is_first_win_reward_ready(self) -> bool:
-        """Return whether the first-win reward is ready to claim."""
+        """返回首胜奖励是否已可领取。"""
         return self.find_image_once(
             self.ICON_HSLJ_FIRST_WIN_READY,
             threshold=0.85,
@@ -554,7 +554,7 @@ class HSLJTask(YmGameTask):
         )
 
     def is_first_win_reward_initial(self) -> bool:
-        """Return whether the first-win reward chest is still in its initial state."""
+        """返回首胜奖励宝箱是否仍处于初始状态。"""
         return self.find_image_once(
             self.ICON_HSLJ_FIRST_WIN,
             threshold=0.85,
@@ -562,7 +562,7 @@ class HSLJTask(YmGameTask):
         )
 
     def settle_residual_state_before_mode_switch(self, target_mode: str) -> None:
-        """Clear leftover matching/ready/result state before switching into 3v3."""
+        """切换到 3v3 前清除残留的匹配、准备或结果状态。"""
         if target_mode != self.MODE_3V3:
             return
 
@@ -580,7 +580,7 @@ class HSLJTask(YmGameTask):
                 raise RuntimeError(f"切换 3v3 前取消残留匹配失败，已保存截图：{debug_path}")
 
     def resolve_hslj_transient_state(self, mode: str) -> bool:
-        """Resolve ready/result states and return whether the Huashan panel is visible."""
+        """处理准备和结果状态，并返回华山面板是否可见。"""
         if self.is_result_panel_visible_quiet():
             self._log("检测到华山论剑结果面板，先点击离开回到面板")
             self.click_result_panel_exit()
@@ -596,14 +596,14 @@ class HSLJTask(YmGameTask):
         return False
 
     def finish_ready_or_battle_state(self, mode: str) -> str:
-        """Click ready and finish a residual Huashan battle."""
+        """点击准备并完成残留的华山战斗。"""
         self.click(offset=0)
         self.wait(1000)
         self.walk_forward_for_battle(self.BATTLE_FORWARD_MS)
         return self.wait_until_battle_complete(mode, 0)
 
     def click_match_button(self) -> None:
-        """Click the Huashan Lunjian match button."""
+        """点击华山论剑匹配按钮。"""
         if self.is_ready_button_visible():
             self._log("检测到华山论剑已进入准备态，跳过匹配按钮点击")
             return
@@ -648,7 +648,7 @@ class HSLJTask(YmGameTask):
         raise RuntimeError(f"未识别到华山论剑匹配状态按钮，已保存截图：{debug_path}")
 
     def run_match_battle(self, mode: str, match_index: int) -> None:
-        """Run one matched Huashan Lunjian battle and return to the panel."""
+        """完成一场已匹配的华山论剑战斗，并返回面板。"""
         ready_state = self.click_ready_button(mode, match_index)
         if ready_state == self.MATCH_READY_STATE_READY:
             self.walk_forward_for_battle(self.BATTLE_FORWARD_MS)
@@ -665,7 +665,7 @@ class HSLJTask(YmGameTask):
             raise RuntimeError("战斗退出后未回到华山论剑面板")
 
     def click_ready_button(self, mode: str, match_index: int) -> str:
-        """Wait for ready, matching completion, or a returned panel."""
+        """等待准备就绪、匹配完成或返回面板。"""
         deadline = self._make_deadline(300000)
         last_heartbeat_at = 0.0
 
@@ -711,7 +711,7 @@ class HSLJTask(YmGameTask):
         raise RuntimeError(f"华山论剑 {mode} 第 {match_index} 场匹配/准备等待超时，且取消匹配失败，已保存截图：{debug_path}")
 
     def cancel_current_match(self, mode: str, match_index: int) -> bool:
-        """Cancel a long-running Huashan match queue and stay on the panel."""
+        """取消长时间运行的华山匹配队列，并停留在面板中。"""
         if not self.wait_find_image_in_roi(
             self.BTN_HSLJ_MATCH_EXIT_TEMPLATES,
             self.ROI_MATCH_BUTTON,
@@ -736,7 +736,7 @@ class HSLJTask(YmGameTask):
         return False
 
     def is_ready_button_visible(self) -> bool:
-        """Return whether the battle ready button is visible without noisy miss logs."""
+        """无冗余未命中日志地返回战斗准备按钮是否可见。"""
         return self.find_image_once(
             self.BTN_HSLJ_READY_TEMPLATES,
             threshold=0.85,
@@ -744,7 +744,7 @@ class HSLJTask(YmGameTask):
         )
 
     def is_match_button_visible_quiet(self) -> bool:
-        """Return whether the panel has returned to a clickable match state."""
+        """返回面板是否已恢复到可点击匹配状态。"""
         return self.find_image_once(
             self.BTN_HSLJ_MATCH_TEMPLATES,
             threshold=0.85,
@@ -752,7 +752,7 @@ class HSLJTask(YmGameTask):
         )
 
     def is_match_cancel_button_visible_quiet(self) -> bool:
-        """Return whether the panel is currently in matching state."""
+        """返回面板当前是否处于匹配状态。"""
         return self.find_image_once(
             self.BTN_HSLJ_MATCH_EXIT_TEMPLATES,
             threshold=0.85,
@@ -760,7 +760,7 @@ class HSLJTask(YmGameTask):
         )
 
     def is_match_success_visible_quiet(self) -> bool:
-        """Return whether the match-success transition overlay is visible."""
+        """返回匹配成功的切换遮罩是否可见。"""
         return self.find_image_once(
             self.TEXT_HSLJ_MATCH_SUCCESS,
             threshold=0.85,
@@ -768,7 +768,7 @@ class HSLJTask(YmGameTask):
         )
 
     def is_hslj_panel_visible_quiet(self) -> bool:
-        """Return whether the Huashan panel is visible without noisy miss logs."""
+        """无冗余未命中日志地返回华山面板是否可见。"""
         return self.find_image_once(
             self.TITLE_HSLJ,
             threshold=0.85,
@@ -776,7 +776,7 @@ class HSLJTask(YmGameTask):
         )
 
     def is_result_panel_visible_quiet(self) -> bool:
-        """Return whether the result panel is visible without noisy miss logs."""
+        """无冗余未命中日志地返回结果面板是否可见。"""
         if not Path(self.TEXT_HSLJ_EXIT).exists():
             return False
         return self.find_image_once(
@@ -786,14 +786,14 @@ class HSLJTask(YmGameTask):
         )
 
     def walk_forward_for_battle(self, duration_ms: int) -> None:
-        """Walk forward in battle without requiring the clean main-scene guard."""
+        """在战斗中向前移动，无需通过干净主场景检查。"""
         start = self.POINT_DIRECTION_JOYSTICK_CENTER
         end = (start[0], start[1] - self.DIRECTION_JOYSTICK_RADIUS)
         self._log(f"华山论剑战斗中向前走 {duration_ms}ms")
         self.swipe(start[0], start[1], end[0], end[1], duration_ms=duration_ms)
 
     def wait_until_battle_complete(self, mode: str, match_index: int) -> str:
-        """Auto-battle until the result panel appears or the Huashan panel returns."""
+        """自动战斗，直到结果面板出现或返回华山面板。"""
         deadline = self._make_deadline(420000)
         while not self._is_deadline_expired(deadline):
             if self.is_result_panel_visible():
@@ -818,7 +818,7 @@ class HSLJTask(YmGameTask):
         raise RuntimeError(f"华山论剑 {mode} 第 {match_index} 场战斗结果等待超时，已保存截图：{debug_path}")
 
     def is_result_panel_visible(self) -> bool:
-        """Return whether the post-battle result panel is visible."""
+        """返回战后结果面板是否可见。"""
         if not Path(self.TEXT_HSLJ_EXIT).exists():
             return False
         return self.find_image(
@@ -828,7 +828,7 @@ class HSLJTask(YmGameTask):
         )
 
     def click_result_panel_exit(self) -> None:
-        """Click the exit button inside the post-battle result panel."""
+        """点击战后结果面板中的退出按钮。"""
         if not self.wait_find_image_in_roi(
             self.TEXT_HSLJ_EXIT,
             self.ROI_RESULT_EXIT_TEXT,
@@ -843,7 +843,7 @@ class HSLJTask(YmGameTask):
         self.wait(3000)
 
     def close_purchase_dialog_if_needed(self) -> bool:
-        """Close an extra-challenge purchase dialog without hitting the panel close button behind it."""
+        """关闭额外挑战购买弹窗，避免误点其后的面板关闭按钮。"""
         if not self.find_image(
             [self.BTN_CLOSE, self.BTN_PANE_CLOSE],
             threshold=0.85,
@@ -857,7 +857,7 @@ class HSLJTask(YmGameTask):
         return True
 
     def is_hslj_reward_confirmation_visible_quiet(self) -> bool:
-        """Return whether a centered reward confirmation button is visible."""
+        """返回居中的奖励确认按钮是否可见。"""
         return self.find_image_once(
             [self.BTN_MODAL_OK, self.BTN_OK],
             threshold=0.85,
@@ -865,7 +865,7 @@ class HSLJTask(YmGameTask):
         )
 
     def is_hslj_temp_dialog_visible_quiet(self) -> bool:
-        """Return whether the right-side Huashan reward dialog is still visible."""
+        """返回右侧华山奖励弹窗是否仍可见。"""
         return self.find_image_once(
             [self.BTN_CLOSE, self.BTN_PANE_CLOSE],
             threshold=self.HSLJ_TEMP_DIALOG_CLOSE_THRESHOLD,
@@ -873,7 +873,7 @@ class HSLJTask(YmGameTask):
         )
 
     def settle_hslj_reward_dialogs(self) -> None:
-        """Dismiss known reward dialogs before interacting with Huashan controls."""
+        """操作华山控件前关闭已知奖励弹窗。"""
         if not (
             self.is_hslj_reward_confirmation_visible_quiet()
             or self.is_hslj_temp_dialog_visible_quiet()
@@ -891,7 +891,7 @@ class HSLJTask(YmGameTask):
         raise RuntimeError(f"华山论剑奖励/临时弹窗未关闭，已保存截图：{debug_path}")
 
     def close_reward_dialogs(self, max_attempts: int = 4, *, include_close_buttons: bool = True) -> bool:
-        """Close reward and confirmation dialogs if they appear."""
+        """若出现奖励或确认弹窗则关闭。"""
         closed = False
         for _ in range(max_attempts):
             if self.wait_find_image_in_roi(

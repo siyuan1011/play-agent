@@ -86,7 +86,7 @@ class JYPYTask(YmGameTask):
         "publish_bounty",
     )
 
-    # Compatibility helpers used by the bounty runner's former task tracker.
+    # 兼容旧版悬赏执行器使用的任务追踪辅助方法。
     TEXT_JYPY_SIDEBAR = str(YmGameTask.TEMPLATES_DIR / "text_jypy_sidebar_chapter.png")
     SIDEBAR_TASK_THRESHOLD = 0.8
     POINT_TASK_LIST_SCROLL_START = (190, 520)
@@ -98,7 +98,7 @@ class JYPYTask(YmGameTask):
 
     @classmethod
     def get_steps(cls) -> list[tuple[str, object, dict]]:
-        """Return the Juyi Pingyuan publisher steps in a stable order."""
+        """按稳定顺序返回聚义平冤悬赏发布步骤。"""
         steps: list[tuple[str, object, dict]] = []
         for name in cls.STEP_ORDER:
             func = getattr(cls, name)
@@ -113,7 +113,7 @@ class JYPYTask(YmGameTask):
         retry_scope: str,
         failure: Exception | str | None = None,
     ) -> None:
-        """Finish a pending Juyi Pingyuan confirmation before recovery."""
+        """恢复流程前先完成待处理的聚义平冤确认。"""
         if self.confirm_publish_modal_if_visible(timeout_ms=1000):
             self._log("重试前已处理待确认的聚义平冤悬赏发布弹框")
             return
@@ -228,7 +228,7 @@ class JYPYTask(YmGameTask):
         self._verify_publish_success()
 
     def confirm_publish_modal_if_visible(self, *, timeout_ms: int = 0) -> bool:
-        """Confirm a pending Juyi Pingyuan publish summary modal."""
+        """确认待处理的聚义平冤悬赏发布摘要弹窗。"""
         modal_confirm = self._wait_bounty_match(
             self.BTN_PUBLISH_MODAL_CONFIRM,
             mode="otsu_dark",
@@ -254,7 +254,7 @@ class JYPYTask(YmGameTask):
         self._log("聚义平冤悬赏发布成功")
 
     def ensure_bounty_panel_open(self) -> None:
-        """Recover Activity/Bounty prerequisites for Juyi Pingyuan."""
+        """恢复进入聚义平冤所需的活动和悬赏面板前置状态。"""
         if self.is_bounty_publish_panel_visible() or self.is_bounty_panel_visible():
             return
 
@@ -276,7 +276,7 @@ class JYPYTask(YmGameTask):
             self._raise_publish_error("panel_missing", "未能确认悬赏面板")
 
     def ensure_bounty_publish_panel_open(self) -> None:
-        """Recover the Bounty panel and open the Juyi Pingyuan publisher."""
+        """恢复悬赏面板并打开聚义平冤悬赏发布页。"""
         if self.is_bounty_publish_panel_visible():
             return
 
@@ -459,7 +459,7 @@ class JYPYTask(YmGameTask):
         raise RuntimeError(f"{message}，已保存截图：{debug_path}")
 
     def find_jypy_task_in_sidebar(self, max_scrolls: int = 5) -> bool:
-        """Find the former JYPY tracker without making it part of this task flow."""
+        """查找旧版聚义平冤追踪项，但不将其纳入当前任务流程。"""
         self.collapse_chat_if_open()
         panel_errors: list[TaskSidebarStateError] = []
         for panel in ("任务", "江湖"):

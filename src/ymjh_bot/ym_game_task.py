@@ -1,4 +1,4 @@
-"""Shared task base for Yi Meng Jiang Hu automation."""
+"""一梦江湖自动化任务的共享基类。"""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 @dataclass(slots=True)
 class LoginState:
-    """Detected login-flow state from one screenshot."""
+    """从一张截图识别出的登录流程状态。"""
 
     name: str
     description: str
@@ -31,12 +31,12 @@ class LoginState:
 
 
 class TaskSidebarStateError(RuntimeError):
-    """Raised when the compact task sidebar state cannot be verified safely."""
+    """紧凑任务侧栏状态无法安全验证时抛出。"""
 
 
 @dataclass(slots=True)
 class TaskSidebarSnapshot:
-    """Visual state collected from one task-sidebar screenshot."""
+    """从一张任务侧栏截图采集的视觉状态。"""
 
     image: np.ndarray
     active_panel: str | None
@@ -47,7 +47,7 @@ class TaskSidebarSnapshot:
 
 
 class YmGameTask(GameTask):
-    """Base class for Yi Meng Jiang Hu tasks."""
+    """一梦江湖任务基类。"""
 
     __abstract_task__ = True
 
@@ -173,8 +173,8 @@ class YmGameTask(GameTask):
     POINT_DIRECTION_JOYSTICK_CENTER = (105, 455)
     POINT_BATTLE_NORMAL_ATTACK = (1135, 553)
     POINT_RIGHT_JOYSTICK_CENTER = POINT_BATTLE_NORMAL_ATTACK
-    # The clickable entry is the vertical "本页奖励" tab.  The reward item at
-    # x=360 opens an item tooltip instead of dismissing the right-side detail.
+    # 可点击入口是竖直的“本页奖励”页签；x=360 处的奖励物品会打开物品提示，
+    # 而不会关闭右侧详情。
     POINT_JIANGHU_CALENDAR_PAGE_REWARD = (322, 568)
     POINT_BATTLE_SKILL_BUTTONS = (
         (1118, 389),
@@ -291,9 +291,8 @@ class YmGameTask(GameTask):
     TASK_PANEL_ACTIVE_WAIT_MS = 6000
     TASK_PANEL_TITLE_THRESHOLD = 0.9
     TASK_SIDEBAR_THRESHOLD = 0.85
-    # Real-device captures put the active Jianghu tab around 0.807 while the
-    # inactive neighbours stay below 0.10. Keep this independent from the
-    # stricter sidebar-entry threshold so callers cannot accidentally raise it.
+    # 真机截图中，激活的江湖页签分数约为 0.807，未激活相邻页签低于 0.10。
+    # 此阈值与更严格的侧栏入口阈值保持独立，避免调用方意外提高它。
     TASK_TAB_ACTIVE_THRESHOLD = 0.78
     TASK_SIDEBAR_POLL_INTERVAL_MS = 300
     TASK_SIDEBAR_UNKNOWN_FRAME_LIMIT = 2
@@ -400,12 +399,11 @@ class YmGameTask(GameTask):
         self._task_sidebar_failure_screenshot_cache: dict[str, tuple[float, str]] = {}
 
     def before_start(self) -> None:
-        """Ensure the game is ready before task-specific setup runs."""
+        """在任务专属初始化前确保游戏已就绪。"""
         if not self.auto_ensure_game_started:
             return
 
-        # Foreground ownership also includes login screens. Only the confirmed
-        # in-game power-saving overlay is safe to defer to on_start.
+        # 前台归属还包括登录界面；只有已确认的游戏内省电遮罩层可安全延后到 on_start 处理。
         if (
             self.DEFER_FOREGROUND_WAKE_TO_ON_START
             and self.is_game_foreground()
@@ -417,13 +415,13 @@ class YmGameTask(GameTask):
         self.ensure_game_started()
 
     def reset_startup_state(self) -> None:
-        """Reset task-specific state before the shared startup cleanup."""
+        """在通用启动清理前重置任务专属状态。"""
 
     def after_startup_panel_close(self) -> None:
-        """Handle task-specific dialogs after each startup panel cleanup pass."""
+        """每轮启动面板清理后处理任务专属弹窗。"""
 
     def on_start(self) -> None:
-        """Log task startup and normalize the game scene before DSL steps run."""
+        """记录任务启动，并在 DSL 步骤执行前归一化游戏场景。"""
         self.reset_startup_state()
         task_name = self.STARTUP_LOG_DISPLAY_NAME or getattr(self, "task_name", self.__class__.__name__)
         suffix = "" if task_name.endswith("任务") else "任务"
@@ -451,7 +449,7 @@ class YmGameTask(GameTask):
             self.close_all_panels(timeout_ms=self.STARTUP_FINAL_CLOSE_TIMEOUT_MS)
 
     def before_step(self, step_name: str, step_meta: dict[str, Any]) -> None:
-        """Run shared Yi Meng Jiang Hu guards before each task step."""
+        """每个任务步骤前执行一梦江湖通用保护逻辑。"""
         super().before_step(step_name, step_meta)
         self.recover_health_if_needed()
 
@@ -460,7 +458,7 @@ class YmGameTask(GameTask):
         retry_scope: str,
         failure: Exception | str | None = None,
     ) -> None:
-        """Wake power saving and try image-only stuck recovery before a retry."""
+        """重试前唤醒省电模式，并尝试纯图像脱困恢复。"""
         super().before_retry(retry_scope, failure)
         scope_name = "步骤" if retry_scope == "step" else "任务"
         try:
@@ -475,7 +473,7 @@ class YmGameTask(GameTask):
             self._log("脱离卡死未完成，保持原异常并继续正常重试")
 
     def try_escape_stuck(self) -> bool:
-        """Try the strict image-only escape flow twice with one cleanup between attempts."""
+        """严格按纯图像脱困流程尝试两次，中间进行一次清理。"""
         for attempt in range(1, 3):
             try:
                 if self._try_escape_stuck_once(attempt):
@@ -559,7 +557,7 @@ class YmGameTask(GameTask):
         return True
 
     def is_power_saving_mode(self) -> bool:
-        """Return whether the current game view is the power-saving overlay."""
+        """返回当前游戏画面是否为省电遮罩层。"""
         return self.find_image(
             self.TEXT_POWER_SAVING,
             threshold=0.8,
@@ -567,7 +565,7 @@ class YmGameTask(GameTask):
         )
 
     def wake_from_power_saving_if_needed(self) -> bool:
-        """Wake the game from power-saving mode by tapping the lower-right joystick center."""
+        """点击右下角摇杆中心，将游戏从省电模式唤醒。"""
         if not self.is_power_saving_mode():
             return False
 
@@ -577,13 +575,13 @@ class YmGameTask(GameTask):
         return True
 
     def wake_foreground_screen_once(self) -> None:
-        """Try to wake an unrecognized foreground game scene without entering login flow."""
+        """尝试唤醒未识别的前台游戏场景，而不进入登录流程。"""
         self._log("前台画面未识别，点击右下角摇杆中心尝试唤醒")
         self.click_point(self.POINT_RIGHT_JOYSTICK_CENTER[0], self.POINT_RIGHT_JOYSTICK_CENTER[1], offset=0)
         self.wait(1000)
 
     def is_chat_open(self) -> bool:
-        """Return whether the chat panel is expanded."""
+        """返回聊天面板是否已展开。"""
         return self.find_image(
             self.BTN_CHAT_SEND,
             threshold=0.9,
@@ -591,7 +589,7 @@ class YmGameTask(GameTask):
         )
 
     def collapse_chat_if_open(self, wait_after_click_ms: int = 800) -> bool:
-        """Collapse the expanded chat panel when the Send button is visible."""
+        """“发送”按钮可见时收起已展开的聊天面板。"""
         if not self.is_chat_open():
             return False
 
@@ -601,7 +599,7 @@ class YmGameTask(GameTask):
         return True
 
     def is_emotion_panel_open(self) -> bool:
-        """Return whether the main-scene emotion panel is visible."""
+        """返回主场景表情面板是否可见。"""
         return self.find_image_once(
             self.BTN_EMOTION_MEDITATE,
             threshold=self.EMOTION_MEDITATE_THRESHOLD,
@@ -614,7 +612,7 @@ class YmGameTask(GameTask):
         wait_after_click_ms: int | None = None,
         assume_open: bool = False,
     ) -> bool:
-        """Collapse a visible emotion panel without triggering another expression."""
+        """收起可见的表情面板，而不触发其他表情。"""
         if not assume_open and not self.is_emotion_panel_open():
             return False
 
@@ -634,13 +632,13 @@ class YmGameTask(GameTask):
         return True
 
     def click_point(self, x: int, y: int, offset: int = 3) -> None:
-        """Tap a fixed 1280x720 coordinate without runtime resolution scaling."""
+        """点击固定的 1280x720 坐标，不进行运行时分辨率缩放。"""
         if offset > 0:
             x, y = apply_random_offset((x, y), offset)
         self.tap(x, y)
 
     def walk(self, direction: str, duration_ms: int = 500) -> None:
-        """Drag the lower-left movement joystick in the requested direction."""
+        """按指定方向拖动左下角移动摇杆。"""
         if duration_ms < 0:
             raise ValueError("duration_ms must be greater than or equal to 0")
 
@@ -659,23 +657,23 @@ class YmGameTask(GameTask):
         self.swipe(start[0], start[1], end[0], end[1], duration_ms=duration_ms)
 
     def walk_forward(self, duration_ms: int = 500) -> None:
-        """Walk forward by dragging the movement joystick upward."""
+        """向上拖动移动摇杆以向前行走。"""
         self.walk("forward", duration_ms=duration_ms)
 
     def walk_backward(self, duration_ms: int = 500) -> None:
-        """Walk backward by dragging the movement joystick downward."""
+        """向下拖动移动摇杆以向后行走。"""
         self.walk("backward", duration_ms=duration_ms)
 
     def walk_left(self, duration_ms: int = 500) -> None:
-        """Walk left by dragging the movement joystick leftward."""
+        """向左拖动移动摇杆以向左行走。"""
         self.walk("left", duration_ms=duration_ms)
 
     def walk_right(self, duration_ms: int = 500) -> None:
-        """Walk right by dragging the movement joystick rightward."""
+        """向右拖动移动摇杆以向右行走。"""
         self.walk("right", duration_ms=duration_ms)
 
     def auto_battle(self, interval_ms: int = 500) -> None:
-        """Run the fixed two-page battle rhythm and return to the first skill page."""
+        """执行固定的双页战斗节奏，并返回第一技能页。"""
         if interval_ms < 0:
             raise ValueError("interval_ms must be greater than or equal to 0")
 
@@ -705,7 +703,7 @@ class YmGameTask(GameTask):
         self._log("自动战斗点击完成")
 
     def turn_battle_skill_page(self, duration_ms: int = 350) -> None:
-        """Turn the battle skill wheel by swiping from the first skill to the second."""
+        """从第一技能滑向第二技能，翻转战斗技能轮。"""
         if duration_ms < 0:
             raise ValueError("duration_ms must be greater than or equal to 0")
 
@@ -724,7 +722,7 @@ class YmGameTask(GameTask):
             self.wait(interval_ms)
 
     def detect_health_ratio(self) -> float | None:
-        """Return the visible HP bar fill ratio, or None when it cannot be read."""
+        """返回可见血条填充比例；无法识别时返回 None。"""
         screenshot = self.screenshot()
         if (
             not isinstance(screenshot, np.ndarray)
@@ -752,7 +750,7 @@ class YmGameTask(GameTask):
         return min(1.0, filled_width / full_width)
 
     def recover_health_if_needed(self) -> None:
-        """Meditate until HP is full when the main-scene HP bar is low."""
+        """主场景血条较低时打坐，直到血量回满。"""
         if not self.auto_recover_health or self._recovering_health:
             return
 
@@ -825,7 +823,7 @@ class YmGameTask(GameTask):
             self._log("血量已回满，退出打坐")
 
     def wait_health_full(self) -> bool:
-        """Wait until HP reaches the configured full threshold."""
+        """等待血量达到已配置的满血阈值。"""
         started_at = self._health_recover_started_at
         if started_at is None:
             started_at = time.perf_counter()
@@ -895,7 +893,7 @@ class YmGameTask(GameTask):
         return longest
 
     def is_game_process_running(self) -> bool:
-        """Return whether the game process currently exists on the device."""
+        """返回设备上当前是否存在游戏进程。"""
         try:
             return bool(self.shell(f"pidof {self.PACKAGE_NAME}").strip())
         except Exception:
@@ -903,7 +901,7 @@ class YmGameTask(GameTask):
 
     @classmethod
     def _extract_package_from_window_line(cls, line: str) -> str | None:
-        """Extract the package name from a dumpsys window focus line."""
+        """从 dumpsys 窗口焦点行中提取包名。"""
         match = re.search(r"\b([A-Za-z][\w]*(?:\.[\w]+)+)/", line)
         if not match:
             return None
@@ -911,7 +909,7 @@ class YmGameTask(GameTask):
 
     @classmethod
     def _extract_foreground_package(cls, window_dump: str) -> str | None:
-        """Return the focused package from a dumpsys window dump."""
+        """从 dumpsys 窗口输出中返回获得焦点的包名。"""
         for marker in ("mCurrentFocus=", "mFocusedApp="):
             for line in window_dump.splitlines():
                 if marker not in line:
@@ -922,18 +920,18 @@ class YmGameTask(GameTask):
         return None
 
     def get_foreground_package(self) -> str | None:
-        """Return the current foreground package, or None when unavailable."""
+        """返回当前前台包名；不可用时返回 None。"""
         try:
             return self._extract_foreground_package(self.shell("dumpsys window"))
         except Exception:
             return None
 
     def is_game_foreground(self) -> bool:
-        """Return whether the game package owns the focused window."""
+        """返回获得焦点的窗口是否属于游戏包。"""
         return self.get_foreground_package() == self.PACKAGE_NAME
 
     def is_game_main_ready(self, *, timeout_ms: int = 2000, threshold: float = 0.8) -> bool:
-        """Return whether the game main scene is visible and free of startup popups."""
+        """返回游戏主场景是否可见且无启动弹窗。"""
         deadline = self._make_deadline(timeout_ms)
         while True:
             state = self.detect_login_state(include_modal_controls=True, threshold=threshold)
@@ -944,7 +942,7 @@ class YmGameTask(GameTask):
             self.wait(self.LOGIN_POLL_INTERVAL_MS)
 
     def ensure_game_started(self, *, force: bool = False) -> None:
-        """Start and enter the game when it is not ready in the foreground."""
+        """当前台游戏未就绪时启动并进入游戏。"""
         if not force and self.is_game_foreground():
             woke_from_power_saving = self.wake_from_power_saving_if_needed()
             if woke_from_power_saving and self.is_game_main_ready():
@@ -980,7 +978,7 @@ class YmGameTask(GameTask):
         self,
         failure: Exception | str | None = None,
     ) -> None:
-        """Force-restart the game and require a clean, unteamed main scene."""
+        """强制重启游戏，并要求回到干净且未组队的主场景。"""
         self._log(f"常规失败清理未能确认安全现场，开始强制重启游戏：{failure}")
         self.shell(f"am force-stop {self.PACKAGE_NAME}")
         self.wait(self.FAILURE_RECOVERY_FORCE_STOP_WAIT_MS)
@@ -1001,14 +999,14 @@ class YmGameTask(GameTask):
         self._log("强制重启恢复完成，已确认无队伍的稳定主界面")
 
     def start_game_app(self, wait_after_launch_ms: int = 5000) -> None:
-        """Launch the Yi Meng Jiang Hu Android package."""
+        """启动一梦江湖 Android 包。"""
         self._log("启动应用")
         self.shell(f"monkey -p {self.PACKAGE_NAME} -c android.intent.category.LAUNCHER 1")
         self.wait(wait_after_launch_ms)
         self._log("应用启动完成")
 
     def enter_game(self) -> None:
-        """Enter the game main scene from the launcher/login screens."""
+        """从启动器或登录界面进入游戏主场景。"""
         self._log("进入游戏主界面")
         deadline = self._make_deadline(self.LOGIN_TOTAL_TIMEOUT_MS)
         unrecognized_started_at: float | None = None
@@ -1110,7 +1108,7 @@ class YmGameTask(GameTask):
         include_modal_controls: bool = False,
         threshold: float = 0.8,
     ) -> LoginState | None:
-        """Detect the current login-flow state from a single screenshot."""
+        """从单张截图识别当前登录流程状态。"""
         screenshot = self.screenshot()
 
         calendar_match = self._vision.match_template(
@@ -1170,7 +1168,7 @@ class YmGameTask(GameTask):
         timeout_ms: int = LOGIN_CLEANUP_TIMEOUT_MS,
         threshold: float = 0.8,
     ) -> bool:
-        """Close startup popups until the clean main scene is stable."""
+        """关闭启动弹窗，直到干净主场景稳定。"""
         deadline = self._make_deadline(timeout_ms)
         consecutive_clean = 0
 
@@ -1238,7 +1236,7 @@ class YmGameTask(GameTask):
         return int((time.perf_counter() - started_at) * 1000)
 
     def tap_when_found(self, found: bool, missing_count: int) -> None:
-        """Tap the last matched target while it is still visible."""
+        """在上次匹配目标仍可见时点击它。"""
         if found:
             self.tap()
         else:
@@ -1252,7 +1250,7 @@ class YmGameTask(GameTask):
         wait_after_click_ms: int = 500,
         max_attempts: int | None = None,
     ) -> None:
-        """Close stacked panels by trying and verifying every visible close candidate."""
+        """尝试并验证每个可见关闭候选项，以关闭层叠面板。"""
         targets = templates or list(self.GENERAL_CLOSE_TEMPLATES)
         targets = [targets] if isinstance(targets, str) else list(targets)
         effective_max_attempts = max_attempts
@@ -1312,9 +1310,8 @@ class YmGameTask(GameTask):
 
             candidate = self._next_untried_close_candidate(current_candidates, tried_centers)
             if candidate is None:
-                # Every candidate in this unchanged state has been tried.  Allow
-                # another highest-score attempt while preserving the consecutive
-                # no-change count.
+                # 此未变状态中的所有候选项均已尝试；在保持连续无变化计数的同时，
+                # 允许再尝试一次最高分候选项。
                 refreshed_image, refreshed_candidates = self._capture_close_candidates(targets)
                 refreshed_structure_change = self._close_structure_change_ratio(
                     current_image,
@@ -1387,7 +1384,7 @@ class YmGameTask(GameTask):
             current_candidates = next_candidates
 
     def _prepare_jianghu_calendar_close(self) -> None:
-        """Dismiss the calendar detail card once, then require a general close icon."""
+        """先关闭一次日历详情卡片，再要求出现通用关闭图标。"""
         screenshot = self.screenshot()
         calendar_match = self._vision.match_template(
             screenshot,
@@ -1434,7 +1431,7 @@ class YmGameTask(GameTask):
         *,
         timeout_ms: int,
     ) -> tuple[np.ndarray, list[ImageMatchResult]]:
-        """Preserve the old initial wait window while requiring two empty frames."""
+        """保留旧的初始等待窗口，同时要求连续两帧为空。"""
         deadline = time.perf_counter() + timeout_ms / 1000.0
         missing_frames = 0
         while True:
@@ -1467,7 +1464,7 @@ class YmGameTask(GameTask):
         self,
         candidates: list[ImageMatchResult],
     ) -> list[ImageMatchResult]:
-        """Merge matches from different templates that describe the same close button."""
+        """合并来自不同模板、但描述同一关闭按钮的匹配结果。"""
         merged: list[ImageMatchResult] = []
         for candidate in sorted(candidates, key=lambda item: item.score, reverse=True):
             if candidate.center is None:
@@ -1509,7 +1506,7 @@ class YmGameTask(GameTask):
         before: list[ImageMatchResult],
         after: list[ImageMatchResult],
     ) -> bool:
-        """Compare coordinate sets using one-to-one matching with a 10 px tolerance."""
+        """以 10 像素容差通过一对一匹配比较坐标集合。"""
         before_centers = [item.center for item in before if item.center is not None]
         after_centers = [item.center for item in after if item.center is not None]
         if len(before_centers) != len(after_centers):
@@ -1595,7 +1592,7 @@ class YmGameTask(GameTask):
         path_timeout_ms: int = 90000,
         wait_after_click_ms: int = 1000,
     ) -> None:
-        """Use the map to auto-path back to Jinling Jiming Temple."""
+        """使用地图自动寻路返回金陵鸡鸣寺。"""
         if not self.is_game_main_ready():
             raise RuntimeError("当前不是干净主界面，无法返回鸡鸣寺安全区")
 
@@ -1617,7 +1614,7 @@ class YmGameTask(GameTask):
         self._log("已回到鸡鸣寺安全区")
 
     def ensure_local_map_open(self, *, wait_after_click_ms: int) -> None:
-        """Open and verify the local/region map."""
+        """打开并验证本地或区域地图。"""
         if self.is_local_map_visible_quiet():
             return
 
@@ -1633,7 +1630,7 @@ class YmGameTask(GameTask):
         self._raise_map_state_error("safe_zone_open_local_map_failed", "未打开大地图/区域地图")
 
     def ensure_world_map_open(self, *, wait_after_click_ms: int) -> None:
-        """Switch from the local map to the world map and verify it."""
+        """从本地地图切换到世界地图并验证。"""
         if self.is_world_map_visible_quiet():
             return
 
@@ -1656,7 +1653,7 @@ class YmGameTask(GameTask):
         self._raise_map_state_error("safe_zone_open_world_map_failed", "未进入世界地图")
 
     def ensure_jinling_region_map_open(self, *, wait_after_click_ms: int) -> None:
-        """Switch from the world map to Jinling's region map and verify it."""
+        """从世界地图切换至金陵区域地图并验证。"""
         if self.is_local_map_visible_quiet() and not self.is_world_map_visible_quiet():
             return
 
@@ -1679,7 +1676,7 @@ class YmGameTask(GameTask):
         self._raise_map_state_error("safe_zone_open_jinling_map_failed", "未进入金陵区域地图")
 
     def click_safe_point_and_verify_auto_path(self, *, wait_after_click_ms: int) -> bool:
-        """Click the Jiming Temple safe point and verify auto-pathfinding starts."""
+        """点击鸡鸣寺安全点，并验证自动寻路已开始。"""
         if not self.click_template_if_available(
             self.ICON_SAFE_POINT_TEMPLATES,
             timeout_ms=5000,
@@ -1696,7 +1693,7 @@ class YmGameTask(GameTask):
         return self.wait_auto_pathfinding_started()
 
     def wait_auto_pathfinding_started(self, timeout_ms: int | None = None) -> bool:
-        """Wait until the auto-pathfinding indicator appears."""
+        """等待自动寻路指示器出现。"""
         found = self.wait_image_appear(
             self.TEXT_AUTO_PATH,
             timeout_ms=timeout_ms or self.AUTO_PATH_START_TIMEOUT_MS,
@@ -1707,7 +1704,7 @@ class YmGameTask(GameTask):
         return found
 
     def close_map_if_open(self, *, wait_after_click_ms: int) -> None:
-        """Close the map when it remains open after choosing a destination."""
+        """选择目的地后地图仍打开时将其关闭。"""
         if self.click_template_if_available(
             self.MAP_CLOSE_TEMPLATES,
             timeout_ms=1500,
@@ -1721,7 +1718,7 @@ class YmGameTask(GameTask):
         self._log("未检测到地图关闭按钮，可能已自动关闭地图，继续等待自动寻路完成")
 
     def is_local_map_visible_quiet(self) -> bool:
-        """Return whether a local/region map is visible."""
+        """返回本地或区域地图是否可见。"""
         if self.find_image_once(
             self.MAP_BTN_WORLD,
             threshold=self.MAP_TEMPLATE_THRESHOLD,
@@ -1735,7 +1732,7 @@ class YmGameTask(GameTask):
         )
 
     def is_world_map_visible_quiet(self) -> bool:
-        """Return whether the world map is visible."""
+        """返回世界地图是否可见。"""
         return self.find_image_once(
             self.MAP_BTN_REGION,
             threshold=self.MAP_TEMPLATE_THRESHOLD,
@@ -1743,7 +1740,7 @@ class YmGameTask(GameTask):
         )
 
     def wait_until_map_state(self, predicate, *, timeout_ms: int) -> bool:
-        """Wait until a map-state predicate succeeds."""
+        """等待地图状态断言成功。"""
         deadline = self._make_deadline(timeout_ms)
         while not self._is_deadline_expired(deadline):
             if predicate():
@@ -1775,14 +1772,14 @@ class YmGameTask(GameTask):
         self.wait(wait_after_click_ms)
 
     def save_debug_screenshot(self, prefix: str) -> str:
-        """Save the current screen for debugging."""
+        """保存当前屏幕，供调试使用。"""
         logger = self._get_debug_logger()
         path = logger.save_screenshot(self.screenshot(), prefix=prefix)
         self._log(f"已保存调试截图：{path}")
         return path
 
     def _get_debug_logger(self) -> RunLogger:
-        """Return the run logger used for diagnostic screenshots."""
+        """返回用于诊断截图的运行日志记录器。"""
         logger = self._logger
         if logger is None:
             logger = getattr(self, "_fallback_debug_logger", None)
@@ -1804,7 +1801,7 @@ class YmGameTask(GameTask):
         log_found: bool = False,
         log_missing: bool = False,
     ) -> bool:
-        """Check one screenshot without producing repeated wait-loop noise."""
+        """检查一张截图，不产生重复等待循环日志。"""
         templates = [template] if isinstance(template, str) else template
         match = self._vision.match_template(self.screenshot(), templates, threshold=threshold, roi=roi)
         self._last_match_score = match.score
@@ -1826,7 +1823,7 @@ class YmGameTask(GameTask):
         wait_after_click_ms: int = 1200,
         threshold: float = 0.85,
     ) -> bool:
-        """Confirm the PvP prompt that asks whether to leave the current team."""
+        """确认 PvP 中询问是否离开当前队伍的提示。"""
         if not self.find_image_once(
             self.BTN_MODAL_OK,
             threshold=threshold,
@@ -1840,19 +1837,19 @@ class YmGameTask(GameTask):
         return True
 
     def normalize_team_target(self, target: str) -> str:
-        """Normalize supported team target aliases to their canonical names."""
+        """将受支持的队伍目标别名归一化为规范名称。"""
         normalized = self.TEAM_TARGET_ALIASES.get(target.strip())
         if normalized is None:
             raise ValueError(f"Unsupported team target: {target}")
         return normalized
 
     def is_team_panel_open(self) -> bool:
-        """Return whether any team panel is visible."""
+        """返回是否有任一队伍面板可见。"""
         panel_open, _ = self._read_normal_team_panel_state()
         return panel_open
 
     def is_quick_team_panel_open(self) -> bool:
-        """Return whether the convenient team list is visible."""
+        """返回便捷组队列表是否可见。"""
         return self.find_image_once(
             self.BTN_TEAM_REFRESH_LIST,
             threshold=self.TEAM_TEMPLATE_THRESHOLD,
@@ -1860,7 +1857,7 @@ class YmGameTask(GameTask):
         )
 
     def is_in_team(self) -> bool:
-        """Return whether the open normal team panel represents an active team."""
+        """返回打开的普通队伍面板是否表示一个有效队伍。"""
         _, in_team = self._read_normal_team_panel_state()
         return in_team
 
@@ -1868,7 +1865,7 @@ class YmGameTask(GameTask):
         self,
         screenshot: np.ndarray | None = None,
     ) -> tuple[bool, bool]:
-        """Read normal team-panel visibility and membership from one frame."""
+        """从一帧画面读取普通队伍面板可见性和成员状态。"""
         screen = self.screenshot() if screenshot is None else screenshot
         matches = [
             self._match_team_template(
@@ -1898,7 +1895,7 @@ class YmGameTask(GameTask):
         return panel_open, in_team
 
     def wait_for_team_panel_open(self, *, timeout_ms: int) -> bool:
-        """Wait for any trusted normal team-panel marker."""
+        """等待任一可信的普通队伍面板标记出现。"""
         deadline = self._make_deadline(timeout_ms)
         while True:
             if self.is_team_panel_open():
@@ -1915,7 +1912,7 @@ class YmGameTask(GameTask):
         timeout_ms: int = 3000,
         wait_after_click_ms: int = 1000,
     ) -> None:
-        """Open the normal team panel from the left sidebar."""
+        """从左侧栏打开普通队伍面板。"""
         self.wake_from_power_saving_if_needed()
         if self.is_quick_team_panel_open():
             self._log("当前在便捷组队界面，返回我的队伍")
@@ -1950,7 +1947,7 @@ class YmGameTask(GameTask):
         timeout_ms: int = 3000,
         wait_after_click_ms: int = 1000,
     ) -> None:
-        """Open the convenient team list from the team panel."""
+        """从队伍面板打开便捷组队列表。"""
         if self.is_quick_team_panel_open():
             return
 
@@ -1978,7 +1975,7 @@ class YmGameTask(GameTask):
         timeout_ms: int = 5000,
         wait_after_click_ms: int = 1000,
     ) -> None:
-        """Create a targeted 10-player raid and recruit until the minimum is reached."""
+        """创建指定的十人副本队伍，并招募至最低人数。"""
         if not 1 <= min_member_count <= len(self.ROI_TEAM_MEMBER_SLOTS):
             raise ValueError("min_member_count must be between 1 and 10")
 
@@ -2030,7 +2027,7 @@ class YmGameTask(GameTask):
         timeout_ms: int = 5000,
         wait_after_click_ms: int = 1000,
     ) -> None:
-        """Use convenient team matching for a supported target."""
+        """对受支持目标使用便捷组队匹配。"""
         target_name = self.normalize_team_target(target)
         self.open_quick_team_panel(timeout_ms=timeout_ms, wait_after_click_ms=wait_after_click_ms)
         self.select_quick_team_target(target_name, wait_after_click_ms=wait_after_click_ms)
@@ -2049,7 +2046,7 @@ class YmGameTask(GameTask):
         self._log("已点击便捷组队自动匹配")
 
     def wait_for_normal_team_state(self, *, expected_in_team: bool, timeout_ms: int) -> bool:
-        """Wait until the normal team panel shows the requested team state."""
+        """等待普通队伍面板显示所请求的队伍状态。"""
         deadline = self._make_deadline(timeout_ms)
         while not self._is_deadline_expired(deadline):
             if (
@@ -2062,7 +2059,7 @@ class YmGameTask(GameTask):
         return False
 
     def is_team_matching(self, screenshot: np.ndarray | None = None) -> bool:
-        """Return whether the normal team panel shows the cancel-match action."""
+        """返回普通队伍面板是否显示取消匹配操作。"""
         screen = self.screenshot() if screenshot is None else screenshot
         match = self._match_team_template(
             screen,
@@ -2073,7 +2070,7 @@ class YmGameTask(GameTask):
         return match.found
 
     def count_team_members(self, screenshot: np.ndarray | None = None) -> int:
-        """Count occupied slots in the current 10-player raid from one screenshot."""
+        """从一张截图统计当前十人副本队伍的已占用槽位数。"""
         screen = self.screenshot() if screenshot is None else screenshot
         empty_count = 0
         for roi in self.ROI_TEAM_MEMBER_SLOTS:
@@ -2087,7 +2084,7 @@ class YmGameTask(GameTask):
         return len(self.ROI_TEAM_MEMBER_SLOTS) - empty_count
 
     def click_team_shout(self, screenshot: np.ndarray | None = None) -> None:
-        """Click the one-key shout speaker, falling back to its fixed point."""
+        """点击一键喊话喇叭；必要时回退到固定坐标。"""
         screen = self.screenshot() if screenshot is None else screenshot
         match = self._match_team_template(
             screen,
@@ -2110,7 +2107,7 @@ class YmGameTask(GameTask):
         threshold: float,
         roi: tuple[int, int, int, int],
     ):
-        """Match a team template, lazily supplying vision for standalone helpers."""
+        """匹配队伍模板，并为独立辅助函数按需提供视觉引擎。"""
         vision = getattr(self, "_vision", None)
         if vision is None:
             vision = VisionEngine()
@@ -2118,7 +2115,7 @@ class YmGameTask(GameTask):
         return vision.match_template(screenshot, template, threshold=threshold, roi=roi)
 
     def wait_for_team_members(self, min_member_count: int) -> None:
-        """Recruit indefinitely until the team reaches the requested size."""
+        """持续招募，直到队伍达到所要求人数。"""
         while True:
             if self.is_stopped():
                 raise StepStopException("Stop requested")
@@ -2143,7 +2140,7 @@ class YmGameTask(GameTask):
         *,
         wait_after_click_ms: int = 800,
     ) -> None:
-        """Select a supported target in the convenient team left filter."""
+        """在便捷组队左侧筛选中选择受支持目标。"""
         target_name = self.normalize_team_target(target)
         config = self.TEAM_TARGET_CONFIGS[target_name]
         item_template = config["quick_item_template"]
@@ -2183,7 +2180,7 @@ class YmGameTask(GameTask):
         timeout_ms: int = 5000,
         wait_after_click_ms: int = 1000,
     ) -> bool:
-        """Leave the current team if one exists."""
+        """若存在当前队伍则离开。"""
         self.open_team_panel()
         if not self.is_in_team():
             self._log("当前未组队，跳过退出队伍")
@@ -2212,7 +2209,7 @@ class YmGameTask(GameTask):
         wait_after_click_ms: int = 1000,
         threshold: float = 0.85,
     ) -> bool:
-        """Click the centered OK button when a confirmation dialog is visible."""
+        """确认对话框可见时点击居中的确定按钮。"""
         if not self.find_image_once(
             [self.BTN_MODAL_OK, self.BTN_TEAM_FOLLOW_OK],
             threshold=threshold,
@@ -2234,7 +2231,7 @@ class YmGameTask(GameTask):
         wait_after_open_ms: int = 2000,
         wait_after_category_ms: int = 0,
     ) -> None:
-        """Open and verify the activity panel before any category coordinate is tapped."""
+        """点击任一分类坐标前打开并验证活动面板。"""
         deadline = self._make_deadline(timeout_ms)
         self._ensure_activity_panel_open(
             deadline=deadline,
@@ -2282,7 +2279,7 @@ class YmGameTask(GameTask):
             self._log(f"已点击活动分类坐标 - {category_name}")
 
     def click_activity_entry(self) -> None:
-        """Click the matched activity entry slightly above the template center."""
+        """在模板中心略上方点击匹配到的活动入口。"""
         if not self._last_match_center:
             return
         x, y = self._last_match_center
@@ -2466,7 +2463,7 @@ class YmGameTask(GameTask):
         threshold: float = 0.85,
         wait_after_click_ms: int = 500,
     ) -> str:
-        """Open and verify the compact task sidebar without choosing a tab."""
+        """打开并验证紧凑任务侧栏，不选择具体页签。"""
         deadline, effective_threshold = self._prepare_task_sidebar_operation(
             timeout_ms=timeout_ms,
             threshold=threshold,
@@ -2488,7 +2485,7 @@ class YmGameTask(GameTask):
         threshold: float = 0.8,
         wait_after_click_ms: int = 500,
     ) -> None:
-        """Open the task sidebar and switch tabs using verified template centers."""
+        """打开任务侧栏，并使用已验证的模板中心切换页签。"""
         if panel not in self.TASK_PANEL_ACTIVE_TEMPLATES:
             raise ValueError(f"Unsupported task panel: {panel}")
 
@@ -3107,7 +3104,7 @@ class YmGameTask(GameTask):
         threshold: float = 0.8,
         missing_threshold: int = 3,
     ) -> bool:
-        """Wait until auto-pathfinding and any following scene loading both settle."""
+        """等待自动寻路及其后的场景加载均稳定。"""
         deadline = self._make_deadline(timeout_ms)
         consecutive_inactive = 0
         last_busy_labels: tuple[str, ...] = ()
@@ -3170,7 +3167,7 @@ class YmGameTask(GameTask):
         roi: tuple[int, int, int, int] | None = None,
         wait_after_click_ms: int = 1000,
     ) -> bool:
-        """Click a template when it appears, optionally constrained to a design-resolution ROI."""
+        """模板出现时点击它，并可选地限制在设计分辨率区域内。"""
         if roi is None:
             found = self.wait_image_appear(template, timeout_ms=timeout_ms, threshold=threshold)
         else:
@@ -3190,7 +3187,7 @@ class YmGameTask(GameTask):
         return True
 
     def ensure_bangpai_activity_tab(self, max_attempts: int = 3) -> None:
-        """Switch to the activity Bangpai tab and verify it is active."""
+        """切换到活动帮派页签，并验证其已激活。"""
         self.open_activity_category("帮派", max_attempts=max_attempts)
 
     def wait_find_image_in_roi(
@@ -3203,7 +3200,7 @@ class YmGameTask(GameTask):
         threshold: float = 0.8,
         interval_ms: int = 500,
     ) -> bool:
-        """Wait for an image inside a design-resolution ROI."""
+        """等待图像出现在设计分辨率区域内。"""
         deadline = None if timeout_ms is None else time.perf_counter() + timeout_ms / 1000.0
         scaled_roi = self.scale_roi(roi)
 
@@ -3216,5 +3213,5 @@ class YmGameTask(GameTask):
         return False
 
     def scale_roi(self, roi: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
-        """Return a fixed 1280x720 ROI without runtime resolution scaling."""
+        """返回固定的 1280x720 区域，不进行运行时分辨率缩放。"""
         return roi

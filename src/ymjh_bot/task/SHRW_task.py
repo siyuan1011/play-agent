@@ -48,7 +48,7 @@ class LineEntry:
 
 
 class LifeTaskUnavailable(RuntimeError):
-    """Raised for a known condition that should finish the task successfully."""
+    """遇到已知且应视为任务成功完成的情况时抛出。"""
 
 
 def _material_specs() -> dict[str, LifeMaterialSpec]:
@@ -132,7 +132,7 @@ class SHRWTask(YmGameTask):
 
     @step(retry=0, timeout_ms=None)
     def collect_life_material(self) -> None:
-        """Run one line circuit, optionally repeating it indefinitely."""
+        """执行一轮线路循环，并可选择无限重复。"""
         while True:
             self._round_index += 1
             round_gathers = self.run_collection_round()
@@ -147,7 +147,7 @@ class SHRWTask(YmGameTask):
                 self.wait(self.EMPTY_ROUND_WAIT_MS)
 
     def run_collection_round(self) -> int:
-        """Enumerate the configured scope and visit every line once."""
+        """枚举已配置范围，并逐一访问每条线路。"""
         try:
             entries = self.enumerate_lines(self.line_scope)
             if not entries:
@@ -178,7 +178,7 @@ class SHRWTask(YmGameTask):
             raise RuntimeError(f"生活任务流程失败：{exc}，已保存截图：{debug_path}") from exc
 
     def collect_current_line(self) -> int:
-        """Keep choosing unvisited map nodes until this line has no candidates."""
+        """持续选择未访问的地图节点，直到当前线路没有候选项。"""
         visited_nodes: set[tuple[int, int, int]] = set()
         gathers = 0
         for _attempt in range(self.MAX_NODES_PER_LINE):
@@ -208,7 +208,7 @@ class SHRWTask(YmGameTask):
         self,
         visited_nodes: set[tuple[int, int, int, int]],
     ) -> tuple[int, int, int] | None:
-        """Open the filtered resource map and choose one not-yet-visited node."""
+        """打开筛选后的资源地图，并选择一个未访问节点。"""
         self.open_life_skill_material()
         self.click_point(*self.POINT_MATERIAL_LOCATORS[self.material.slot_index], offset=0)
         self.wait(self.MAP_WAIT_MS)
@@ -243,7 +243,7 @@ class SHRWTask(YmGameTask):
         return None
 
     def open_life_skill_material(self) -> None:
-        """Open life skills, select the configured category and material page."""
+        """打开生活技能，选择已配置的分类和材料页。"""
         self.close_all_panels(timeout_ms=3000)
         self.click_point(*self.POINT_QUICK_MENU, offset=0)
         self.wait(500)
@@ -267,7 +267,7 @@ class SHRWTask(YmGameTask):
             )
 
     def rewind_material_pages(self) -> None:
-        """Return the material carousel to its first page."""
+        """将材料轮播区返回至第一页。"""
         for _ in range(self.MAX_PAGE_REWIND_ATTEMPTS):
             before = self.screenshot()
             self.click_point(*self.POINT_PAGE_PREVIOUS, offset=0)
@@ -294,7 +294,7 @@ class SHRWTask(YmGameTask):
         return None
 
     def return_to_world_resource_map(self) -> bool:
-        """Return from a region map to the filtered world map."""
+        """从区域地图返回筛选后的世界地图。"""
         self.click_point(*self.POINT_MAP_WORLD_FALLBACK, offset=0)
         self.wait(self.MAP_WAIT_MS)
         return bool(self.find_world_resource_regions(self.screenshot()))
@@ -307,7 +307,7 @@ class SHRWTask(YmGameTask):
         ).found
 
     def gather_arrived_resource(self) -> bool:
-        """Click the scene gather action and wait for the action to finish."""
+        """点击场景采集操作，并等待操作完成。"""
         deadline = self._make_deadline(10_000)
         center: tuple[int, int] | None = None
         while not self._is_deadline_expired(deadline):
@@ -352,7 +352,7 @@ class SHRWTask(YmGameTask):
         raise RuntimeError("生活资源采集动作超时")
 
     def wait_gather_action_complete(self) -> bool:
-        """Wait until the active gather interaction disappears twice."""
+        """等待进行中的采集交互连续两次消失。"""
         deadline = self._make_deadline(self.GATHER_TIMEOUT_MS)
         consecutive_missing = 0
         while not self._is_deadline_expired(deadline):
@@ -368,7 +368,7 @@ class SHRWTask(YmGameTask):
 
     @classmethod
     def is_gathering_in_progress(cls, image: np.ndarray) -> bool:
-        """Detect the bright diamond border shown after gathering starts."""
+        """识别采集开始后显示的明亮菱形边框。"""
         x, y, _width, _height = cls.ROI_GATHER_ACTIONS[1]
         roi = image[y : y + 90, x : x + 85]
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
@@ -377,7 +377,7 @@ class SHRWTask(YmGameTask):
         return int(np.count_nonzero(bright_neutral)) >= 900
 
     def wait_resource_route_started(self, *, timeout_ms: int) -> str | None:
-        """Wait for long-path UI or a direct short-path arrival."""
+        """等待长路径界面出现，或直接通过短路径抵达。"""
         deadline = self._make_deadline(timeout_ms)
         while not self._is_deadline_expired(deadline):
             screenshot = self.screenshot()
@@ -396,7 +396,7 @@ class SHRWTask(YmGameTask):
         return None
 
     def enumerate_lines(self, scope: str) -> list[LineEntry]:
-        """Enumerate visible and scrollable lines for one server scope."""
+        """枚举一个服务器范围内可见及可滚动的线路。"""
         self.close_all_panels(timeout_ms=3000)
         self.click_point(*self.POINT_LINE_DROPDOWN, offset=0)
         self.wait(500)
@@ -456,7 +456,7 @@ class SHRWTask(YmGameTask):
         return entries
 
     def switch_to_line(self, entry: LineEntry) -> None:
-        """Switch to one enumerated line and verify the scene transition settled."""
+        """切换到一条已枚举线路，并验证场景切换已稳定。"""
         self.close_all_panels(timeout_ms=3000)
         self.click_point(*self.POINT_LINE_DROPDOWN, offset=0)
         self.wait(400)
@@ -466,7 +466,7 @@ class SHRWTask(YmGameTask):
             self.wait(400)
         self.rewind_line_list()
 
-        # Reopen from the top and scroll to the page containing the entry.
+        # 从顶部重新打开，再滚动到包含该条目的页面。
         entries = self.find_line_entry_centers(self.screenshot())
         page_index = entry.page_index
         row_index = entry.row_index
@@ -494,7 +494,7 @@ class SHRWTask(YmGameTask):
         raise RuntimeError(f"切换线路 {entry.label} 后主界面未恢复")
 
     def verify_line_selected(self, entry: LineEntry) -> bool:
-        """Reopen the line panel and verify the target row is highlighted."""
+        """重新打开线路面板，并验证目标行已高亮。"""
         self.click_point(*self.POINT_LINE_DROPDOWN, offset=0)
         self.wait(400)
         screenshot = self.screenshot()
@@ -522,7 +522,7 @@ class SHRWTask(YmGameTask):
         return verified
 
     def rewind_line_list(self) -> None:
-        """Scroll a line list back to the first page before indexed access."""
+        """按索引访问前，将线路列表滚回第一页。"""
         for _ in range(self.MAX_LINE_SCROLL_PAGES):
             before = self.screenshot()
             self.swipe(
@@ -547,22 +547,22 @@ class SHRWTask(YmGameTask):
 
     @classmethod
     def is_life_panel_visible(cls, image: np.ndarray) -> bool:
-        # The left category selector is a large translucent light card in the
-        # life panel and remains stable across every category/material page.
+        # 左侧分类选择器是生活面板中的大型半透明浅色卡片，
+        # 在各分类和材料页之间保持稳定。
         gray = cv2.cvtColor(image[165:250, 100:415], cv2.COLOR_BGR2GRAY)
         return float(np.mean(gray >= 150)) >= 0.80
 
     def is_material_page_ready(self, image: np.ndarray) -> bool:
         roi = self.crop(image, self.ROI_LIFE_MATERIAL_CARD)
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        # The material card contains a bright item image and locator hand.
+        # 材料卡片包含明亮的物品图像和定位手势。
         bright_components = self.component_centers(gray >= 170, min_area=50, max_area=6000)
         locator_x = self.POINT_MATERIAL_LOCATORS[self.material.slot_index][0]
         return any(abs((self.ROI_LIFE_MATERIAL_CARD[0] + x) - locator_x) < 65 for x, _y in bright_components)
 
     @classmethod
     def is_filtered_map_visible(cls, image: np.ndarray) -> bool:
-        # Both filtered map levels have the large round close button at the upper-right.
+        # 两个筛选地图层级的右上角都有大型圆形关闭按钮。
         circles = cls.find_circles(image, (1185, 0, 95, 90), min_radius=24, max_radius=44)
         return bool(circles)
 
@@ -628,9 +628,8 @@ class SHRWTask(YmGameTask):
         centers = cls.find_line_entry_centers(image)
         if not centers:
             raise RuntimeError("线路面板没有可选线路")
-        # At a row center the local label starts near x=935, while the
-        # interconnected prefix extends left to x=930 and contains much more
-        # light text before x=970.
+        # 行中心处本地标签从约 x=935 开始，而互通前缀会向左延伸到 x=930，
+        # 且在 x=970 前包含更多浅色文本。
         first_y = centers[0][1]
         row = image[max(0, first_y - 22) : first_y + 22, 920:980]
         hsv = cv2.cvtColor(row, cv2.COLOR_BGR2HSV)
@@ -642,7 +641,7 @@ class SHRWTask(YmGameTask):
         x, y, w, h = cls.ROI_LINE_ENTRIES
         roi = image[y : y + h, x : x + w]
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        # Green/yellow status dot at the left of each line is more stable than text OCR.
+        # 每条线路左侧的绿/黄状态圆点比文字 OCR 更稳定。
         saturation = hsv[:, :, 1]
         value = hsv[:, :, 2]
         mask = ((saturation >= 70) & (value >= 80)).astype(np.uint8) * 255
@@ -652,7 +651,7 @@ class SHRWTask(YmGameTask):
 
     @staticmethod
     def is_line_row_selected(image: np.ndarray, center: tuple[int, int]) -> bool:
-        """Return whether a line row has the bright selected background."""
+        """返回线路行是否具有明亮的选中背景。"""
         _x, y = center
         row = image[max(0, y - 30) : y + 31, 860:1090]
         gray = cv2.cvtColor(row, cv2.COLOR_BGR2GRAY)
@@ -660,7 +659,7 @@ class SHRWTask(YmGameTask):
 
     @staticmethod
     def line_row_fingerprint(image: np.ndarray, center: tuple[int, int]) -> bytes:
-        """Build a position-independent fingerprint from one line's text/dot."""
+        """根据一条线路的文字和圆点构建与位置无关的指纹。"""
         _x, y = center
         row = image[max(0, y - 25) : y + 26, 875:1070]
         hsv = cv2.cvtColor(row, cv2.COLOR_BGR2HSV)
@@ -683,8 +682,7 @@ class SHRWTask(YmGameTask):
         white = (gray >= 145) & (hsv[:, :, 1] <= 100)
         centers = cls.component_centers(white, min_area=350, max_area=1000)
         if centers:
-            # The white component is the hand glyph.  The actual diamond
-            # interaction control extends to the action label on its right.
+            # 白色部分是手势字形；实际菱形交互控件延伸至其右侧的操作标签。
             return [(x + centers[0][0] + 68, y + centers[0][1])]
         return []
 
@@ -782,7 +780,7 @@ class SHRWTask(YmGameTask):
         return similarity >= threshold
 
     def on_finish(self, results: list) -> None:
-        """Log final collection statistics."""
+        """记录最终采集统计信息。"""
         if self._known_unavailable_reason:
             detail = f"跳过：{self._known_unavailable_reason}"
         else:
