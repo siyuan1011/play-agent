@@ -193,7 +193,7 @@ class KYRWTask(YmGameTask):
 
     @step(retry=3, timeout_ms=180000)
     def accept_or_open_keye_panel(self) -> None:
-        """在普照对话中进入课业面板，并处理已布置课业提示。"""
+        """进入课业面板，并处理已布置课业提示。"""
         if not self.click_npc_keye_action_if_visible(timeout_ms=6000, wait_after_click_ms=1200):
             self._log("未识别到NPC课业动作按钮，使用固定坐标点击课业动作")
 

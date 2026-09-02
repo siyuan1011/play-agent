@@ -292,7 +292,6 @@ class TaskQueueRunner:
                     f"（{self.current_role_index + 1}/{self.total_roles}） ==="
                 )
 
-            role_aborted = False
             while self.current_task_index < self.total_tasks:
                 if self._stop_requested:
                     break
@@ -331,14 +330,11 @@ class TaskQueueRunner:
                     break
 
                 self._run_failed_tasks += 1
-                remaining_for_role = max(
-                    0,
-                    self.total_tasks - self.current_task_index - 1,
-                )
+                task_name = getattr(task, "task_name", task.__class__.__name__)
                 if task_status is TaskRunStatus.CLEANUP_FAILED:
                     failure_message = self._last_failure_message or "失败现场清理失败"
                     self._emit(
-                        f"任务 {getattr(task, 'task_name', task.__class__.__name__)} "
+                        f"任务 {task_name} "
                         "常规清理失败，开始强制恢复游戏"
                     )
                     try:
@@ -353,26 +349,21 @@ class TaskQueueRunner:
                         raise RuntimeError(
                             f"任务失败现场强制恢复失败：{exc}"
                         ) from exc
-                    self._emit("失败现场强制恢复完成，可以安全推进下一角色")
+                    self._emit("失败现场强制恢复完成，可以安全继续当前角色后续任务")
 
-                self._run_abandoned_tasks += remaining_for_role
                 self._emit(
-                    f"当前任务失败，放弃角色 {self._current_role_number()} "
-                    f"剩余 {remaining_for_role} 个任务并切换下一角色"
+                    f"当前任务 {task_name} 执行失败，跳过该任务并继续角色 "
+                    f"{self._current_role_number()} 的后续任务"
                 )
-                self.current_task_index = self.total_tasks
-                self.current_step_index = 0
-                self._started_task_index = None
-                role_aborted = True
-                self._emit_progress()
-                break
+                self._advance_current_task()
+                continue
 
             if self._stop_requested:
                 break
             if self.current_task_index < self.total_tasks:
                 continue
 
-            if self.role_indices is not None and not role_aborted:
+            if self.role_indices is not None:
                 self._emit(
                     f"角色 {self._current_role_number()} 的任务图执行完成"
                     f"（{self.current_role_index + 1}/{self.total_roles}）"
@@ -552,7 +543,7 @@ class TaskQueueRunner:
             if attempt >= self.MAX_TASK_ATTEMPTS:
                 self._emit(
                     f"任务 {task_name} 连续 {self.MAX_TASK_ATTEMPTS} 次未完成，"
-                    "放弃当前角色剩余任务"
+                    "标记当前任务失败并继续后续任务"
                 )
                 return results, TaskRunStatus.RETRY_EXHAUSTED
 

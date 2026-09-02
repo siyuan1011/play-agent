@@ -831,13 +831,12 @@ class XSRWTask(YmGameTask):
         *,
         timeout_ms: int | None = None,
     ) -> None:
-        """Reuse the daily-dungeon hangup monitor for a bounty raid."""
+        """Reuse periodic dungeon tracker refresh for a bounty raid."""
         if self.is_stopped() or delegate.is_stopped():
             raise StepStopException("Stop requested")
         delegate.monitor_dungeon_hangup_flow(
             timeout_ms=timeout_ms or delegate.TASK_FLOW_TIMEOUT_MS,
             context="江湖纪事悬赏副本",
-            hangup_failure_screenshot_prefix="xsrw_daily_hangup_state_failed",
             timeout_screenshot_prefix="xsrw_daily_raid_timeout",
         )
 

@@ -11,7 +11,6 @@ logs/
 src/ymjh_bot/.task_queue_state.json
 src/ymjh_bot/.task_queue_states/
 uv.lock.bak
-ymjh_bot.spec
 pytest-cache-files-*
 *.egg-info/
 .claude/

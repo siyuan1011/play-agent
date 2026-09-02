@@ -28,10 +28,6 @@ class RCFBTask(YmGameTask):
     TEXT_DUNGEON_TRANSFER_OUT = str(YmGameTask.TEMPLATES_DIR / "text_rcfb_chuangchu.png")
     ICON_DUNGEON_EXIT = str(YmGameTask.TEMPLATES_DIR / "icon_exit.png")
     BTN_DUNGEON_EXIT_TEAM = str(YmGameTask.TEMPLATES_DIR / "btn_rcfb_exit_team.png")
-    TAB_DUNGEON_HANGUP_ACTIVE = (
-        str(YmGameTask.TEMPLATES_DIR / "tab_dungeon_hangup_active_dark.png"),
-        str(YmGameTask.TEMPLATES_DIR / "tab_dungeon_hangup_active_light.png"),
-    )
     TEXT_DAILY_PANEL_TITLE = str(
         YmGameTask.TEMPLATES_DIR / "text_xsrw_daily_panel_title.png"
     )
@@ -47,7 +43,6 @@ class RCFBTask(YmGameTask):
     POINT_TASK_LIST_SCROLL_END = (190, 220)
 
     ROI_DUNGEON_EXIT = (960, 155, 85, 85)
-    ROI_DUNGEON_HANGUP_ACTIVE = (145, 0, 105, 40)
     ROI_DAILY_PANEL_TITLE = (0, 0, 260, 80)
     ROI_DAILY_CHALLENGE = (1040, 600, 220, 110)
     ROI_DAILY_CONFIRM = (930, 530, 270, 130)
@@ -56,9 +51,6 @@ class RCFBTask(YmGameTask):
     DUNGEON_TRANSFER_OUT_THRESHOLD = 0.85
     DUNGEON_EXIT_THRESHOLD = 0.9
     DUNGEON_EXIT_TEAM_THRESHOLD = 0.9
-    DUNGEON_HANGUP_ACTIVE_THRESHOLD = 0.95
-    DUNGEON_HANGUP_FALLBACK_THRESHOLD = 0.82
-    DUNGEON_HANGUP_CYAN_RATIO_THRESHOLD = 0.15
     DAILY_PANEL_THRESHOLD = 0.90
     DAILY_CHALLENGE_THRESHOLD = 0.90
     DAILY_CONFIRM_THRESHOLD = 0.75
@@ -77,8 +69,8 @@ class RCFBTask(YmGameTask):
     TASK_MISSING_CONFIRMATIONS = 6
     SIDEBAR_SCROLL_COUNT = 2
     DUNGEON_TRACKER_CLICK_INTERVAL_MS = 5000
-    DUNGEON_HANGUP_VERIFY_INTERVAL_MS = 15000
-    DUNGEON_HANGUP_MAX_CONSECUTIVE_FAILURES = 3
+    DUNGEON_MONITOR_POLL_INTERVAL_MS = 15000
+    DUNGEON_TRACKER_REFRESH_INTERVAL_MS = 60000
     DUNGEON_EXIT_ACTION_TIMEOUT_MS = 5000
     DUNGEON_EXIT_MAX_ATTEMPTS = 3
     DUNGEON_AUTO_TRANSFER_TIMEOUT_MS = 330000
@@ -140,11 +132,10 @@ class RCFBTask(YmGameTask):
 
     @step(retry=0, timeout_ms=TASK_FLOW_TIMEOUT_MS)
     def run_daily_raid_flow(self) -> None:
-        """Monitor hangup state until the daily dungeon explicitly completes."""
+        """Periodically refresh the tracker until the dungeon explicitly completes."""
         self.monitor_dungeon_hangup_flow(
             timeout_ms=self.TASK_FLOW_TIMEOUT_MS,
             context="日常副本",
-            hangup_failure_screenshot_prefix="rcfb_hangup_state_failed",
             timeout_screenshot_prefix="rcfb_task_flow_timeout",
         )
 
@@ -153,19 +144,16 @@ class RCFBTask(YmGameTask):
         *,
         timeout_ms: int,
         context: str,
-        hangup_failure_screenshot_prefix: str,
         timeout_screenshot_prefix: str,
     ) -> None:
-        """Keep a dungeon in hangup mode without resetting an active battle state."""
+        """Periodically refresh the dungeon tracker until completion is explicit."""
         if timeout_ms <= 0:
             raise ValueError("副本挂机监控超时时间必须大于 0")
         if not self._dungeon_entry_confirmed:
             raise RuntimeError(f"未确认进入{context}，禁止启动挂机监控")
 
         deadline = self._make_deadline(timeout_ms)
-        consecutive_failures = 0
-        verification_pending = False
-        hangup_confirmed = False
+        tracker_refresh_deadline = self._make_deadline(0)
         outside_stable_confirmations = 0
 
         while not self._is_deadline_expired(deadline):
@@ -178,7 +166,7 @@ class RCFBTask(YmGameTask):
                 return
 
             if self.wake_from_power_saving_if_needed():
-                self._log(f"{context}挂机监控已唤醒省电模式，重新识别挂机状态")
+                self._log(f"{context}周期任务监控已执行省电唤醒，重新识别任务追踪")
                 if self.is_dungeon_transfer_out_visible():
                     self.mark_dungeon_completed()
                     self._log(f"检测到{context}传出倒计时，判断副本完成")
@@ -205,53 +193,36 @@ class RCFBTask(YmGameTask):
             else:
                 outside_stable_confirmations = 0
 
-            if self.is_dungeon_hangup_active():
-                if not hangup_confirmed or verification_pending or consecutive_failures:
-                    self._log(f"检测到{context}左上角挂机高亮，等待副本完成")
-                hangup_confirmed = True
-                verification_pending = False
-                consecutive_failures = 0
-            else:
-                if verification_pending:
-                    consecutive_failures += 1
-                    self._log(
-                        f"{context}挂机状态复核失败 "
-                        f"{consecutive_failures}/"
-                        f"{self.DUNGEON_HANGUP_MAX_CONSECUTIVE_FAILURES}"
+            if outside_stable_confirmations:
+                remaining_ms = self._remaining_ms(deadline)
+                if remaining_ms > 0:
+                    self.wait(
+                        min(self.DUNGEON_MONITOR_POLL_INTERVAL_MS, remaining_ms)
                     )
-                    if (
-                        consecutive_failures
-                        >= self.DUNGEON_HANGUP_MAX_CONSECUTIVE_FAILURES
-                    ):
-                        debug_path = self.save_debug_screenshot(
-                            hangup_failure_screenshot_prefix
-                        )
-                        raise RuntimeError(
-                            f"{context}连续 "
-                            f"{self.DUNGEON_HANGUP_MAX_CONSECUTIVE_FAILURES} 次"
-                            f"未检测到左上角挂机高亮，已保存截图：{debug_path}"
-                        )
+                continue
 
-                attempt = consecutive_failures + 1
+            if self._is_deadline_expired(tracker_refresh_deadline):
                 clicked = self.click_current_dungeon_task_if_visible(
                     wait_after_click_ms=0,
                 )
                 if clicked:
                     self._log(
-                        f"{context}未检测到挂机高亮，已点击当前副本任务追踪 "
-                        f"{attempt}/{self.DUNGEON_HANGUP_MAX_CONSECUTIVE_FAILURES}"
+                        f"已周期点击{context}任务追踪，"
+                        f"下次最早 "
+                        f"{self.DUNGEON_TRACKER_REFRESH_INTERVAL_MS // 1000} 秒后刷新"
+                    )
+                    tracker_refresh_deadline = self._make_deadline(
+                        self.DUNGEON_TRACKER_REFRESH_INTERVAL_MS
                     )
                 else:
-                    self._log(
-                        f"{context}未检测到挂机高亮，且当前任务追踪不可见；"
-                        f"等待复核 {attempt}/"
-                        f"{self.DUNGEON_HANGUP_MAX_CONSECUTIVE_FAILURES}"
+                    self._debug(
+                        f"{context}周期刷新时任务追踪不可见，"
+                        "下轮监控继续识别"
                     )
-                verification_pending = True
 
             remaining_ms = self._remaining_ms(deadline)
             if remaining_ms > 0:
-                self.wait(min(self.DUNGEON_HANGUP_VERIFY_INTERVAL_MS, remaining_ms))
+                self.wait(min(self.DUNGEON_MONITOR_POLL_INTERVAL_MS, remaining_ms))
 
         debug_path = self.save_debug_screenshot(timeout_screenshot_prefix)
         raise RuntimeError(f"{context}执行超时，已保存截图：{debug_path}")
@@ -659,51 +630,6 @@ class RCFBTask(YmGameTask):
             threshold=self.DUNGEON_TRANSFER_OUT_THRESHOLD,
             roi=self.scale_roi((900, 170, 110, 60)),
         )
-
-    def is_dungeon_hangup_active(self) -> bool:
-        """Recognize the highlighted hangup tab across bright and dim scenes."""
-        screenshot = self.screenshot()
-        match = self._vision.match_template(
-            screenshot,
-            self.TAB_DUNGEON_HANGUP_ACTIVE,
-            threshold=self.DUNGEON_HANGUP_FALLBACK_THRESHOLD,
-            roi=self.scale_roi(self.ROI_DUNGEON_HANGUP_ACTIVE),
-        )
-        self._last_match_score = match.score
-        if not match.found or match.center is None:
-            self._last_match_center = None
-            return False
-
-        if match.score >= self.DUNGEON_HANGUP_ACTIVE_THRESHOLD:
-            self._last_match_center = match.center
-            return True
-
-        x, y, width, height = self.scale_roi(self.ROI_DUNGEON_HANGUP_ACTIVE)
-        crop = screenshot[y : y + height, x : x + width].astype("int16")
-        if crop.size == 0:
-            self._last_match_center = None
-            return False
-
-        blue = crop[:, :, 0]
-        green = crop[:, :, 1]
-        red = crop[:, :, 2]
-        cyan_ratio = float(
-            (
-                (blue > red + 20)
-                & (green > red + 20)
-                & (green > 70)
-            ).mean()
-        )
-        if cyan_ratio >= self.DUNGEON_HANGUP_CYAN_RATIO_THRESHOLD:
-            self._last_match_center = match.center
-            self._debug(
-                "通过青色高亮复核确认副本挂机已开启 "
-                f"(template={match.score:.3f}, cyan={cyan_ratio:.3f})"
-            )
-            return True
-
-        self._last_match_center = None
-        return False
 
     def is_dungeon_exit_visible(self) -> bool:
         """Return whether the top-right dungeon exit control is visible."""
