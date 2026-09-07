@@ -448,10 +448,11 @@ class YmGameTask(GameTask):
             self.leave_team_if_present()
             self.close_all_panels(timeout_ms=self.STARTUP_FINAL_CLOSE_TIMEOUT_MS)
 
+        self._run_health_precheck("任务启动")
+
     def before_step(self, step_name: str, step_meta: dict[str, Any]) -> None:
         """每个任务步骤前执行一梦江湖通用保护逻辑。"""
         super().before_step(step_name, step_meta)
-        self.recover_health_if_needed()
 
     def before_retry(
         self,
@@ -471,6 +472,25 @@ class YmGameTask(GameTask):
         self._log(f"{scope_name}异常即将重试，尝试脱离卡死")
         if not self.try_escape_stuck():
             self._log("脱离卡死未完成，保持原异常并继续正常重试")
+
+    def after_retry_recovery(
+        self,
+        retry_scope: str,
+        failure: Exception | str | None = None,
+    ) -> None:
+        """在任务专属重试恢复完成后检查血量。"""
+        super().after_retry_recovery(retry_scope, failure)
+        scope_name = "步骤" if retry_scope == "step" else "任务"
+        self._run_health_precheck(f"{scope_name}重试")
+
+    def _run_health_precheck(self, context: str) -> None:
+        """执行一次可失败的血量检查，不让健康检查阻断任务。"""
+        try:
+            self.recover_health_if_needed(context=context)
+        except StepStopException:
+            raise
+        except Exception as exc:
+            self._log(f"{context}血量预检异常，跳过并继续执行：{exc}")
 
     def try_escape_stuck(self) -> bool:
         """严格按纯图像脱困流程尝试两次，中间进行一次清理。"""
@@ -749,10 +769,12 @@ class YmGameTask(GameTask):
         full_width = max(1, self.HEALTH_FULL_WIDTH)
         return min(1.0, filled_width / full_width)
 
-    def recover_health_if_needed(self) -> None:
+    def recover_health_if_needed(self, *, context: str = "") -> None:
         """主场景血条较低时打坐，直到血量回满。"""
         if not self.auto_recover_health or self._recovering_health:
             return
+
+        prefix = f"{context}：" if context else ""
 
         self.collapse_chat_if_open()
         if not self.find_image(
@@ -760,16 +782,21 @@ class YmGameTask(GameTask):
             threshold=0.9,
             roi=self.scale_roi(self.ROI_BIAOQING_BUTTON),
         ):
-            self._log("未找到主界面表情按钮，跳过自动打坐")
+            self._log(f"{prefix}未找到主界面表情按钮，跳过血量预检")
             return
 
         try:
             health_ratio = self.detect_health_ratio()
         except Exception as exc:
-            self._log(f"血量检测失败，跳过自动打坐：{exc}")
+            self._log(f"{prefix}血量无法识别，跳过自动打坐：{exc}")
             return
 
-        if health_ratio is not None and health_ratio >= self.HEALTH_RECOVER_THRESHOLD:
+        if health_ratio is None:
+            self._log(f"{prefix}血量无法识别，跳过自动打坐")
+            return
+
+        if health_ratio >= self.HEALTH_RECOVER_THRESHOLD:
+            self._log(f"{prefix}血量正常：{health_ratio:.1%}")
             return
 
         self._recovering_health = True
@@ -777,10 +804,7 @@ class YmGameTask(GameTask):
         meditation_started = False
         health_full = False
         try:
-            if health_ratio is None:
-                self._log("血量无法识别，按低血量处理，开始打坐恢复")
-            else:
-                self._log(f"检测到血量较低：{health_ratio:.1%}，开始打坐恢复")
+            self._log(f"{prefix}检测到血量较低：{health_ratio:.1%}，开始打坐恢复")
             self.click(0)
             emotion_panel_opened = True
             self.wait(800)
@@ -846,8 +870,8 @@ class YmGameTask(GameTask):
             remaining_ms = self._remaining_ms(deadline)
             if remaining_ms > 0:
                 self.wait(min(self.HEALTH_RECOVER_POLL_INTERVAL_MS, remaining_ms))
-        self._log("打坐已满90秒，按回满处理")
-        return True
+        self._log("打坐回血超时，停止回血并继续任务")
+        return False
 
     def _red_health_columns(self, region: np.ndarray) -> np.ndarray:
         channels = region.astype(np.int16)

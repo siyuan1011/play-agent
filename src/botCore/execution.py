@@ -85,8 +85,20 @@ class DslStepExecutor:
             hook_started_at = time.perf_counter()
             try:
                 task.before_retry("step", last_error)
+            except StepStopException:
+                return self._result(start, False, "Stopped by user")
             except Exception as exc:
                 self._emit(f"[{name}] Retry recovery error: {exc}")
+
+            if self._should_stop():
+                return self._result(start, False, "Stopped by user")
+
+            try:
+                task.after_retry_recovery("step", last_error)
+            except StepStopException:
+                return self._result(start, False, "Stopped by user")
+            except Exception as exc:
+                self._emit(f"[{name}] Retry post-recovery hook error: {exc}")
             finally:
                 if deadline is not None:
                     deadline += time.perf_counter() - hook_started_at

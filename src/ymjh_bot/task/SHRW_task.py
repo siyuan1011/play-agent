@@ -1,122 +1,198 @@
-"""生活任务：自动采集并按配置遍历游戏分线。"""
+"""生活任务：通过地图生活筛选定位资源并循环采集。"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import Any, ClassVar, Literal
 
 import cv2
 import numpy as np
 
 from botCore import StepStopException, step
-
 from ymjh_bot.ui.task_queue_state import (
-    SHRW_LINE_SCOPE_LABELS,
     SHRW_MATERIAL_OPTIONS,
     SHRW_TASK_TYPE_LABELS,
     normalize_shrw_settings,
 )
-from ymjh_bot.ym_game_task import YmGameTask
+from ymjh_bot.ym_game_task import TEMPLATES_DIR, YmGameTask
 
 
 @dataclass(frozen=True, slots=True)
 class LifeMaterialSpec:
+    """一个生活材料在地图生活面板中的位置及其目标地图。"""
+
     key: str
     label: str
     task_type: str
-    page_index: int
-    slot_index: int
-
-
-@dataclass(frozen=True, slots=True)
-class LineEntry:
-    scope: str
-    index: int
-    center: tuple[int, int]
-    page_index: int = 0
-    row_index: int = 0
-    selected: bool = False
-
-    @property
-    def key(self) -> str:
-        return f"{self.scope}:{self.index}"
-
-    @property
-    def label(self) -> str:
-        prefix = "互联 " if self.scope == "interconnected" else ""
-        return f"{prefix}{self.index}线"
+    item_index: int
+    map_key: str
+    gather_slot: int
 
 
 class LifeTaskUnavailable(RuntimeError):
-    """遇到已知且应视为任务成功完成的情况时抛出。"""
+    """体力或采集工具不足时用于正常结束生活任务循环。"""
+
+
+TARGET_MAP_LABELS = {
+    "zhongyuan": "中原",
+    "jiangnan": "江南",
+    "saibei": "塞北",
+    "buwenchun": "不闻春",
+}
+
+
+def _target_map_for_material(task_type: str, material_key: str) -> str:
+    """Return the map requested by the product rule for one material."""
+    if task_type == "mining":
+        return "zhongyuan"
+    if task_type == "logging":
+        return "jiangnan"
+    if task_type == "wool":
+        return "buwenchun"
+    if material_key == "wild_ginseng":
+        return "jiangnan"
+    if material_key == "lingzhi":
+        return "saibei"
+    return "zhongyuan"
+
+
+def _map_filter_item_index(
+    task_type: str,
+    material_key: str,
+    option_index: int,
+) -> int:
+    """Return the index shown by the actual map filter for a configured item.
+
+    采毛地图不按四种产物列筛选，只显示两种来源动物：山羊和驯鹿。
+    因此羊毛/羊绒共享山羊资源点，驯鹿毛/驯鹿绒共享驯鹿资源点。
+    """
+    if task_type == "wool":
+        return 0 if material_key in {"wool", "cashmere"} else 1
+    return option_index
+
+
+def _gather_slot_for_material(material_key: str) -> int:
+    """采毛同一动物会展示两种产物，绒类使用第二个交互按钮。"""
+    return 1 if material_key in {"cashmere", "reindeer_down"} else 0
 
 
 def _material_specs() -> dict[str, LifeMaterialSpec]:
     specs: dict[str, LifeMaterialSpec] = {}
     for task_type, options in SHRW_MATERIAL_OPTIONS.items():
-        for option_index, (key, label) in enumerate(options):
-            if option_index < 2:
-                page_index, slot_index = 0, option_index
-            else:
-                page_index, slot_index = option_index - 1, 0
-            specs[key] = LifeMaterialSpec(key, label, task_type, page_index, slot_index)
+        for item_index, (key, label) in enumerate(options):
+            specs[key] = LifeMaterialSpec(
+                key=key,
+                label=label,
+                task_type=task_type,
+                item_index=_map_filter_item_index(task_type, key, item_index),
+                map_key=_target_map_for_material(task_type, key),
+                gather_slot=_gather_slot_for_material(key),
+            )
     return specs
 
 
 class SHRWTask(YmGameTask):
-    """一梦江湖生活任务自动采集。"""
+    """一梦江湖生活资源采集。
+
+    真机地图流程：打开地图 -> 打开左侧筛选 -> 生活 -> 技能下拉 ->
+    材料 -> 地图资源标志 -> 自动寻路 -> 场景采集。
+    """
 
     task_key = "SHRW"
     task_name = "生活任务"
-    task_description = "自动执行挖矿、采草、伐木、采毛并按分线采集"
-    auto_recover_health = False
-
+    task_description = "按配置地图定位资源，并持续执行自动寻路和采集"
     MATERIAL_SPECS = _material_specs()
 
-    # 所有固定坐标均基于实机截图 1280x720。
-    POINT_QUICK_MENU = (1225, 190)
-    POINT_LIFE_SKILL_MENU = (1068, 518)
-    POINT_LIFE_CATEGORIES = {
-        "wool": (250, 288),
-        "herb": (250, 370),
-        "logging": (250, 451),
-        "mining": (250, 532),
-    }
-    POINT_PAGE_PREVIOUS = (476, 386)
-    POINT_PAGE_NEXT = (1130, 386)
-    POINT_MATERIAL_LOCATORS = ((753, 258), (1076, 258))
+    # 坐标均由 1280x720 真机截图校准。
+    POINT_MAP = (1260, 90)
+    POINT_MAP_FILTER = (20, 345)
+    POINT_MAP_LIFE_TAB = (66, 117)
+    POINT_MAP_WORLD = (1235, 675)
     POINT_MAP_CLOSE = (1235, 42)
-    POINT_MAP_WORLD_FALLBACK = (1235, 675)
-    POINT_LINE_DROPDOWN = (1118, 74)
-    POINT_LINE_SCOPE_SWITCH = (1058, 646)
-    POINT_LINE_LIST_SWIPE_START = (975, 560)
-    POINT_LINE_LIST_SWIPE_END = (975, 160)
+    POINT_CLEAR_MAP_FILTERS = (1125, 42)
+    POINT_LIFE_PANEL_COLLAPSE = (500, 342)
+    POINT_LIFE_PANEL_X = 300
+    # 场景交互菱形的中心；采毛的绒类产物位于同一动物的第二行。
+    POINT_GATHER_ACTIONS = ((935, 466), (918, 562))
+    POINT_GATHER_ACTION = POINT_GATHER_ACTIONS[0]
+    POINT_TARGET_MAPS: ClassVar[dict[str, tuple[int, int]]] = {
+        "zhongyuan": (672, 366),
+        "jiangnan": (966, 275),
+        "saibei": (599, 105),
+        "buwenchun": (841, 90),
+    }
 
-    ROI_LIFE_TITLE = (35, 5, 245, 65)
-    ROI_LIFE_SELECTED_CATEGORY = (110, 245, 305, 340)
-    ROI_LIFE_MATERIAL_CARD = (480, 210, 650, 110)
-    ROI_LIFE_STAMINA = (100, 80, 320, 80)
-    ROI_WORLD_RESOURCE_REGIONS = (155, 85, 980, 450)
-    ROI_LOCAL_RESOURCE_NODES = (375, 220, 470, 380)
-    ROI_LINE_PANEL = (850, 20, 250, 670)
-    ROI_LINE_ENTRIES = (860, 30, 230, 570)
+    POINT_LIFE_SCROLL_DOWN_START = (300, 160)
+    POINT_LIFE_SCROLL_DOWN_END = (300, 650)
+    POINT_LIFE_SCROLL_UP_START = (300, 620)
+    POINT_LIFE_SCROLL_UP_END = (300, 160)
+
+    # 将生活列表回到顶部后，各生活技能下拉行的中心。采毛在下一屏。
+    LIFE_SKILL_TOP_Y: ClassVar[dict[str, int]] = {
+        "herb": 401,
+        "logging": 490,
+        "mining": 580,
+    }
+    LIFE_WOOL_Y_AFTER_SCROLL = 514
+    LIFE_HEADER_TO_FIRST_ITEM_Y = 87
+    LIFE_MATERIAL_ROW_HEIGHT = 82
+
+    ROI_MAP_CLOSE = (1185, 0, 95, 90)
+    ROI_LIFE_ITEM_ICONS = (155, 0, 105, 720)
+    ROI_RESOURCE_MAP = (500, 60, 600, 500)
     ROI_GATHER_ACTIONS = (
-        (875, 245, 110, 115),  # circular interaction button
-        (880, 425, 125, 90),   # diamond interaction button
+        ((975, 425, 115, 80), (875, 420, 105, 100)),
+        ((960, 520, 150, 80), (870, 515, 105, 95)),
     )
+    ROI_GATHER_TEMPLATE_SEARCH = (
+        (885, 425, 95, 75),
+        (870, 520, 100, 75),
+    )
+    ROI_GATHER_TEXT = ROI_GATHER_ACTIONS[0][0]
+    ROI_GATHER_DIAMOND = ROI_GATHER_ACTIONS[0][1]
+    ROI_MAIN_HEALTH = (74, 27, 260, 20)
+    # 跨图加载页底部的进度条。仅在未识别到主场景时使用，避免将普通
+    # 场景中的明亮 UI 误判为过图。
+    ROI_SCENE_LOADING_PROGRESS = (250, 592, 800, 24)
 
-    LIFE_PANEL_WAIT_MS = 800
-    MAP_WAIT_MS = 800
+    # 每张地图上的资源图标聚集区。地图差分不可用时才作为保守兜底。
+    MAP_RESOURCE_ANCHORS: ClassVar[
+        dict[str, tuple[tuple[int, int], ...]]
+    ] = {
+        "zhongyuan": ((613, 445), (671, 519), (718, 494), (615, 527)),
+        "jiangnan": ((565, 456), (592, 428), (715, 310), (540, 488)),
+        "saibei": ((586, 129), (623, 171), (747, 222), (546, 345)),
+        "buwenchun": ((901, 423), (984, 402)),
+    }
+
+    MAP_WAIT_MS = 900
+    PANEL_WAIT_MS = 550
     AUTO_PATH_TIMEOUT_MS = 360_000
-    GATHER_TIMEOUT_MS = 20_000
-    GATHER_START_RECHECKS = 3
-    MAX_GATHER_START_CLICKS = 2
-    LINE_SWITCH_TIMEOUT_MS = 20_000
-    EMPTY_ROUND_WAIT_MS = 20_000
-    MAX_LINE_SCROLL_PAGES = 8
-    MAX_NODES_PER_LINE = 40
-    MAX_REGION_ATTEMPTS = 30
-    MAX_PAGE_REWIND_ATTEMPTS = 6
+    GATHER_ACTION_WAIT_MS = 20_000
+    GATHER_COMPLETE_TIMEOUT_MS = 120_000
+    SCENE_TRANSITION_TIMEOUT_MS = 45_000
+    MAX_COLLECTIONS_PER_RUN = 200
+    MAX_EMPTY_MARKER_RESELECTS = 2
+    MAX_LIFE_PANEL_REWIND_SWIPES = 3
+    MAP_RESOURCE_CHANGE_MIN_PIXELS = 500
+    MAP_RESOURCE_CHANGE_RADIUS = 44
+    GATHER_TEMPLATE_THRESHOLD = 0.76
+
+    # 采集工具会随技能和资源等级改变。模板来自 1280x720 真机截图，
+    # 每类技能匹配全部已知等级，避免把高阶工具误判为“未到达”。
+    GATHER_TOOL_TEMPLATES: ClassVar[dict[str, tuple[str, ...]]] = {
+        "mining": tuple(
+            str(TEMPLATES_DIR / f"icon_shrw_mining_tool_{level}.png")
+            for level in range(6)
+        ),
+        "logging": tuple(
+            str(TEMPLATES_DIR / f"icon_shrw_logging_tool_{level}.png")
+            for level in range(6)
+        ),
+        "herb": (str(TEMPLATES_DIR / "icon_shrw_herb_action.png"),),
+        "wool": (str(TEMPLATES_DIR / "icon_shrw_wool_action.png"),),
+    }
 
     def __init__(self, shrw_settings: dict[str, Any] | None = None):
         super().__init__()
@@ -124,266 +200,413 @@ class SHRWTask(YmGameTask):
         self.task_type = str(self.shrw_settings["task_type"])
         self.material_key = str(self.shrw_settings["material"])
         self.material = self.MATERIAL_SPECS[self.material_key]
+        # 兼容既有持久化字段；新版语义是是否持续执行采集循环。
         self.loop_lines = bool(self.shrw_settings["loop_lines"])
-        self.line_scope = str(self.shrw_settings["line_scope"])
         self._successful_gathers = 0
-        self._round_index = 0
         self._known_unavailable_reason: str | None = None
+        self._resource_filter_selected = False
+        self._map_filter_baseline: np.ndarray | None = None
 
     @step(retry=0, timeout_ms=None)
     def collect_life_material(self) -> None:
-        """执行一轮线路循环，并可选择无限重复。"""
-        while True:
-            self._round_index += 1
-            round_gathers = self.run_collection_round()
-            self._log(
-                f"第 {self._round_index} 轮完成：采集 {round_gathers} 个资源点，"
-                f"累计 {self._successful_gathers} 个"
-            )
-            if not self.loop_lines:
-                return
-            if round_gathers == 0:
-                self._log("完整一轮未采集到资源，等待 20 秒后重新枚举线路")
-                self.wait(self.EMPTY_ROUND_WAIT_MS)
-
-    def run_collection_round(self) -> int:
-        """枚举已配置范围，并逐一访问每条线路。"""
+        """选择配置材料后，按“标志→寻路→采集→重开地图”循环。"""
         try:
-            entries = self.enumerate_lines(self.line_scope)
-            if not entries:
-                raise RuntimeError(
-                    f"{SHRW_LINE_SCOPE_LABELS[self.line_scope]}未枚举到任何线路"
-                )
+            self.select_configured_resource_on_map()
+            visited_markers: set[tuple[int, int]] = set()
+            empty_reselects = 0
 
-            round_gathers = 0
-            visited: set[str] = set()
-            for entry in entries:
-                if entry.key in visited:
+            for collection_index in range(1, self.MAX_COLLECTIONS_PER_RUN + 1):
+                marker = self.choose_resource_marker(visited_markers)
+                if marker is None:
+                    if empty_reselects >= self.MAX_EMPTY_MARKER_RESELECTS:
+                        raise RuntimeError(
+                            f"{TARGET_MAP_LABELS[self.material.map_key]}地图未识别到可用"
+                            f"{self.material.label}资源标志"
+                        )
+                    empty_reselects += 1
+                    self._log("当前地图资源标志已耗尽，重新选择生活材料刷新标志")
+                    self.select_configured_resource_on_map()
+                    visited_markers.clear()
                     continue
-                visited.add(entry.key)
-                self.switch_to_line(entry)
-                line_gathers = self.collect_current_line()
-                round_gathers += line_gathers
-                self._successful_gathers += line_gathers
-            return round_gathers
-        except LifeTaskUnavailable as exc:
-            self._known_unavailable_reason = str(exc)
-            self._log(f"生活任务跳过并成功结束：{exc}")
-            self.jump_to_end()
-            return 0
-        except StepStopException:
-            raise
-        except Exception as exc:
-            debug_path = self.save_debug_screenshot("shrw_flow_failed")
-            raise RuntimeError(f"生活任务流程失败：{exc}，已保存截图：{debug_path}") from exc
 
-    def collect_current_line(self) -> int:
-        """持续选择未访问的地图节点，直到当前线路没有候选项。"""
-        visited_nodes: set[tuple[int, int, int]] = set()
-        gathers = 0
-        for _attempt in range(self.MAX_NODES_PER_LINE):
-            route = self.open_material_map_and_choose_node(visited_nodes)
-            if route is None:
-                return gathers
-            visited_nodes.add(route)
+                empty_reselects = 0
+                visited_markers.add(self._marker_key(marker))
+                self.click_point(*marker, offset=0)
+                self.wait(500)
+                self.close_map_after_marker_click()
 
-            self.close_map_if_visible()
-            transition = self.wait_resource_route_started(timeout_ms=15_000)
-            if transition == "auto_path":
+                if not self.wait_resource_auto_path_started(timeout_ms=15_000):
+                    raise RuntimeError("点击生活资源标志后未检测到自动寻路开始")
                 if not self.wait_auto_pathfinding(
                     timeout_ms=self.AUTO_PATH_TIMEOUT_MS,
                     missing_threshold=3,
                 ):
                     raise RuntimeError("前往生活资源点的自动寻路超时")
-            elif transition != "arrived":
-                raise RuntimeError("点击生活资源点后未开始自动寻路，也未到达资源旁")
-            self.wake_from_power_saving_if_needed()
-            if not self.gather_arrived_resource():
-                self._log("到达后未发现可采集交互，跳过当前地图点")
-                continue
-            gathers += 1
-        raise RuntimeError(f"单条线路连续采集超过 {self.MAX_NODES_PER_LINE} 个资源点")
 
-    def open_material_map_and_choose_node(
-        self,
-        visited_nodes: set[tuple[int, int, int, int]],
-    ) -> tuple[int, int, int] | None:
-        """打开筛选后的资源地图，并选择一个未访问节点。"""
-        self.open_life_skill_material()
-        self.click_point(*self.POINT_MATERIAL_LOCATORS[self.material.slot_index], offset=0)
-        self.wait(self.MAP_WAIT_MS)
-
-        if not self.is_filtered_map_visible(self.screenshot()):
-            raise LifeTaskUnavailable(
-                f"{self.material.label}未解锁、缺少工具或当前不可采集"
-            )
-
-        screenshot = self.screenshot()
-        if self.is_local_resource_map(screenshot):
-            node = self.choose_local_resource_node(visited_nodes)
-            if node is not None:
-                return node
-            self.close_map_if_visible()
-            return None
-
-        regions = self.find_world_resource_regions(screenshot)
-        if not regions:
-            return None
-
-        for region_index, center in enumerate(regions[: self.MAX_REGION_ATTEMPTS]):
-            self.click_point(*center, offset=0)
-            self.wait(self.MAP_WAIT_MS)
-            node = self.choose_local_resource_node(visited_nodes, region_index=region_index)
-            if node is not None:
-                return node
-            if not self.return_to_world_resource_map():
-                break
-
-        self.close_map_if_visible()
-        return None
-
-    def open_life_skill_material(self) -> None:
-        """打开生活技能，选择已配置的分类和材料页。"""
-        self.close_all_panels(timeout_ms=3000)
-        self.click_point(*self.POINT_QUICK_MENU, offset=0)
-        self.wait(500)
-        self.click_point(*self.POINT_LIFE_SKILL_MENU, offset=0)
-        self.wait(self.LIFE_PANEL_WAIT_MS)
-        screenshot = self.screenshot()
-        if not self.is_life_panel_visible(screenshot):
-            raise RuntimeError("未进入生活技能面板")
-
-        self.click_point(*self.POINT_LIFE_CATEGORIES[self.task_type], offset=0)
-        self.wait(500)
-        self.rewind_material_pages()
-        for _ in range(self.material.page_index):
-            self.click_point(*self.POINT_PAGE_NEXT, offset=0)
-            self.wait(350)
-
-        screenshot = self.screenshot()
-        if not self.is_material_page_ready(screenshot):
-            raise LifeTaskUnavailable(
-                f"{SHRW_TASK_TYPE_LABELS[self.task_type]}-{self.material.label}未解锁或不可用"
-            )
-
-    def rewind_material_pages(self) -> None:
-        """将材料轮播区返回至第一页。"""
-        for _ in range(self.MAX_PAGE_REWIND_ATTEMPTS):
-            before = self.screenshot()
-            self.click_point(*self.POINT_PAGE_PREVIOUS, offset=0)
-            self.wait(250)
-            after = self.screenshot()
-            if self.images_similar(before, after, self.ROI_LIFE_MATERIAL_CARD, threshold=0.985):
-                return
-
-    def choose_local_resource_node(
-        self,
-        visited_nodes: set[tuple[int, int, int]],
-        *,
-        region_index: int = 0,
-    ) -> tuple[int, int, int] | None:
-        screenshot = self.screenshot()
-        nodes = self.find_local_resource_nodes(screenshot)
-        for center in nodes:
-            identity = (region_index, center[0] // 12, center[1] // 12)
-            if identity in visited_nodes:
-                continue
-            self.click_point(*center, offset=0)
-            self.wait(500)
-            return identity
-        return None
-
-    def return_to_world_resource_map(self) -> bool:
-        """从区域地图返回筛选后的世界地图。"""
-        self.click_point(*self.POINT_MAP_WORLD_FALLBACK, offset=0)
-        self.wait(self.MAP_WAIT_MS)
-        return bool(self.find_world_resource_regions(self.screenshot()))
-
-    def is_local_resource_map(self, image: np.ndarray) -> bool:
-        return self._vision.match_template(
-            image,
-            self.MAP_BTN_WORLD,
-            threshold=0.8,
-        ).found
-
-    def gather_arrived_resource(self) -> bool:
-        """点击场景采集操作，并等待操作完成。"""
-        deadline = self._make_deadline(10_000)
-        center: tuple[int, int] | None = None
-        while not self._is_deadline_expired(deadline):
-            screenshot = self.screenshot()
-            centers = self.find_scene_gather_actions(screenshot)
-            if centers:
-                center = centers[0]
-                break
-            self.wait(500)
-        if center is None:
-            return False
-
-        before = self.screenshot()
-        for click_attempt in range(1, self.MAX_GATHER_START_CLICKS + 1):
-            self.click_point(*center, offset=0)
-            consecutive_missing = 0
-            for _ in range(self.GATHER_START_RECHECKS):
-                self.wait(700)
-                after = self.screenshot()
-                actions = self.find_scene_gather_actions(after)
-                if not actions:
-                    consecutive_missing += 1
-                    if consecutive_missing >= 2:
-                        return True
+                self.wake_from_power_saving_if_needed()
+                if not self.gather_arrived_resource():
+                    self._log(
+                        f"到达后未出现{self.material.label}对应的"
+                        f"{SHRW_TASK_TYPE_LABELS[self.task_type]}图标，"
+                        "保留当前筛选并尝试下一资源标志"
+                    )
+                    self.open_existing_resource_map()
                     continue
-                consecutive_missing = 0
-                center = actions[0]
-                if self.is_gathering_in_progress(after):
-                    return self.wait_gather_action_complete()
 
-            if click_attempt < self.MAX_GATHER_START_CLICKS:
-                self._log("采集按钮仍在，角色可能刚下马，重新识别后再次点击")
+                self._successful_gathers += 1
+                self._log(
+                    f"第 {self._successful_gathers} 次采集完成：{self.material.label}，"
+                    f"累计 {self._successful_gathers} 次"
+                )
+                if not self.loop_lines:
+                    return
 
-        if self.wait_gather_action_complete():
-            return True
+                # 地图标志可能代表一整片资源区；一次采集后仍可再次点击同一
+                # 标志前往下一个刷新点，不能把上一轮坐标永久排除。
+                visited_markers.clear()
+                self.open_existing_resource_map()
 
-        if all(
-            self.images_similar(before, after, roi, threshold=0.995)
-            for roi in self.ROI_GATHER_ACTIONS
+            raise RuntimeError(f"连续采集超过 {self.MAX_COLLECTIONS_PER_RUN} 次，已安全停止")
+        except StepStopException:
+            raise
+        except LifeTaskUnavailable as exc:
+            self._known_unavailable_reason = str(exc)
+            self._log(f"生活任务停止采集：{exc}")
+            return
+        except Exception as exc:
+            debug_path = self.save_debug_screenshot("shrw_flow_failed")
+            raise RuntimeError(f"生活任务流程失败：{exc}，已保存截图：{debug_path}") from exc
+
+    def before_retry(
+        self,
+        retry_scope: str,
+        failure: Exception | str | None = None,
+    ) -> None:
+        """地图选择错误不触发通用“脱离卡死”，避免无关传送。"""
+        self._log(f"生活任务{retry_scope}重试前仅关闭地图/弹窗：{failure}")
+        self.close_all_panels(timeout_ms=3000)
+
+    def select_configured_resource_on_map(self) -> None:
+        """在地图生活面板中选择配置的技能与材料，令游戏打开目标地图。"""
+        self.wake_from_power_saving_if_needed()
+        self.close_all_panels(timeout_ms=3000)
+        self.open_map()
+        self.select_target_map()
+        self.collapse_life_filter_panel_if_visible()
+        self.clear_existing_map_filters()
+        self.open_life_filter_panel()
+        self.collapse_expanded_life_skill_if_needed()
+        header_y = self.open_configured_life_skill()
+        self.click_configured_material(header_y)
+        self.collapse_life_filter_panel()
+        self.wait(self.MAP_WAIT_MS)
+        self._resource_filter_selected = True
+        self._log(
+            f"已选择 {SHRW_TASK_TYPE_LABELS[self.task_type]}-{self.material.label}，"
+            f"目标地图：{TARGET_MAP_LABELS[self.material.map_key]}"
+        )
+
+    def clear_existing_map_filters(self) -> None:
+        """清理残留的多项筛选，确保资源标志只属于当前配置材料。"""
+        self.click_point(*self.POINT_CLEAR_MAP_FILTERS, offset=0)
+        self.wait(self.PANEL_WAIT_MS)
+        # 后续仅选择“清空后新增”的图标，固定城镇/车夫/传送点不会被误点。
+        self._map_filter_baseline = self.screenshot()
+
+    def open_existing_resource_map(self) -> None:
+        """采集结束后重开保留筛选条件的地图，进入下一轮资源标志选择。"""
+        if not self._resource_filter_selected:
+            self.select_configured_resource_on_map()
+            return
+        self.open_map()
+
+    def select_target_map(self) -> None:
+        """根据材料规则经世界地图进入中原、江南、塞北或不闻春。"""
+        if not self.is_world_map_visible_quiet():
+            self.click_point(*self.POINT_MAP_WORLD, offset=0)
+            self.wait(self.MAP_WAIT_MS)
+        if not self.is_world_map_visible_quiet():
+            raise RuntimeError("未能从区域地图切换到世界地图")
+
+        target = self.POINT_TARGET_MAPS[self.material.map_key]
+        self.click_point(*target, offset=0)
+        self.wait(self.MAP_WAIT_MS)
+        if self.is_world_map_visible_quiet():
+            raise RuntimeError(
+                f"点击{TARGET_MAP_LABELS[self.material.map_key]}后仍停留在世界地图"
+            )
+        self._log(f"已进入{TARGET_MAP_LABELS[self.material.map_key]}地图")
+
+    def open_map(self) -> None:
+        """打开右上角地图，并以右上角关闭圆钮确认地图已经出现。"""
+        if self.is_map_visible(self.screenshot()):
+            return
+        self.click_point(*self.POINT_MAP, offset=0)
+        self.wait(self.MAP_WAIT_MS)
+        if not self.is_map_visible(self.screenshot()):
+            raise RuntimeError("点击右上角地图后未打开地图")
+
+    def open_life_filter_panel(self) -> None:
+        """点击地图左侧放大镜，再选择生活 Tab。"""
+        if not self.is_life_filter_panel_visible(self.screenshot()):
+            self.click_point(*self.POINT_MAP_FILTER, offset=0)
+            self.wait(self.PANEL_WAIT_MS)
+        self.click_point(*self.POINT_MAP_LIFE_TAB, offset=0)
+        self.wait(self.PANEL_WAIT_MS)
+        if not self.is_life_filter_panel_visible(self.screenshot()):
+            raise RuntimeError("地图左侧生活筛选面板未打开")
+
+    def collapse_life_filter_panel_if_visible(self) -> None:
+        """建立无侧栏地图基线；首次运行时兼容游戏保留的展开状态。"""
+        if self.is_life_filter_panel_visible(self.screenshot()):
+            self.collapse_life_filter_panel()
+
+    def collapse_life_filter_panel(self) -> None:
+        """收起生活筛选侧栏，令资源标志在完整地图上可被搜索和点击。"""
+        if not self.is_life_filter_panel_visible(self.screenshot()):
+            return
+        self.click_point(*self.POINT_LIFE_PANEL_COLLAPSE, offset=0)
+        self.wait(self.PANEL_WAIT_MS)
+        if self.is_life_filter_panel_visible(self.screenshot()):
+            raise RuntimeError("选择生活采集物后地图侧栏未能收起")
+
+    def collapse_expanded_life_skill_if_needed(self) -> None:
+        """回到列表顶部并收起残留的技能下拉，建立可重复的选择基线。"""
+        self.rewind_life_panel()
+        image = self.screenshot()
+        centers = self.find_life_material_icon_centers(image)
+        if not centers:
+            # 采毛在列表底部；其展开项须向上滚动一屏后才可见。
+            self.scroll_life_panel_up(510)
+            image = self.screenshot()
+            centers = self.find_life_material_icon_centers(image)
+        if not centers:
+            return
+
+        first_center = min(centers, key=lambda point: point[1])
+        header_y = first_center[1] - self.LIFE_HEADER_TO_FIRST_ITEM_Y
+        if header_y < 28:
+            self.rewind_life_panel()
+            image = self.screenshot()
+            centers = self.find_life_material_icon_centers(image)
+            if not centers:
+                return
+            first_center = min(centers, key=lambda point: point[1])
+            header_y = first_center[1] - self.LIFE_HEADER_TO_FIRST_ITEM_Y
+        if 28 <= header_y <= 690:
+            self.click_point(self.POINT_LIFE_PANEL_X, header_y, offset=0)
+            self.wait(self.PANEL_WAIT_MS)
+
+    def rewind_life_panel(self) -> None:
+        """将左侧生活技能列表滚动到顶部。"""
+        for _ in range(self.MAX_LIFE_PANEL_REWIND_SWIPES):
+            self.swipe(
+                *self.POINT_LIFE_SCROLL_DOWN_START,
+                *self.POINT_LIFE_SCROLL_DOWN_END,
+                duration_ms=350,
+            )
+            self.wait(250)
+
+    def scroll_life_panel_up(self, distance: int) -> None:
+        """向下浏览生活列表。
+
+        真机列表的惯性滚动约为手指位移的两倍；调用方传入内容需要移动的
+        近似距离，此处换算为实际滑动手势，避免高阶材料越过目标行。
+        """
+        finger_distance = max(80, round(distance / 2))
+        end_y = max(140, self.POINT_LIFE_SCROLL_UP_START[1] - finger_distance)
+        self.swipe(
+            *self.POINT_LIFE_SCROLL_UP_START,
+            self.POINT_LIFE_SCROLL_UP_END[0],
+            end_y,
+            duration_ms=350,
+        )
+        self.wait(700)
+
+    def open_configured_life_skill(self) -> int:
+        """打开采草、伐木、挖矿或采毛的下拉，并返回其当前标题行中心。"""
+        self.rewind_life_panel()
+        if self.task_type == "wool":
+            self.scroll_life_panel_up(510)
+            header_y = self.LIFE_WOOL_Y_AFTER_SCROLL
+        else:
+            header_y = self.LIFE_SKILL_TOP_Y[self.task_type]
+
+        self.click_point(self.POINT_LIFE_PANEL_X, header_y, offset=0)
+        self.wait(self.PANEL_WAIT_MS)
+        return header_y
+
+    def click_configured_material(self, header_y: int) -> None:
+        """将目标材料行滚入可见区域，通过图标圆心点击而非文本 OCR。"""
+        if self.task_type != "wool":
+            # 下拉后重置到顶部，使标题和各材料行位置稳定。
+            self.rewind_life_panel()
+            header_y = self.LIFE_SKILL_TOP_Y[self.task_type]
+
+        expected_y = (
+            header_y
+            + self.LIFE_HEADER_TO_FIRST_ITEM_Y
+            + self.material.item_index * self.LIFE_MATERIAL_ROW_HEIGHT
+        )
+        if expected_y > 680 and self.task_type != "wool":
+            # 采毛只有“山羊/驯鹿”两种地图来源，两个条目本就位于屏内；
+            # 其他技能按目标行仅做最小滚动，保留首行可用于索引定位。
+            shift = min(420, expected_y - 600)
+            self.scroll_life_panel_up(shift)
+            expected_y -= shift
+
+        image = self.screenshot()
+        centers = self.find_life_material_icon_centers(image)
+        if not centers:
+            raise RuntimeError(f"未找到{self.material.label}的材料图标")
+        material_count = len(SHRW_MATERIAL_OPTIONS[self.task_type])
+        if len(centers) >= material_count:
+            # 下拉已完整滚入屏幕时，图标的纵向顺序就是材料配置顺序。
+            center = centers[self.material.item_index]
+        elif (
+            centers
+            and centers[0][1] >= 220
+            and self.material.item_index < len(centers)
         ):
-            raise LifeTaskUnavailable("采集未启动，可能体力耗尽或工具不可用")
-        raise RuntimeError("生活资源采集动作超时")
+            # 目标行尚未触底时，首个可见图标仍是材料列表第 0 项。
+            # 这覆盖伐木/采草中“前五项可见、第六项在屏外”的布局，避免
+            # 使用距离猜测将松树误点成上一行的枫树。
+            center = centers[self.material.item_index]
+        else:
+            center = min(centers, key=lambda point: abs(point[1] - expected_y))
+        if abs(center[1] - expected_y) > 110 and len(centers) < material_count:
+            raise RuntimeError(
+                f"{self.material.label}材料图标未处于预期位置，"
+                f"期望 y={expected_y}，识别 y={center[1]}"
+            )
+        self.click_point(*center, offset=0)
+        self.wait(self.MAP_WAIT_MS)
 
-    def wait_gather_action_complete(self) -> bool:
-        """等待进行中的采集交互连续两次消失。"""
-        deadline = self._make_deadline(self.GATHER_TIMEOUT_MS)
-        consecutive_missing = 0
-        while not self._is_deadline_expired(deadline):
-            self.wait(700)
-            after = self.screenshot()
-            if not self.find_scene_gather_actions(after):
-                consecutive_missing += 1
-                if consecutive_missing >= 2:
-                    return True
-            else:
-                consecutive_missing = 0
-        return False
+    def choose_resource_marker(
+        self,
+        visited_markers: set[tuple[int, int]],
+    ) -> tuple[int, int] | None:
+        """从已筛选目标地图中选择一个未访问的资源标志。"""
+        image = self.screenshot()
+        if not self.is_map_visible(image):
+            raise RuntimeError("选择资源标志时地图不可见")
+        candidates = self.find_resource_map_marker_centers(image)
+        anchors = self.MAP_RESOURCE_ANCHORS[self.material.map_key]
 
-    @classmethod
-    def is_gathering_in_progress(cls, image: np.ndarray) -> bool:
-        """识别采集开始后显示的明亮菱形边框。"""
-        x, y, _width, _height = cls.ROI_GATHER_ACTIONS[1]
-        roi = image[y : y + 90, x : x + 85]
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        bright_neutral = (gray >= 180) & (hsv[:, :, 1] <= 80)
-        return int(np.count_nonzero(bright_neutral)) >= 900
+        changed_marker = self.choose_changed_resource_marker(
+            image,
+            candidates,
+            anchors,
+            visited_markers,
+        )
+        if changed_marker is not None:
+            return changed_marker
+        if self._map_filter_baseline is not None:
+            # 已有清空前基线却找不到新增图标时，不能退回固定地点圆形图标。
+            return None
 
-    def wait_resource_route_started(self, *, timeout_ms: int) -> str | None:
-        """等待长路径界面出现，或直接通过短路径抵达。"""
+        ranked: list[tuple[float, tuple[int, int]]] = []
+        for center in candidates:
+            key = self._marker_key(center)
+            if key in visited_markers:
+                continue
+            distance = min(
+                float(np.hypot(center[0] - anchor[0], center[1] - anchor[1]))
+                for anchor in anchors
+            )
+            ranked.append((distance, center))
+        if ranked:
+            distance, center = min(ranked, key=lambda item: item[0])
+            if distance <= 100:
+                self._log(f"识别到{self.material.label}资源标志：{center}")
+                return center
+
+        # 采毛图标为深色剪刀，圆形检测不稳定；已知不闻春资源区使用锚点兜底。
+        if self.material.map_key == "buwenchun":
+            for anchor in anchors:
+                if self._marker_key(anchor) not in visited_markers:
+                    self._log(f"使用不闻春采毛资源标志锚点：{anchor}")
+                    return anchor
+        return None
+
+    def choose_changed_resource_marker(
+        self,
+        image: np.ndarray,
+        candidates: list[tuple[int, int]],
+        anchors: tuple[tuple[int, int], ...],
+        visited_markers: set[tuple[int, int]],
+    ) -> tuple[int, int] | None:
+        """从应用唯一筛选后新增的地图图标中选择未访问资源点。"""
+        baseline = self._map_filter_baseline
+        if baseline is None or baseline.shape != image.shape:
+            return None
+
+        # 采毛剪刀图标未必能被圆检测到，已知资源区锚点同样纳入差分候选。
+        candidates = self.merge_nearby(
+            [*candidates, *anchors],
+            radius=24,
+        )
+        ranked: list[tuple[int, float, tuple[int, int]]] = []
+        for center in candidates:
+            key = self._marker_key(center)
+            if key in visited_markers:
+                continue
+            changed_pixels = self.map_marker_change_pixels(baseline, image, center)
+            if changed_pixels < self.MAP_RESOURCE_CHANGE_MIN_PIXELS:
+                continue
+            distance = min(
+                float(np.hypot(center[0] - anchor[0], center[1] - anchor[1]))
+                for anchor in anchors
+            )
+            ranked.append((changed_pixels, distance, center))
+        if not ranked:
+            return None
+
+        changed_pixels, _distance, center = max(
+            ranked,
+            key=lambda item: (item[0], -item[1]),
+        )
+        self._log(
+            f"识别到{self.material.label}新增资源标志：{center}，"
+            f"地图差分={changed_pixels} 像素"
+        )
+        return center
+
+    def map_marker_change_pixels(
+        self,
+        baseline: np.ndarray,
+        image: np.ndarray,
+        center: tuple[int, int],
+    ) -> int:
+        """计算候选标志附近相较“全部清除”地图的显著变化像素数。"""
+        radius = self.MAP_RESOURCE_CHANGE_RADIUS
+        x1 = max(0, center[0] - radius)
+        y1 = max(0, center[1] - radius)
+        x2 = min(image.shape[1], center[0] + radius)
+        y2 = min(image.shape[0], center[1] + radius)
+        before = baseline[y1:y2, x1:x2]
+        after = image[y1:y2, x1:x2]
+        if before.size == 0 or after.size == 0:
+            return 0
+        diff = cv2.absdiff(before, after)
+        gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+        return int(np.count_nonzero(gray >= 35))
+
+    def close_map_after_marker_click(self) -> None:
+        """资源标志触发寻路后关闭小地图。"""
+        if self.is_map_visible(self.screenshot()):
+            self.click_point(*self.POINT_MAP_CLOSE, offset=0)
+            self.wait(500)
+
+    def wait_resource_auto_path_started(self, *, timeout_ms: int) -> bool:
+        """确认新资源标志确实触发自动寻路，再允许检测采集图标。
+
+        角色身边可能仍显示上一个资源的交互按钮；若先监听采集图标会把旧
+        按钮当成新标志的终点。这里刻意不提供“直接抵达”捷径。
+        """
         deadline = self._make_deadline(timeout_ms)
         while not self._is_deadline_expired(deadline):
             screenshot = self.screenshot()
-            if self.find_scene_gather_actions(screenshot):
-                self._log("短距离寻路已直接到达生活资源旁")
-                return "arrived"
             auto_path = self._vision.match_template(
                 screenshot,
                 self.TEXT_AUTO_PATH,
@@ -391,300 +614,271 @@ class SHRWTask(YmGameTask):
             )
             if auto_path.found:
                 self._log("检测到生活资源自动寻路开始")
-                return "auto_path"
+                return True
             self.wait(500)
-        return None
+        return False
 
-    def enumerate_lines(self, scope: str) -> list[LineEntry]:
-        """枚举一个服务器范围内可见及可滚动的线路。"""
-        self.close_all_panels(timeout_ms=3000)
-        self.click_point(*self.POINT_LINE_DROPDOWN, offset=0)
-        self.wait(500)
-        screenshot = self.screenshot()
-        if not self.is_line_panel_visible(screenshot):
-            raise RuntimeError("未打开线路面板")
-
-        current_scope = self.detect_line_panel_scope(screenshot)
-        if current_scope != scope:
-            self.click_point(*self.POINT_LINE_SCOPE_SWITCH, offset=0)
-            self.wait(500)
-            screenshot = self.screenshot()
-            if self.detect_line_panel_scope(screenshot) != scope:
-                raise RuntimeError(f"无法切换到{SHRW_LINE_SCOPE_LABELS[scope]}")
-        self.rewind_line_list()
-
-        entries: list[LineEntry] = []
-        fingerprints: set[bytes] = set()
-        stagnant_pages = 0
-        previous_signature: tuple[tuple[int, int], ...] | None = None
-        for page_index in range(self.MAX_LINE_SCROLL_PAGES):
-            screenshot = self.screenshot()
-            centers = self.find_line_entry_centers(screenshot)
-            signature = tuple((x, y) for x, y in centers)
-            for row_index, center in enumerate(centers):
-                fingerprint = self.line_row_fingerprint(screenshot, center)
-                if fingerprint in fingerprints:
-                    continue
-                fingerprints.add(fingerprint)
-                inferred_index = len(entries) + 1
-                entries.append(
-                    LineEntry(
-                        scope=scope,
-                        index=inferred_index,
-                        center=center,
-                        page_index=page_index,
-                        row_index=row_index,
-                        selected=self.is_line_row_selected(screenshot, center),
-                    )
-                )
-
-            if signature == previous_signature:
-                stagnant_pages += 1
-            else:
-                stagnant_pages = 0
-            if stagnant_pages >= 1 or not centers:
+    def gather_arrived_resource(self) -> bool:
+        """自动寻路结束后等待对应工具图标，点击并等待其消失。"""
+        deadline = self._make_deadline(self.GATHER_ACTION_WAIT_MS)
+        center: tuple[int, int] | None = None
+        while not self._is_deadline_expired(deadline):
+            center = self.find_configured_gather_action(self.screenshot())
+            if center is not None:
                 break
-            previous_signature = signature
-            self.swipe(
-                *self.POINT_LINE_LIST_SWIPE_START,
-                *self.POINT_LINE_LIST_SWIPE_END,
-                duration_ms=400,
-            )
             self.wait(500)
+        else:
+            return False
 
-        self.click_point(820, 400, offset=0)
-        return entries
-
-    def switch_to_line(self, entry: LineEntry) -> None:
-        """切换到一条已枚举线路，并验证场景切换已稳定。"""
-        self.close_all_panels(timeout_ms=3000)
-        self.click_point(*self.POINT_LINE_DROPDOWN, offset=0)
-        self.wait(400)
-        screenshot = self.screenshot()
-        if self.detect_line_panel_scope(screenshot) != entry.scope:
-            self.click_point(*self.POINT_LINE_SCOPE_SWITCH, offset=0)
-            self.wait(400)
-        self.rewind_line_list()
-
-        # 从顶部重新打开，再滚动到包含该条目的页面。
-        entries = self.find_line_entry_centers(self.screenshot())
-        page_index = entry.page_index
-        row_index = entry.row_index
-        for _ in range(page_index):
-            self.swipe(
-                *self.POINT_LINE_LIST_SWIPE_START,
-                *self.POINT_LINE_LIST_SWIPE_END,
-                duration_ms=400,
+        self.click_point(*center, offset=0)
+        self.wait(900)
+        after_click = self.screenshot()
+        if not self.is_main_scene(after_click):
+            if self.is_scene_transition_loading(after_click):
+                self._log("点击采集后检测到跨图加载，等待主场景恢复")
+                if not self.wait_for_main_scene_after_loading():
+                    raise RuntimeError("跨图加载后主场景未在时限内恢复")
+                self._log("跨图完成，当前资源点状态未知，重新定位资源")
+                return False
+            self.close_all_panels(timeout_ms=3000)
+            raise LifeTaskUnavailable(
+                "点击采集后打开了工具获取面板，可能缺少或未装备"
+                "当前等级的生活工具；已关闭面板且不会自动购买"
             )
-            self.wait(350)
-        centers = self.find_line_entry_centers(self.screenshot())
-        if row_index >= len(centers):
-            raise RuntimeError(f"无法定位线路 {entry.label}")
-        self.click_point(*centers[row_index], offset=0)
 
-        deadline = self._make_deadline(self.LINE_SWITCH_TIMEOUT_MS)
+        completion = self.wait_gather_action_complete()
+        if completion == "completed":
+            return True
+        if completion == "transitioned":
+            return False
+        raise LifeTaskUnavailable("采集标志长时间未消失，可能体力不足或工具已耗尽")
+
+    def wait_gather_action_complete(
+        self,
+    ) -> Literal["completed", "transitioned", "timed_out"]:
+        """连续两帧未发现采集按钮时视为该次采集完成。"""
+        deadline = self._make_deadline(self.GATHER_COMPLETE_TIMEOUT_MS)
+        consecutive_missing = 0
         while not self._is_deadline_expired(deadline):
             self.wait(700)
-            self.wake_from_power_saving_if_needed()
-            if self.is_game_main_ready() and not self.is_line_panel_visible(self.screenshot()):
-                if self.verify_line_selected(entry):
-                    self._log(f"已切换线路：{entry.label}")
-                    return
-                raise RuntimeError(f"切换线路 {entry.label} 后选中状态校验失败")
-        raise RuntimeError(f"切换线路 {entry.label} 后主界面未恢复")
+            screenshot = self.screenshot()
+            if not self.is_main_scene(screenshot):
+                if self.is_scene_transition_loading(screenshot):
+                    self._log("采集过程中检测到跨图加载，等待主场景恢复")
+                    if not self.wait_for_main_scene_after_loading():
+                        raise RuntimeError("跨图加载后主场景未在时限内恢复")
+                    self._log("跨图完成，当前资源点状态未知，重新定位资源")
+                    return "transitioned"
+                self.close_all_panels(timeout_ms=3000)
+                raise LifeTaskUnavailable(
+                    "采集过程中打开了工具获取面板，可能缺少或未装备"
+                    "当前等级的生活工具；已关闭面板且不会自动购买"
+                )
+            if self.find_configured_gather_action(screenshot) is None:
+                consecutive_missing += 1
+                if consecutive_missing >= 2:
+                    return "completed"
+            else:
+                consecutive_missing = 0
+        return "timed_out"
 
-    def verify_line_selected(self, entry: LineEntry) -> bool:
-        """重新打开线路面板，并验证目标行已高亮。"""
-        self.click_point(*self.POINT_LINE_DROPDOWN, offset=0)
-        self.wait(400)
-        screenshot = self.screenshot()
-        if not self.is_line_panel_visible(screenshot):
+    def configured_gather_templates(self) -> tuple[str, ...]:
+        """返回当前技能可接受的全部等级工具模板，并忽略缺失文件。"""
+        return tuple(
+            template
+            for template in self.GATHER_TOOL_TEMPLATES[self.task_type]
+            if Path(template).is_file()
+        )
+
+    def find_configured_gather_action(
+        self,
+        image: np.ndarray,
+    ) -> tuple[int, int] | None:
+        """仅在当前产物对应的交互行中识别该技能的采集工具。"""
+        slot = self.material.gather_slot
+        point = self.POINT_GATHER_ACTIONS[slot]
+        if self.is_map_visible(image) or not self.is_main_scene(image):
+            return None
+
+        templates = self.configured_gather_templates()
+        if templates:
+            label_visible = self.is_gather_action_label_visible(image, slot)
+            match = self._vision.match_template(
+                image,
+                list(templates),
+                threshold=self.GATHER_TEMPLATE_THRESHOLD,
+                roi=self.ROI_GATHER_TEMPLATE_SEARCH[slot],
+            )
+            if match.found and label_visible:
+                return point
+
+        # 采草/采毛的工具素材仍可能因装备状态变化；保留严格限定在对应行的
+        # 结构判定作为兜底，但挖矿/伐木的高阶图标优先由模板覆盖。
+        if self.find_scene_gather_actions(image, action_slot=slot):
+            return point
+        return None
+
+    @classmethod
+    def is_gather_action_label_visible(cls, image: np.ndarray, action_slot: int) -> bool:
+        """要求工具图标右侧同时存在亮色操作文字，排除场景纹理误匹配。"""
+        text_roi, _diamond_roi = cls.ROI_GATHER_ACTIONS[action_slot]
+        text = cls.crop(image, text_roi)
+        if text.size == 0:
             return False
-        if self.detect_line_panel_scope(screenshot) != entry.scope:
-            self.click_point(*self.POINT_LINE_SCOPE_SWITCH, offset=0)
-            self.wait(400)
-        self.rewind_line_list()
-        for _ in range(entry.page_index):
-            self.swipe(
-                *self.POINT_LINE_LIST_SWIPE_START,
-                *self.POINT_LINE_LIST_SWIPE_END,
-                duration_ms=400,
-            )
-            self.wait(350)
-        screenshot = self.screenshot()
-        centers = self.find_line_entry_centers(screenshot)
-        row_index = entry.row_index
-        verified = row_index < len(centers) and self.is_line_row_selected(
-            screenshot,
-            centers[row_index],
+        text_gray = cv2.cvtColor(text, cv2.COLOR_BGR2GRAY)
+        text_hsv = cv2.cvtColor(text, cv2.COLOR_BGR2HSV)
+        text_white = int(
+            np.count_nonzero((text_gray >= 145) & (text_hsv[:, :, 1] <= 110))
         )
-        self.click_point(820, 400, offset=0)
-        return verified
+        return text_white >= 180
 
-    def rewind_line_list(self) -> None:
-        """按索引访问前，将线路列表滚回第一页。"""
-        for _ in range(self.MAX_LINE_SCROLL_PAGES):
-            before = self.screenshot()
-            self.swipe(
-                *self.POINT_LINE_LIST_SWIPE_END,
-                *self.POINT_LINE_LIST_SWIPE_START,
-                duration_ms=400,
-            )
-            self.wait(300)
-            after = self.screenshot()
-            if self.images_similar(before, after, self.ROI_LINE_ENTRIES, threshold=0.985):
-                return
+    def wait_for_main_scene_after_loading(self) -> bool:
+        """在已确认的跨图加载页后，等待角色血条重新出现。
 
-    def close_map_if_visible(self) -> None:
-        screenshot = self.screenshot()
-        if self.is_filtered_map_visible(screenshot):
-            self.click_point(*self.POINT_MAP_CLOSE, offset=0)
-            self.wait(400)
-        screenshot = self.screenshot()
-        if self.is_life_panel_visible(screenshot):
-            self.click_point(*self.POINT_MAP_CLOSE, offset=0)
-            self.wait(400)
+        加载页的进度条可能会在完成前短暂消失，因此一旦确认进入加载，
+        后续不再逐帧要求仍能识别该进度条；期间不会执行任何点击。
+        """
+        deadline = self._make_deadline(self.SCENE_TRANSITION_TIMEOUT_MS)
+        while not self._is_deadline_expired(deadline):
+            self.wait(500)
+            if self.is_main_scene(self.screenshot()):
+                return True
+        return False
 
     @classmethod
-    def is_life_panel_visible(cls, image: np.ndarray) -> bool:
-        # 左侧分类选择器是生活面板中的大型半透明浅色卡片，
-        # 在各分类和材料页之间保持稳定。
-        gray = cv2.cvtColor(image[165:250, 100:415], cv2.COLOR_BGR2GRAY)
-        return float(np.mean(gray >= 150)) >= 0.80
+    def is_map_visible(cls, image: np.ndarray) -> bool:
+        """地图右上角始终存在大型圆形关闭按钮。"""
+        return bool(cls.find_circles(image, cls.ROI_MAP_CLOSE, min_radius=24, max_radius=44))
 
-    def is_material_page_ready(self, image: np.ndarray) -> bool:
-        roi = self.crop(image, self.ROI_LIFE_MATERIAL_CARD)
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        # 材料卡片包含明亮的物品图像和定位手势。
-        bright_components = self.component_centers(gray >= 170, min_area=50, max_area=6000)
-        locator_x = self.POINT_MATERIAL_LOCATORS[self.material.slot_index][0]
-        return any(abs((self.ROI_LIFE_MATERIAL_CARD[0] + x) - locator_x) < 65 for x, _y in bright_components)
+    @staticmethod
+    def is_life_filter_panel_visible(image: np.ndarray) -> bool:
+        """根据左侧“任务(深色) / 生活(浅色)”组合识别筛选面板。
 
-    @classmethod
-    def is_filtered_map_visible(cls, image: np.ndarray) -> bool:
-        # 两个筛选地图层级的右上角都有大型圆形关闭按钮。
-        circles = cls.find_circles(image, (1185, 0, 95, 90), min_radius=24, max_radius=44)
-        return bool(circles)
-
-    @classmethod
-    def find_world_resource_regions(cls, image: np.ndarray) -> list[tuple[int, int]]:
-        circles = cls.find_circles(
-            image,
-            cls.ROI_WORLD_RESOURCE_REGIONS,
-            min_radius=13,
-            max_radius=27,
-            min_distance=28,
-            param2=24,
+        塞北地图左上角是大面积雪地，单独以浅色区域识别生活页签会将
+        雪地误判为已打开面板，继而误触地图坐标输入。必须同时确认其上方
+        的“任务”标签仍是深色底，才认为左侧筛选面板实际存在。
+        """
+        life_tab = image[84:150, 4:128]
+        task_tab = image[4:70, 4:128]
+        if life_tab.size == 0 or task_tab.size == 0:
+            return False
+        life_gray = cv2.cvtColor(life_tab, cv2.COLOR_BGR2GRAY)
+        task_gray = cv2.cvtColor(task_tab, cv2.COLOR_BGR2GRAY)
+        return (
+            float(np.mean(life_gray >= 145)) >= 0.45
+            and float(np.mean(task_gray <= 100)) >= 0.65
         )
-        return sorted(circles, key=lambda point: (point[1], point[0]))
 
     @classmethod
-    def find_local_resource_nodes(cls, image: np.ndarray) -> list[tuple[int, int]]:
-        circles = cls.find_circles(
+    def find_life_material_icon_centers(cls, image: np.ndarray) -> list[tuple[int, int]]:
+        """识别展开下拉中左侧的圆形材料图标。"""
+        return sorted(
+            cls.find_circles(
+                image,
+                cls.ROI_LIFE_ITEM_ICONS,
+                min_radius=25,
+                max_radius=40,
+                min_distance=50,
+                param2=24,
+            ),
+            key=lambda point: point[1],
+        )
+
+    @classmethod
+    def find_resource_map_marker_centers(cls, image: np.ndarray) -> list[tuple[int, int]]:
+        """识别筛选后世界地图中大号生活资源标志的圆形边缘。"""
+        return cls.find_circles(
             image,
-            cls.ROI_LOCAL_RESOURCE_NODES,
-            min_radius=25,
+            cls.ROI_RESOURCE_MAP,
+            min_radius=20,
             max_radius=42,
             min_distance=40,
-            param2=25,
+            param2=26,
         )
-        resource_nodes: list[tuple[int, int]] = []
-        for x, y in circles:
-            crop = image[max(0, y - 32) : y + 33, max(0, x - 32) : x + 33]
-            if crop.size == 0:
-                continue
-            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-            hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-            white_ratio = float(np.mean((gray >= 160) & (hsv[:, :, 1] <= 80)))
-            if white_ratio >= 0.18:
-                resource_nodes.append((x, y))
-        return sorted(resource_nodes, key=lambda point: (-point[1], point[0]))
 
     @classmethod
-    def is_line_panel_visible(cls, image: np.ndarray) -> bool:
-        roi = cls.crop(image, cls.ROI_LINE_PANEL)
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        dark_ratio = float(np.mean(gray < 50))
-        edge_density = float(np.mean(cv2.Canny(gray, 60, 140) > 0))
-        border = cv2.Canny(gray, 60, 140)
-        vertical_lines = cv2.HoughLinesP(
-            border,
-            1,
-            np.pi / 180,
-            threshold=80,
-            minLineLength=300,
-            maxLineGap=12,
-        )
-        has_panel_border = vertical_lines is not None and any(
-            abs(int(line[0][0]) - int(line[0][2])) <= 4
-            for line in vertical_lines
-        )
-        return dark_ratio >= 0.35 and edge_density >= 0.02 and has_panel_border
-
-    @classmethod
-    def detect_line_panel_scope(cls, image: np.ndarray) -> str:
-        if not cls.is_line_panel_visible(image):
-            raise RuntimeError("线路面板不可见")
-        centers = cls.find_line_entry_centers(image)
-        if not centers:
-            raise RuntimeError("线路面板没有可选线路")
-        # 行中心处本地标签从约 x=935 开始，而互通前缀会向左延伸到 x=930，
-        # 且在 x=970 前包含更多浅色文本。
-        first_y = centers[0][1]
-        row = image[max(0, first_y - 22) : first_y + 22, 920:980]
-        hsv = cv2.cvtColor(row, cv2.COLOR_BGR2HSV)
-        light_text = (hsv[:, :, 2] >= 105) & (hsv[:, :, 1] <= 115)
-        return "interconnected" if int(np.count_nonzero(light_text)) < 400 else "local"
-
-    @classmethod
-    def find_line_entry_centers(cls, image: np.ndarray) -> list[tuple[int, int]]:
-        x, y, w, h = cls.ROI_LINE_ENTRIES
-        roi = image[y : y + h, x : x + w]
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        # 每条线路左侧的绿/黄状态圆点比文字 OCR 更稳定。
-        saturation = hsv[:, :, 1]
-        value = hsv[:, :, 2]
-        mask = ((saturation >= 70) & (value >= 80)).astype(np.uint8) * 255
-        centers = cls.component_centers(mask > 0, min_area=90, max_area=900)
-        centers = [(x + cx, y + cy) for cx, cy in centers if cx < 80]
-        return sorted(cls.merge_nearby(centers, radius=24), key=lambda point: point[1])
-
-    @staticmethod
-    def is_line_row_selected(image: np.ndarray, center: tuple[int, int]) -> bool:
-        """返回线路行是否具有明亮的选中背景。"""
-        _x, y = center
-        row = image[max(0, y - 30) : y + 31, 860:1090]
-        gray = cv2.cvtColor(row, cv2.COLOR_BGR2GRAY)
-        return float(np.mean(gray >= 70)) >= 0.60
-
-    @staticmethod
-    def line_row_fingerprint(image: np.ndarray, center: tuple[int, int]) -> bytes:
-        """根据一条线路的文字和圆点构建与位置无关的指纹。"""
-        _x, y = center
-        row = image[max(0, y - 25) : y + 26, 875:1070]
-        hsv = cv2.cvtColor(row, cv2.COLOR_BGR2HSV)
-        foreground = (
-            ((hsv[:, :, 2] >= 95) & (hsv[:, :, 1] <= 130))
-            | ((hsv[:, :, 1] >= 70) & (hsv[:, :, 2] >= 80))
-        ).astype(np.uint8)
-        compact = cv2.resize(foreground, (48, 16), interpolation=cv2.INTER_AREA)
-        return (compact >= 96).astype(np.uint8).tobytes()
-
-    @classmethod
-    def find_scene_gather_actions(cls, image: np.ndarray) -> list[tuple[int, int]]:
-        if cls.is_filtered_map_visible(image):
+    def find_scene_gather_actions(
+        cls,
+        image: np.ndarray,
+        *,
+        action_slot: int = 0,
+    ) -> list[tuple[int, int]]:
+        """识别右侧固定交互位的绿色菱形和“采集”文字组合。"""
+        if cls.is_map_visible(image) or not cls.is_main_scene(image):
             return []
-        diamond_roi = cls.ROI_GATHER_ACTIONS[1]
-        x, y, width, height = diamond_roi
-        roi = image[y : y + height, x : x + width]
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        white = (gray >= 145) & (hsv[:, :, 1] <= 100)
-        centers = cls.component_centers(white, min_area=350, max_area=1000)
-        if centers:
-            # 白色部分是手势字形；实际菱形交互控件延伸至其右侧的操作标签。
-            return [(x + centers[0][0] + 68, y + centers[0][1])]
+
+        text_roi, diamond_roi = cls.ROI_GATHER_ACTIONS[action_slot]
+        text = cls.crop(image, text_roi)
+        diamond = cls.crop(image, diamond_roi)
+        if text.size == 0 or diamond.size == 0:
+            return []
+        diamond_gray = cv2.cvtColor(diamond, cv2.COLOR_BGR2GRAY)
+        diamond_hsv = cv2.cvtColor(diamond, cv2.COLOR_BGR2HSV)
+        green_border = int(
+            np.count_nonzero(
+                (diamond_hsv[:, :, 0] >= 35)
+                & (diamond_hsv[:, :, 0] <= 95)
+                & (diamond_hsv[:, :, 1] >= 60)
+                & (diamond_hsv[:, :, 2] >= 70)
+            )
+        )
+        # 采草的菱形是绿色，挖矿等技能在真机上会切换为亮白高亮；
+        # 动作文本也会从“采集”变为“挖矿/伐木/采毛”，因此不匹配具体文字。
+        diamond_white = int(
+            np.count_nonzero((diamond_gray >= 145) & (diamond_hsv[:, :, 1] <= 110))
+        )
+        if cls.is_gather_action_label_visible(image, action_slot) and (
+            green_border >= 250 or diamond_white >= 300
+        ):
+            return [cls.POINT_GATHER_ACTIONS[action_slot]]
         return []
+
+    @classmethod
+    def is_main_scene(cls, image: np.ndarray) -> bool:
+        """确认处于包含角色血条的主场景，避免把交易/菜单控件误当采集。"""
+        x, y, width, height = cls.ROI_MAIN_HEALTH
+        region = image[y : y + height, x : x + width]
+        if region.size == 0:
+            return False
+        channels = region.astype(np.int16)
+        blue = channels[:, :, 0]
+        green = channels[:, :, 1]
+        red = channels[:, :, 2]
+        red_health = (
+            (red >= cls.HEALTH_RED_MIN_VALUE)
+            & (red >= green + cls.HEALTH_RED_MIN_DELTA)
+            & (red >= blue + cls.HEALTH_RED_MIN_DELTA)
+        )
+        return int(np.count_nonzero(red_health)) >= 300
+
+    @classmethod
+    def is_scene_transition_loading(cls, image: np.ndarray) -> bool:
+        """识别跨图时覆盖屏幕底部的大型中性进度条。
+
+        真机加载页没有角色血条，底部进度条会连续多行呈现 150px 以上的
+        灰白横线。与普通对话、背包等面板不同，该特征横跨屏幕中央并且
+        只在主场景缺失时参与判断。
+        """
+        if cls.is_main_scene(image):
+            return False
+        progress = cls.crop(image, cls.ROI_SCENE_LOADING_PROGRESS)
+        if progress.size == 0:
+            return False
+        hsv = cv2.cvtColor(progress, cv2.COLOR_BGR2HSV)
+        neutral_bright = (hsv[:, :, 1] <= 100) & (hsv[:, :, 2] >= 100)
+        wide_rows = 0
+        for row in neutral_bright:
+            padded = np.concatenate(([False], row, [False]))
+            edges = np.flatnonzero(padded[1:] != padded[:-1])
+            run_lengths = edges[1::2] - edges[::2]
+            if np.any(run_lengths >= 150):
+                wide_rows += 1
+        return wide_rows >= 5
+
+    @staticmethod
+    def _marker_key(center: tuple[int, int]) -> tuple[int, int]:
+        """Normalize Hough-circle jitter for the same map resource marker."""
+        return center[0] // 64, center[1] // 64
 
     @staticmethod
     def crop(image: np.ndarray, roi: tuple[int, int, int, int]) -> np.ndarray:
@@ -721,29 +915,9 @@ class SHRWTask(YmGameTask):
         if circles is None:
             return []
         return cls.merge_nearby(
-            [(x + int(round(cx)), y + int(round(cy))) for cx, cy, _r in circles[0]],
+            [(x + round(cx), y + round(cy)) for cx, cy, _r in circles[0]],
             radius=max(10, min_distance // 2),
         )
-
-    @staticmethod
-    def component_centers(
-        mask: np.ndarray,
-        *,
-        min_area: int,
-        max_area: int,
-    ) -> list[tuple[int, int]]:
-        count, _labels, stats, centroids = cv2.connectedComponentsWithStats(
-            mask.astype(np.uint8),
-            connectivity=8,
-        )
-        centers: list[tuple[int, int]] = []
-        for index in range(1, count):
-            area = int(stats[index, cv2.CC_STAT_AREA])
-            if min_area <= area <= max_area:
-                centers.append(
-                    (int(round(centroids[index][0])), int(round(centroids[index][1])))
-                )
-        return centers
 
     @staticmethod
     def merge_nearby(
@@ -762,27 +936,9 @@ class SHRWTask(YmGameTask):
             merged.append(center)
         return merged
 
-    @classmethod
-    def images_similar(
-        cls,
-        before: np.ndarray,
-        after: np.ndarray,
-        roi: tuple[int, int, int, int],
-        *,
-        threshold: float,
-    ) -> bool:
-        first = cv2.cvtColor(cls.crop(before, roi), cv2.COLOR_BGR2GRAY)
-        second = cv2.cvtColor(cls.crop(after, roi), cv2.COLOR_BGR2GRAY)
-        if first.shape != second.shape or first.size == 0:
-            return False
-        difference = cv2.absdiff(first, second)
-        similarity = 1.0 - float(np.mean(difference)) / 255.0
-        return similarity >= threshold
-
     def on_finish(self, results: list) -> None:
-        """记录最终采集统计信息。"""
         if self._known_unavailable_reason:
-            detail = f"跳过：{self._known_unavailable_reason}"
+            detail = f"停止原因：{self._known_unavailable_reason}"
         else:
-            detail = f"共采集 {self._successful_gathers} 个资源点"
+            detail = f"共采集 {self._successful_gathers} 次 {self.material.label}"
         self._log(f"生活任务完成，{detail}")

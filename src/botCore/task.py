@@ -167,6 +167,13 @@ class GameTask:
     ) -> None:
         """Hook called after an abnormal failure and before an actual retry."""
 
+    def after_retry_recovery(
+        self,
+        retry_scope: str,
+        failure: Exception | str | None = None,
+    ) -> None:
+        """Hook called after retry recovery and before the next attempt."""
+
     def cleanup_after_failure(
         self,
         failure: Exception | str | None = None,

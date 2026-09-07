@@ -17,7 +17,6 @@ class StartTask(YmGameTask):
     task_description = "启动游戏任务"
     task_visible = False
     auto_ensure_game_started = False
-    auto_recover_health = False
     STARTUP_LOG_DISPLAY_NAME = "一梦江湖启动"
 
     @step(retry=0, timeout_ms=360000)

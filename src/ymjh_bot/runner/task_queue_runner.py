@@ -573,13 +573,32 @@ class TaskQueueRunner:
         while self._paused and not self._stop_requested:
             time.sleep(0.1)
 
-    def _run_before_retry_hook(self, task: GameTask, failure_message: str) -> None:
-        """Run retry recovery without replacing the task failure that triggered it."""
+    def _run_before_retry_hook(
+        self,
+        task: GameTask,
+        failure_message: str,
+        *,
+        run_post_recovery_hook: bool = True,
+    ) -> None:
+        """Run retry lifecycle hooks without replacing the triggering failure."""
+        task_name = getattr(task, "task_name", task.__class__.__name__)
         try:
             task.before_retry("task", failure_message)
+        except StepStopException:
+            self.stop()
+            return
         except Exception as exc:
-            task_name = getattr(task, "task_name", task.__class__.__name__)
             self._emit(f"任务 {task_name} 异常重试前恢复失败，仍继续重试：{exc}")
+
+        if not run_post_recovery_hook or self._stop_requested:
+            return
+
+        try:
+            task.after_retry_recovery("task", failure_message)
+        except StepStopException:
+            self.stop()
+        except Exception as exc:
+            self._emit(f"任务 {task_name} 异常重试后检查失败，仍继续重试：{exc}")
 
     def _run_failure_cleanup_hook(
         self,
@@ -602,7 +621,11 @@ class TaskQueueRunner:
                 self._emit_progress()
                 if cleanup_attempt < self.MAX_FAILURE_CLEANUP_ATTEMPTS:
                     self._emit(f"任务 {task_name} 清理失败，执行恢复后重试清理")
-                    self._run_before_retry_hook(task, cleanup_failure)
+                    self._run_before_retry_hook(
+                        task,
+                        cleanup_failure,
+                        run_post_recovery_hook=False,
+                    )
                 continue
 
             self._emit(

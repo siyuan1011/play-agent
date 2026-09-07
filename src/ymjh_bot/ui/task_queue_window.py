@@ -355,10 +355,10 @@ class TaskQueueWindow(QMainWindow):
         self.shrw_material_group = QButtonGroup(self.shrw_settings_widget)
         self.shrw_material_group.setExclusive(True)
         self.shrw_material_checks: dict[str, QRadioButton] = {}
-        shrw_layout.addWidget(QLabel("采购物品"), 1, 0)
+        shrw_layout.addWidget(QLabel("采集物品"), 1, 0)
         shrw_layout.addWidget(self.shrw_material_widget, 1, 1, 1, 3)
 
-        self.shrw_loop_lines_check = QCheckBox("是否环线")
+        self.shrw_loop_lines_check = QCheckBox("持续采集")
         shrw_layout.addWidget(self.shrw_loop_lines_check, 2, 0, 1, 2)
 
         self.shrw_line_scope_group = QButtonGroup(self.shrw_settings_widget)
@@ -373,8 +373,12 @@ class TaskQueueWindow(QMainWindow):
             self.shrw_line_scope_checks[scope] = check
             line_scope_layout.addWidget(check)
         line_scope_layout.addStretch()
-        shrw_layout.addWidget(QLabel("线路范围"), 3, 0)
+        # 保留原有线路范围控件，避免既有 GUI 配置看起来消失；新版地图
+        # 采集不再依赖它，但仍会原样保存以兼容已有任务配置。
+        shrw_layout.addWidget(QLabel("线路范围（兼容）"), 3, 0)
         shrw_layout.addWidget(line_scope_widget, 3, 1, 1, 2)
+        shrw_layout.addWidget(QLabel("目标地图"), 4, 0)
+        shrw_layout.addWidget(QLabel("由采集物自动选择"), 4, 1, 1, 2)
 
         self.shrw_settings_confirm_btn = QPushButton("确定")
         self.shrw_settings_confirm_btn.clicked.connect(self.confirm_task_settings)

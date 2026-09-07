@@ -17,7 +17,6 @@ class RCFBTask(YmGameTask):
     task_key = "RCFB"
     task_name = "日常副本"
     task_description = "创建单人队伍进入江湖纪事日常副本，完成后自动退队"
-    auto_recover_health = False
     LEAVE_TEAM_ON_START = True
     STARTUP_CLOSE_SETTLE_WAIT_MS = 1000
 

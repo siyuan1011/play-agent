@@ -13,8 +13,6 @@ class ZGWXTask(YmGameTask):
     task_key = "ZGWX"
     task_name = "坐观万象"
     task_description = "坐观万象自动前往并等待修炼完成"
-    auto_recover_health = False
-
     BTN_ACTIVITY_FORWARD = str(YmGameTask.TEMPLATES_DIR / "btn_activity_forward.png")
     ICON_MEDITATING = str(YmGameTask.TEMPLATES_DIR / "icon_zgwx_meditating.png")
 

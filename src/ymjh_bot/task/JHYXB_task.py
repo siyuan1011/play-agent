@@ -15,7 +15,6 @@ class JianghuYingxiongbangTask(YmGameTask):
     task_key = "JHYXB"
     task_name = "江湖英雄榜"
     task_description = "江湖英雄榜匹配并领取首战宝箱"
-    auto_recover_health = False
     RETURN_TO_SAFE_ZONE_ON_START = True
     DEFER_FOREGROUND_WAKE_TO_ON_START = True
     STARTUP_CLOSE_SETTLE_WAIT_MS = 1000

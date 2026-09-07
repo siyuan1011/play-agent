@@ -17,7 +17,6 @@ class HSLJTask(YmGameTask):
     task_key = "HSLJ"
     task_name = "华山论剑"
     task_description = "按配置完成华山论剑 1v1/3v3"
-    auto_recover_health = False
     RETURN_TO_SAFE_ZONE_ON_START = True
     DEFER_FOREGROUND_WAKE_TO_ON_START = True
     STARTUP_CLOSE_SETTLE_WAIT_MS = 1000

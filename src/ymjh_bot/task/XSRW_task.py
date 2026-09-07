@@ -11,10 +11,8 @@ import numpy as np
 
 from botCore import ImageMatchResult, StepStopException, step
 from botCore.execution import DslStepExecutor, resolve_step_jump
-
 from ymjh_bot.task.RCFB_task import RCFBTask
 from ymjh_bot.ym_game_task import YmGameTask
-
 
 BountyCategory = Literal["聚义平冤", "江湖纪事"]
 BountyAction = Literal["接取", "前往", "未知"]
@@ -81,7 +79,6 @@ class XSRWTask(YmGameTask):
     task_key = "XSRW"
     task_name = "悬赏任务"
     task_description = "接取悬赏盒子 100 以上任务并自动完成聚义平冤/日常副本"
-    auto_recover_health = False
     DEFER_FOREGROUND_WAKE_TO_ON_START = True
     LEAVE_TEAM_ON_START = True
     STARTUP_CLOSE_SETTLE_WAIT_MS = 1000
@@ -148,7 +145,6 @@ class XSRWTask(YmGameTask):
     DAILY_COMPLETE_GLYPHS = 5  # 10/10; every 0..9 state has four glyphs
 
     ROUND_TASK_LIMIT = 4
-    MAX_NO_PROGRESS_REFRESHES = 30
     PANEL_OPEN_TIMEOUT_MS = 15000
     PANEL_POLL_INTERVAL_MS = 300
     PANEL_OPEN_SETTLE_MS = 1200
@@ -158,7 +154,9 @@ class XSRWTask(YmGameTask):
     DEPOSIT_CONFIRM_SETTLE_MS = 800
     DEPOSIT_MODAL_WAIT_MS = 5000
     DEPOSIT_STARTUP_RECOVERY_MS = 1500
-    REFRESH_SETTLE_MS = 900
+    # 没有可接取悬赏或接取结果未确认均是正常的轮询状态；刷新后等待
+    # 10 秒再识别，避免高频刷新和误判为需要任务级重试的异常。
+    REFRESH_SETTLE_MS = 10_000
     FORWARD_SETTLE_MS = 1500
     CHALLENGE_VICTORY_THRESHOLD = 0.90
     CHALLENGE_TIMEOUT_MS = 600000
@@ -327,7 +325,6 @@ class XSRWTask(YmGameTask):
             debug_path = self.save_debug_screenshot("xsrw_refresh_missing")
             raise RuntimeError(f"悬赏面板未找到刷新按钮，已保存截图：{debug_path}")
 
-        self._log("刷新悬赏任务状态")
         self.tap(*match.center)
         self.wait(self.REFRESH_SETTLE_MS)
         return self._wait_bounty_panel(timeout_ms=self.PANEL_OPEN_TIMEOUT_MS)
@@ -366,7 +363,6 @@ class XSRWTask(YmGameTask):
     ) -> BountyPanelSnapshot:
         """将一轮补至四张待处理卡片，或在达到每日上限时提前停止。"""
         current = snapshot
-        no_progress = 0
 
         while not self.is_stopped():
             pending_count = len(current.pending_cards)
@@ -379,40 +375,17 @@ class XSRWTask(YmGameTask):
 
             candidates = current.acceptable_cards
             if not candidates:
-                no_progress += 1
-                if no_progress >= self.MAX_NO_PROGRESS_REFRESHES:
-                    debug_path = self.save_debug_screenshot("xsrw_no_eligible_bounty")
-                    raise RuntimeError(
-                        f"连续 {self.MAX_NO_PROGRESS_REFRESHES} 次刷新未找到盒子 100 以上悬赏，"
-                        f"已保存截图：{debug_path}"
-                    )
-                self._log(
-                    "当前四个卡位没有可接取的盒子 100 以上悬赏，"
-                    f"刷新重试 {no_progress}/{self.MAX_NO_PROGRESS_REFRESHES}"
-                )
+                # 刷新出的四张卡全部低于门槛、已被他人接走或暂时无法识别，
+                # 都不构成任务失败。继续静默刷新，并以最新画面重新挑选卡片。
                 current = self.refresh_bounty_panel(current)
                 continue
 
             selected = candidates[0]
             success, current = self.attempt_accept_bounty(current, selected)
             if success:
-                no_progress = 0
                 self._log(
                     f"已确认接取第 {selected.slot_index + 1} 卡位"
                     f"{selected.category}悬赏（奖励字符段={selected.reward_glyph_count}）"
-                )
-            else:
-                no_progress += 1
-                self._log(
-                    f"第 {selected.slot_index + 1} 卡位接取状态未确认，"
-                    f"继续刷新检查 {no_progress}/{self.MAX_NO_PROGRESS_REFRESHES}"
-                )
-
-            if no_progress >= self.MAX_NO_PROGRESS_REFRESHES:
-                debug_path = self.save_debug_screenshot("xsrw_accept_no_progress")
-                raise RuntimeError(
-                    f"悬赏接取连续 {self.MAX_NO_PROGRESS_REFRESHES} 次没有进展，"
-                    f"已保存截图：{debug_path}"
                 )
 
         raise StepStopException("Stop requested")

@@ -18,7 +18,6 @@ class JHXSTask(YmGameTask):
     task_key = "JHXS"
     task_name = "江湖行商"
     task_description = "打开悬赏面板并发布江湖行商悬赏"
-    auto_recover_health = False
     DEFER_FOREGROUND_WAKE_TO_ON_START = True
     STARTUP_CLOSE_SETTLE_WAIT_MS = 800
 
@@ -128,9 +127,6 @@ class JHXSTask(YmGameTask):
     def open_bounty_publish_panel(self) -> None:
         """3. Click the lower-right Publish entry."""
         self.ensure_bounty_publish_panel_open()
-        if self._is_bounty_publish_quota_exhausted():
-            self._log_bounty_publish_quota_exhausted()
-            self.jump_to_end()
 
     @step(retry=3, timeout_ms=30000)
     def open_bounty_target_dropdown(self) -> None:
@@ -192,11 +188,11 @@ class JHXSTask(YmGameTask):
 
         if not self.is_bounty_publish_panel_visible():
             self.ensure_bounty_publish_panel_open()
+        if not self.is_bounty_target_selected():
+            self.select_bounty_target()
         if self._is_bounty_publish_quota_exhausted():
             self._log_bounty_publish_quota_exhausted()
             return
-        if not self.is_bounty_target_selected():
-            self.select_bounty_target()
 
         publish = self._wait_bounty_match(
             self.BTN_PUBLISH_CONFIRM,

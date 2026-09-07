@@ -15,8 +15,6 @@ class CGSSTask(YmGameTask):
     task_key = "CGSS"
     task_name = "茶馆说书"
     task_description = "茶馆说书任务"
-    auto_recover_health = False
-
     BTN_JRCG = str(YmGameTask.TEMPLATES_DIR / "btn_CGSS_JRCG.png")
     BTN_CHAGUANSHUOSHU_ENTRY = str(YmGameTask.TEMPLATES_DIR / "btn_CGSS_entry.png")
     BTN_TCCG = str(YmGameTask.TEMPLATES_DIR / "btn_CGSS_TCCG.png")
