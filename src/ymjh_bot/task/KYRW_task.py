@@ -721,10 +721,8 @@ class KYRWTask(YmGameTask):
 
         self._log(f"检测到课业物品获取途径面板，开始第 {self._item_acquire_rounds} 次获取")
         if self.try_mall_route():
-            self.handle_submit_panel_if_visible(timeout_ms=1500)
             return True
         if self.try_stall_route():
-            self.handle_submit_panel_if_visible(timeout_ms=1500)
             return True
 
         self.close_transient_panels()
@@ -774,6 +772,7 @@ class KYRWTask(YmGameTask):
             self.close_transient_panels()
             return False
 
+        self.settle_purchase_to_main_scene("商城购买")
         return True
 
     def buy_from_mall_default_quantity(self) -> bool:
@@ -834,7 +833,6 @@ class KYRWTask(YmGameTask):
     def handle_trade_panel_if_visible(self) -> bool:
         """处理已经打开的交易面板。"""
         if self.buy_from_current_trade_panel("自动打开的交易购买按钮", timeout_ms=600):
-            self.handle_submit_panel_if_visible(timeout_ms=1500)
             return True
 
         if not self.click_template_if_available(
@@ -848,7 +846,6 @@ class KYRWTask(YmGameTask):
             return False
 
         if self.buy_from_current_trade_panel("自动打开的全服摆摊购买按钮", timeout_ms=3000):
-            self.handle_submit_panel_if_visible(timeout_ms=1500)
             return True
 
         self._log("自动打开的全服摆摊未找到可购买商品")
@@ -880,7 +877,25 @@ class KYRWTask(YmGameTask):
             self.wait(1500)
             self.confirm_purchase_if_needed()
 
+        self.settle_purchase_to_main_scene(description)
         return True
+
+    def settle_purchase_to_main_scene(self, description: str) -> None:
+        """购买后确保返回主界面，供下一轮重新点击课业任务追踪。"""
+        if self.is_game_main_ready(timeout_ms=1000, threshold=0.8):
+            self._log(f"{description}后已回到主界面，继续课业任务流程")
+            return
+
+        self._log(f"{description}后未回到主界面，关闭面板后继续课业任务流程")
+        self.close_all_panels(timeout_ms=5000)
+        if self.is_game_main_ready(timeout_ms=3000, threshold=0.8):
+            self._log(f"{description}后面板清理完成，已回到主界面")
+            return
+
+        debug_path = self.save_debug_screenshot("kyrw_purchase_panel_not_closed")
+        raise RuntimeError(
+            f"{description}后关闭面板仍未回到主界面，已保存截图：{debug_path}"
+        )
 
     def handle_submit_panel_if_visible(self, *, timeout_ms: int = 600) -> bool:
         """一键提交面板出现时提交最终任务物品。"""
@@ -911,16 +926,7 @@ class KYRWTask(YmGameTask):
 
     def click_dialog_next_if_visible(self) -> bool:
         """右下角剧情或对话下一步箭头可见时点击它。"""
-        if not self.click_template_if_available(
-            self.BTN_DIALOG_NEXT,
-            timeout_ms=600,
-            description="剧情继续箭头",
-            roi=(1180, 640, 100, 80),
-            threshold=0.85,
-            wait_after_click_ms=1500,
-        ):
-            return False
-        return True
+        return super().click_dialog_next_if_visible(wait_after_click_ms=1500)
 
     def click_keye_use_if_visible(self) -> bool:
         """科举“使用”按钮出现在屏幕任意位置时点击它。"""

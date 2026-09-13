@@ -18,7 +18,7 @@ Usage:
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -174,6 +174,10 @@ class GameTask:
     ) -> None:
         """Hook called after retry recovery and before the next attempt."""
 
+    def should_retry_step_failure(self, failure: Exception | None) -> bool:
+        """Return whether a failed DSL step may use its normal in-step retries."""
+        return True
+
     def cleanup_after_failure(
         self,
         failure: Exception | str | None = None,
@@ -234,10 +238,11 @@ class GameTask:
         template: str | list[str],
         threshold: float = 0.8,
         roi: tuple[int, int, int, int] | None = None,
+        screenshot: np.ndarray | None = None,
     ) -> bool:
         templates = [template] if isinstance(template, str) else template
-        screenshot = self.screenshot()
-        match = self._vision.match_template(screenshot, templates, threshold=threshold, roi=roi)
+        image = screenshot if screenshot is not None else self.screenshot()
+        match = self._vision.match_template(image, templates, threshold=threshold, roi=roi)
         self._last_match_score = match.score
         if match.found and match.center:
             self._last_match_center = match.center
@@ -255,19 +260,32 @@ class GameTask:
         callback: Callable[[bool], None] | None = None,
         interval_ms: int = 500,
         roi: tuple[int, int, int, int] | None = None,
+        appear_threshold: int = 1,
+        appear_mode: Literal["consecutive", "total"] = "total",
     ) -> bool:
+        if appear_threshold < 1:
+            raise ValueError("appear_threshold must be greater than or equal to 1")
+        if appear_mode not in {"consecutive", "total"}:
+            raise ValueError("appear_mode must be 'consecutive' or 'total'")
+
         start = time.perf_counter()
         deadline = None if timeout_ms is None else start + timeout_ms / 1000.0
+        appear_count = 0
 
         while deadline is None or time.perf_counter() < deadline:
             if self._stop_requested:
                 raise StepStopException("Stop requested")
             if self.find_image(template, threshold=threshold, roi=roi):
+                appear_count += 1
                 if callback:
                     callback(True)
-                return True
-            if callback:
-                callback(False)
+                if appear_count >= appear_threshold:
+                    return True
+            else:
+                if appear_mode == "consecutive":
+                    appear_count = 0
+                if callback:
+                    callback(False)
             remaining_ms = interval_ms if deadline is None else max(
                 0, min(interval_ms, int((deadline - time.perf_counter()) * 1000))
             )

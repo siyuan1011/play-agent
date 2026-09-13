@@ -46,6 +46,7 @@ class TaskRunStatus(str, Enum):
     COMPLETED = "completed"
     RETRY_EXHAUSTED = "retry_exhausted"
     CLEANUP_FAILED = "cleanup_failed"
+    RECOVERY_FAILED = "recovery_failed"
     STOPPED = "stopped"
 
 
@@ -351,6 +352,16 @@ class TaskQueueRunner:
                         ) from exc
                     self._emit("失败现场强制恢复完成，可以安全继续当前角色后续任务")
 
+                if task_status is TaskRunStatus.RECOVERY_FAILED:
+                    failure_message = self._last_failure_message or "活动入口专用恢复失败"
+                    self._set_run_summary("recovery_failed")
+                    self._emit(
+                        "活动入口专用客户端恢复未完成，停止任务队列并保留当前进度："
+                        f"{failure_message}"
+                    )
+                    self._emit_progress()
+                    raise RuntimeError(f"活动入口专用恢复失败：{failure_message}")
+
                 self._emit(
                     f"当前任务 {task_name} 执行失败，跳过该任务并继续角色 "
                     f"{self._current_role_number()} 的后续任务"
@@ -509,9 +520,11 @@ class TaskQueueRunner:
         results: list[ExecutionResult] = []
         task_name = getattr(task, "task_name", task.__class__.__name__)
         attempt = 1
+        activity_entry_retry_pending = False
 
         self._emit_task_attempt_start(task_name, attempt)
-        while attempt <= self.MAX_TASK_ATTEMPTS:
+        while attempt <= self.MAX_TASK_ATTEMPTS or activity_entry_retry_pending:
+            activity_entry_retry_pending = False
             task_results, task_completed = self._run_single_task(task)
             results.extend(task_results)
 
@@ -533,6 +546,35 @@ class TaskQueueRunner:
                 f"任务 {task_name} 第 {attempt}/{self.MAX_TASK_ATTEMPTS} 次完整流程失败："
                 f"{failure_message}"
             )
+
+            activity_entry_failure = self._consume_activity_entry_failure(task)
+            if activity_entry_failure:
+                if not self._can_recover_activity_entry_failure(task):
+                    self._emit(
+                        f"任务 {task_name} 重启客户端后仍无法确认活动入口，"
+                        "标记当前任务失败并继续后续任务"
+                    )
+                    return results, TaskRunStatus.RETRY_EXHAUSTED
+
+                self._emit(
+                    f"任务 {task_name} 活动入口不可用，跳过常规重试并重启客户端后完整重试一次"
+                )
+                try:
+                    self._recover_activity_entry_failure(task, failure_message)
+                except Exception as exc:
+                    self._last_failure_message = (
+                        f"任务 {task_name} 活动入口专用客户端恢复失败：{exc}"
+                    )
+                    self._emit(self._last_failure_message)
+                    return results, TaskRunStatus.RECOVERY_FAILED
+
+                attempt += 1
+                activity_entry_retry_pending = True
+                self._reset_task_for_retry(task)
+                self._emit(f"任务 {task_name} 将从头开始活动入口恢复后的完整重试")
+                self._emit_task_attempt_start(task_name, attempt)
+                continue
+
             if not self._run_failure_cleanup_hook(task, failure_message):
                 self._emit(
                     f"任务 {task_name} 失败现场未能通过常规清理确认安全，"
@@ -561,6 +603,23 @@ class TaskQueueRunner:
             self._emit_task_attempt_start(task_name, attempt)
 
         return results, TaskRunStatus.RETRY_EXHAUSTED
+
+    @staticmethod
+    def _consume_activity_entry_failure(task: GameTask) -> bool:
+        consumer = getattr(task, "consume_activity_entry_failure", None)
+        return bool(consumer()) if callable(consumer) else False
+
+    @staticmethod
+    def _can_recover_activity_entry_failure(task: GameTask) -> bool:
+        checker = getattr(task, "can_recover_activity_entry_failure", None)
+        return bool(checker()) if callable(checker) else False
+
+    @staticmethod
+    def _recover_activity_entry_failure(task: GameTask, failure_message: str) -> None:
+        recover = getattr(task, "recover_activity_entry_failure", None)
+        if not callable(recover):
+            raise RuntimeError("任务未提供活动入口专用恢复能力")
+        recover(failure_message)
 
     def _emit_task_attempt_start(self, task_name: str, attempt: int) -> None:
         self._emit(

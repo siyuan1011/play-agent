@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from math import hypot
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import cv2
 import numpy as np
@@ -17,6 +17,8 @@ from botCore.coords import apply_random_offset
 
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+RuntimeStatusItem = Literal["power", "health", "finding", "loading"]
 
 
 @dataclass(slots=True)
@@ -32,6 +34,10 @@ class LoginState:
 
 class TaskSidebarStateError(RuntimeError):
     """紧凑任务侧栏状态无法安全验证时抛出。"""
+
+
+class ActivityEntryUnavailableError(RuntimeError):
+    """展开顶部快捷栏后仍无法确认常规活动入口时抛出。"""
 
 
 @dataclass(slots=True)
@@ -93,6 +99,8 @@ class YmGameTask(GameTask):
     BTN_JIANGHU_HUASHI_CLOSE = str(TEMPLATES_DIR / "btn_jianghu_huashi_close.png")
     BTN_ROLE_CONFIRM = str(TEMPLATES_DIR / "btn_role_confirm.png")
     BTN_HD = str(TEMPLATES_DIR / "btn_HD.png")
+    BTN_TOP_SHORTCUTS_EXPAND = str(TEMPLATES_DIR / "btn_top_shortcuts_expand.png")
+    BTN_DIALOG_NEXT = str(TEMPLATES_DIR / "btn_dialog_next.png")
     BTN_JRYX = str(TEMPLATES_DIR / "btn_JRYX.png")
     BTN_TRJH = str(TEMPLATES_DIR / "btn_TRJH.png")
     BTN_ZZDL = str(TEMPLATES_DIR / "btn_ZZDL.png")
@@ -112,6 +120,11 @@ class YmGameTask(GameTask):
     TEXT_SCENE_LOADING_LOGO2 = str(TEMPLATES_DIR / "text_scene_loading_logo2.png")
     SCENE_LOADING_LOGO_TEMPLATES = [TEXT_SCENE_LOADING_LOGO1, TEXT_SCENE_LOADING_LOGO2]
     TEXT_POWER_SAVING = str(TEMPLATES_DIR / "text_power_saving.png")
+    TEXT_POWER_SAVING_SHENG = str(TEMPLATES_DIR / "text_power_saving_sheng.png")
+    TEXT_POWER_SAVING_DIAN = str(TEMPLATES_DIR / "text_power_saving_dian.png")
+    TEXT_POWER_SAVING_MO = str(TEMPLATES_DIR / "text_power_saving_mo.png")
+    TEXT_POWER_SAVING_SHI = str(TEMPLATES_DIR / "text_power_saving_shi.png")
+    TEXT_POWER_SAVING_ZHONG = str(TEMPLATES_DIR / "text_power_saving_zhong.png")
     TEXT_JIANGHU_CALENDAR = str(TEMPLATES_DIR / "text_jianghu_calendar.png")
     GENERAL_CLOSE_TEMPLATES = [
         BTN_CLOSE,
@@ -195,8 +208,20 @@ class YmGameTask(GameTask):
     ROI_EMOTION_PANEL = (250, 480, 730, 240)
     ROI_CHAT_SEND_BUTTON = (500, 640, 160, 80)
     ROI_POWER_SAVING = (480, 470, 340, 140)
+    POWER_SAVING_THRESHOLD = 0.8
+    POWER_SAVING_CHARACTER_SPECS = (
+        ("省", TEXT_POWER_SAVING_SHENG, (550, 522, 30, 32)),
+        ("电", TEXT_POWER_SAVING_DIAN, (579, 522, 30, 30)),
+        ("模", TEXT_POWER_SAVING_MO, (603, 522, 32, 31)),
+        ("式", TEXT_POWER_SAVING_SHI, (633, 522, 29, 32)),
+        ("中", TEXT_POWER_SAVING_ZHONG, (660, 522, 27, 32)),
+    )
+    ROI_POWER_SAVING_MIDDLE = (579, 522, 83, 32)
+    POWER_SAVING_CONFIRMATION_COUNT = 3
     ROI_JIANGHU_CALENDAR_MARKER = (100, 60, 130, 390)
     ROI_JIANGHU_CALENDAR_CLOSE = (1080, 0, 200, 130)
+    ROI_TOP_SHORTCUTS_CONTROL = (1040, 0, 100, 90)
+    ROI_DIALOG_NEXT = (1180, 640, 100, 80)
     ROI_CENTER_MODAL_OK = (730, 440, 250, 120)
     ROI_ACTIVITY_CATEGORY_TABS = (40, 630, 930, 90)
     ROI_QUICK_MENU_BUTTON = (0, 600, 120, 120)
@@ -362,6 +387,7 @@ class YmGameTask(GameTask):
     LOGIN_STATE_ROLE = "role"
     LOGIN_STATE_POPUP = "popup"
     LOGIN_STATE_MAIN = "main"
+    LOGIN_STATE_MAIN_SHORTCUTS_COLLAPSED = "main_shortcuts_collapsed"
     LOGIN_STATE_LOADING = "loading"
     LOGIN_STATE_DIRTY_MAIN = "dirty_main"
 
@@ -376,6 +402,10 @@ class YmGameTask(GameTask):
     JIANGHU_CALENDAR_MARKER_THRESHOLD = 0.75
     JIANGHU_CALENDAR_REWARD_WAIT_MS = 600
     ACTIVITY_ENTRY_CLICK_UP_OFFSET = 10
+    TOP_SHORTCUTS_EXPAND_THRESHOLD = 0.8
+    TOP_SHORTCUTS_EXPAND_VERIFY_TIMEOUT_MS = 3000
+    DIALOG_NEXT_THRESHOLD = 0.85
+    DIALOG_NEXT_MAX_CLICKS = 3
 
     WALK_DIRECTIONS = {
         "forward": (0, -1),
@@ -397,6 +427,8 @@ class YmGameTask(GameTask):
         self._recovering_health = False
         self._health_recover_started_at: float | None = None
         self._task_sidebar_failure_screenshot_cache: dict[str, tuple[float, str]] = {}
+        self._activity_entry_failure_pending = False
+        self._activity_entry_recovery_used = False
 
     def before_start(self) -> None:
         """在任务专属初始化前确保游戏已就绪。"""
@@ -472,6 +504,12 @@ class YmGameTask(GameTask):
         self._log(f"{scope_name}异常即将重试，尝试脱离卡死")
         if not self.try_escape_stuck():
             self._log("脱离卡死未完成，保持原异常并继续正常重试")
+
+    def should_retry_step_failure(self, failure: Exception | None) -> bool:
+        """活动入口不可用必须交由队列执行一次完整客户端恢复。"""
+        if isinstance(failure, ActivityEntryUnavailableError):
+            return False
+        return super().should_retry_step_failure(failure)
 
     def after_retry_recovery(
         self,
@@ -576,13 +614,62 @@ class YmGameTask(GameTask):
         self._log("脱离卡死完成")
         return True
 
-    def is_power_saving_mode(self) -> bool:
-        """返回当前游戏画面是否为省电遮罩层。"""
-        return self.find_image(
-            self.TEXT_POWER_SAVING,
-            threshold=0.8,
-            roi=self.scale_roi(self.ROI_POWER_SAVING),
-        )
+    def is_power_saving_mode(self, screenshot: np.ndarray | None = None) -> bool:
+        """连续三帧匹配省、中和任一中间字符，判断省电遮罩层。"""
+        specs = {
+            character: (template, roi)
+            for character, template, roi in self.POWER_SAVING_CHARACTER_SPECS
+        }
+        middle_templates = [specs[character][0] for character in ("电", "模", "式")]
+        confirmation_scores: list[float] = []
+
+        for confirmation_index in range(self.POWER_SAVING_CONFIRMATION_COUNT):
+            image = (
+                screenshot
+                if confirmation_index == 0 and screenshot is not None
+                else self.screenshot()
+            )
+
+            sheng_found = self.find_image(
+                specs["省"][0],
+                threshold=self.POWER_SAVING_THRESHOLD,
+                roi=self.scale_roi(specs["省"][1]),
+                screenshot=image,
+            )
+            sheng_score = self._last_match_score
+            zhong_found = self.find_image(
+                specs["中"][0],
+                threshold=self.POWER_SAVING_THRESHOLD,
+                roi=self.scale_roi(specs["中"][1]),
+                screenshot=image,
+            )
+            zhong_score = self._last_match_score
+            middle_found = self.find_image(
+                middle_templates,
+                threshold=self.POWER_SAVING_THRESHOLD,
+                roi=self.scale_roi(self.ROI_POWER_SAVING_MIDDLE),
+                screenshot=image,
+            )
+            middle_score = self._last_match_score
+
+            round_score = min(sheng_score, zhong_score, middle_score)
+            confirmation_scores.append(round_score)
+            round_found = sheng_found and zhong_found and middle_found
+            self._debug(
+                "省电模式第 "
+                f"{confirmation_index + 1}/{self.POWER_SAVING_CONFIRMATION_COUNT} 帧匹配："
+                f"省={sheng_score:.3f}，中={zhong_score:.3f}，"
+                f"电/模/式={middle_score:.3f}；"
+                f"判定={'命中' if round_found else '未命中'}"
+            )
+            if not round_found:
+                self._last_match_score = round_score
+                self._last_match_center = None
+                return False
+
+        self._last_match_score = min(confirmation_scores)
+        self._last_match_center = None
+        return True
 
     def wake_from_power_saving_if_needed(self) -> bool:
         """点击右下角摇杆中心，将游戏从省电模式唤醒。"""
@@ -592,6 +679,81 @@ class YmGameTask(GameTask):
         self._log("检测到省电模式，点击右下角摇杆中心唤醒")
         self.click_point(self.POINT_RIGHT_JOYSTICK_CENTER[0], self.POINT_RIGHT_JOYSTICK_CENTER[1], offset=0)
         self.wait(1000)
+        return True
+
+    def check_runtime_status(
+        self,
+        *items: RuntimeStatusItem,
+        timeout_ms: int | None = 120_000,
+    ) -> bool:
+        """按安全顺序处理省电、过渡状态和血量，并返回是否全部通过。"""
+        supported_items = {"power", "health", "finding", "loading"}
+        requested_items = set(items) if items else set(supported_items)
+        invalid_items = requested_items - supported_items
+        if invalid_items:
+            invalid_text = "、".join(sorted(invalid_items))
+            raise ValueError(f"不支持的状态检测项：{invalid_text}")
+        if timeout_ms is not None and timeout_ms <= 0:
+            raise ValueError("timeout_ms must be greater than 0 or None")
+
+        if "power" in requested_items:
+            try:
+                woke_from_power_saving = self.wake_from_power_saving_if_needed()
+                if woke_from_power_saving:
+                    if self.is_power_saving_mode():
+                        self._log("省电模式唤醒后复核仍未通过")
+                        return False
+                    self._log("省电模式已唤醒，复核通过")
+            except StepStopException:
+                raise
+            except Exception as exc:
+                self._log(f"省电状态检测或唤醒失败：{exc}")
+                return False
+
+        transition_templates: list[str] = []
+        if "finding" in requested_items:
+            transition_templates.append(self.TEXT_AUTO_PATH)
+        if "loading" in requested_items:
+            transition_templates.extend(self.SCENE_LOADING_LOGO_TEMPLATES)
+        if transition_templates:
+            try:
+                transition_finished = self.wait_image_missing(
+                    transition_templates,
+                    timeout_ms=timeout_ms,
+                    threshold=0.8,
+                    missing_threshold=3,
+                    interval_ms=self.AUTO_PATH_POLL_INTERVAL_MS,
+                )
+                self._last_match_center = None
+                if not transition_finished:
+                    return False
+            except StepStopException:
+                raise
+            except Exception as exc:
+                self._last_match_center = None
+                self._log(f"自动寻路或过图状态检测失败：{exc}")
+                return False
+
+        if "health" in requested_items:
+            try:
+                self.recover_health_if_needed(context="状态检测")
+            except StepStopException:
+                raise
+            except Exception as exc:
+                self._log(f"状态检测血量恢复失败：{exc}")
+                return False
+
+        selected_labels = [
+            label
+            for key, label in (
+                ("power", "省电"),
+                ("finding", "自动寻路"),
+                ("loading", "过图"),
+                ("health", "血量"),
+            )
+            if key in requested_items
+        ]
+        self._log(f"状态检测通过：{'、'.join(selected_labels)}")
         return True
 
     def wake_foreground_screen_once(self) -> None:
@@ -965,6 +1127,82 @@ class YmGameTask(GameTask):
                 return False
             self.wait(self.LOGIN_POLL_INTERVAL_MS)
 
+    def ensure_top_shortcuts_expanded(
+        self,
+        *,
+        timeout_ms: int = TOP_SHORTCUTS_EXPAND_VERIFY_TIMEOUT_MS,
+        activity_threshold: float = 0.8,
+    ) -> bool:
+        """确认常规活动入口可见；必要时点击右上快捷栏展开箭头。"""
+        if self.find_image(self.BTN_HD, threshold=activity_threshold):
+            return True
+
+        if not self.find_image(
+            self.BTN_TOP_SHORTCUTS_EXPAND,
+            threshold=self.TOP_SHORTCUTS_EXPAND_THRESHOLD,
+            roi=self.scale_roi(self.ROI_TOP_SHORTCUTS_CONTROL),
+        ):
+            self._last_match_center = None
+            return False
+
+        center = self._last_match_center
+        if center is None:
+            return False
+
+        self._log("检测到顶部快捷栏已收起，点击展开箭头")
+        self.click_point(center[0], center[1], offset=0)
+        if self.wait_image_appear(
+            self.BTN_HD,
+            timeout_ms=timeout_ms,
+            threshold=activity_threshold,
+        ):
+            self._log("顶部快捷栏已展开，已确认活动入口")
+            return True
+
+        self._log("点击顶部快捷栏展开箭头后仍未确认活动入口")
+        return False
+
+    def _raise_activity_entry_unavailable(self, context: str) -> None:
+        """记录活动入口不可恢复状态，让队列执行一次专用重启恢复。"""
+        self._activity_entry_failure_pending = True
+        debug_path = self.save_debug_screenshot("activity_entry_unavailable")
+        raise ActivityEntryUnavailableError(
+            f"{context}：未能确认常规活动入口，已保存截图：{debug_path}"
+        )
+
+    def consume_activity_entry_failure(self) -> bool:
+        """读取并清除本次完整任务尝试中的活动入口失败标记。"""
+        pending = self._activity_entry_failure_pending
+        self._activity_entry_failure_pending = False
+        return pending
+
+    def can_recover_activity_entry_failure(self) -> bool:
+        """活动入口专用客户端重启在每个任务中至多执行一次。"""
+        return not self._activity_entry_recovery_used
+
+    def recover_activity_entry_failure(self, failure: Exception | str | None = None) -> None:
+        """重启客户端一次，并验证可安全重试活动依赖任务。"""
+        if self._activity_entry_recovery_used:
+            raise RuntimeError("活动入口专用恢复已执行过，拒绝再次重启客户端")
+
+        self._activity_entry_recovery_used = True
+        self._log(f"活动入口不可用，重启客户端后从头重试当前任务：{failure}")
+        self.shell(f"am force-stop {self.PACKAGE_NAME}")
+        self.wait(self.FAILURE_RECOVERY_FORCE_STOP_WAIT_MS)
+        self.start_game_app()
+        self.enter_game()
+        self.close_all_panels(timeout_ms=self.STARTUP_FINAL_CLOSE_TIMEOUT_MS)
+        if not self.is_game_main_ready(
+            timeout_ms=self.FAILURE_RECOVERY_MAIN_VERIFY_TIMEOUT_MS,
+            threshold=0.8,
+        ):
+            debug_path = self.save_debug_screenshot("activity_entry_recovery_main_not_ready")
+            raise RuntimeError(
+                "活动入口恢复重启后未确认稳定主界面，"
+                f"已保存截图：{debug_path}"
+            )
+        self._log("活动入口专用客户端恢复完成")
+
     def ensure_game_started(self, *, force: bool = False) -> None:
         """当前台游戏未就绪时启动并进入游戏。"""
         if not force and self.is_game_foreground():
@@ -978,6 +1216,12 @@ class YmGameTask(GameTask):
                 self._log("检测到游戏已在前台，跳过启动")
                 return
 
+            if state and state.name == self.LOGIN_STATE_MAIN_SHORTCUTS_COLLAPSED:
+                if self.ensure_top_shortcuts_expanded():
+                    self._log("已恢复前台顶部快捷栏，跳过启动")
+                    return
+                self._raise_activity_entry_unavailable("前台主界面快捷栏恢复失败")
+
             if state is None or state.name == self.LOGIN_STATE_DIRTY_MAIN:
                 self._log("检测到游戏前台存在未清理界面，先执行弹框清理")
                 self.close_all_panels(timeout_ms=self.LOGIN_UNKNOWN_CLEANUP_TIMEOUT_MS)
@@ -985,6 +1229,11 @@ class YmGameTask(GameTask):
                 if state and state.name == self.LOGIN_STATE_MAIN:
                     self._log("前台界面清理完成，跳过登录流程")
                     return
+                if state and state.name == self.LOGIN_STATE_MAIN_SHORTCUTS_COLLAPSED:
+                    if self.ensure_top_shortcuts_expanded():
+                        self._log("前台界面清理并恢复顶部快捷栏完成，跳过登录流程")
+                        return
+                    self._raise_activity_entry_unavailable("前台清理后快捷栏恢复失败")
 
             if state is None and not woke_from_power_saving:
                 self.wake_foreground_screen_once()
@@ -1045,7 +1294,13 @@ class YmGameTask(GameTask):
                     unrecognized_started_at = now
                     next_unknown_cleanup_at = now
                     self._log("前台画面未识别，尝试省电唤醒和弹框清理")
-                elif self._elapsed_ms(unrecognized_started_at) > self.LOGIN_LOADING_TIMEOUT_MS:
+
+                self.wake_from_power_saving_if_needed()
+                if self.ensure_top_shortcuts_expanded():
+                    last_state_name = None
+                    continue
+
+                if self._elapsed_ms(unrecognized_started_at) > self.LOGIN_LOADING_TIMEOUT_MS:
                     debug_path = self.save_debug_screenshot("login_unknown_scene_timeout")
                     raise RuntimeError(
                         "登录流程超时：长时间未识别到可操作界面，"
@@ -1053,7 +1308,6 @@ class YmGameTask(GameTask):
                     )
 
                 if now >= next_unknown_cleanup_at:
-                    self.wake_from_power_saving_if_needed()
                     self.close_all_panels(timeout_ms=self.LOGIN_UNKNOWN_CLEANUP_TIMEOUT_MS)
                     next_unknown_cleanup_at = (
                         time.perf_counter()
@@ -1084,6 +1338,12 @@ class YmGameTask(GameTask):
                 self.close_all_panels(timeout_ms=cleanup_timeout)
                 last_state_name = None
                 continue
+
+            if state.name == self.LOGIN_STATE_MAIN_SHORTCUTS_COLLAPSED:
+                if self.ensure_top_shortcuts_expanded():
+                    last_state_name = None
+                    continue
+                self._raise_activity_entry_unavailable("登录后主界面快捷栏恢复失败")
 
             if state.name == self.LOGIN_STATE_NOTICE:
                 self.tap()
@@ -1166,6 +1426,23 @@ class YmGameTask(GameTask):
                 template_path=match.template_path,
             )
 
+        shortcut_match = self._vision.match_template(
+            screenshot,
+            self.BTN_TOP_SHORTCUTS_EXPAND,
+            threshold=self.TOP_SHORTCUTS_EXPAND_THRESHOLD,
+            roi=self.scale_roi(self.ROI_TOP_SHORTCUTS_CONTROL),
+        )
+        self._last_match_score = shortcut_match.score
+        if shortcut_match.found and shortcut_match.center:
+            self._last_match_center = shortcut_match.center
+            return LoginState(
+                name=self.LOGIN_STATE_MAIN_SHORTCUTS_COLLAPSED,
+                description="主界面 - 顶部快捷栏收起",
+                score=shortcut_match.score,
+                center=shortcut_match.center,
+                template_path=shortcut_match.template_path,
+            )
+
         loading_match = self._vision.match_template(
             screenshot,
             self.SCENE_LOADING_LOGO_TEMPLATES,
@@ -1216,6 +1493,12 @@ class YmGameTask(GameTask):
                     return True
                 self.wait(self.LOGIN_POLL_INTERVAL_MS)
                 continue
+
+            if state.name == self.LOGIN_STATE_MAIN_SHORTCUTS_COLLAPSED:
+                consecutive_clean = 0
+                if self.ensure_top_shortcuts_expanded():
+                    continue
+                self._raise_activity_entry_unavailable("启动面板清理后快捷栏恢复失败")
 
             return False
 
@@ -2389,9 +2672,8 @@ class YmGameTask(GameTask):
             entry_timeout_ms = self._bounded_timeout_ms(deadline, self.ACTIVITY_ENTRY_FIND_TIMEOUT_MS)
             if entry_timeout_ms <= 0:
                 break
-            if not self.wait_image_appear(self.BTN_HD, timeout_ms=entry_timeout_ms):
-                self._log(f"未找到活动入口，重试打开活动界面 {attempt}/{self.ACTIVITY_PANEL_OPEN_ATTEMPTS}")
-                continue
+            if not self.ensure_top_shortcuts_expanded(timeout_ms=entry_timeout_ms):
+                self._raise_activity_entry_unavailable("打开活动界面前快捷栏恢复失败")
 
             self.click_activity_entry()
             verify_timeout_ms = max(wait_after_open_ms, self.ACTIVITY_PANEL_VERIFY_TIMEOUT_MS)
@@ -2899,7 +3181,7 @@ class YmGameTask(GameTask):
                 snapshot.image,
                 self._task_sidebar_snapshot_matches(snapshot),
             )
-        if self.is_power_saving_mode():
+        if self.is_power_saving_mode(snapshot.image):
             self._raise_task_sidebar_state_error(
                 "省电状态下禁止执行任务图标默认激活",
                 snapshot.image,
@@ -3180,6 +3462,29 @@ class YmGameTask(GameTask):
         state = "、".join(last_busy_labels) if last_busy_labels else "任务过渡"
         self._log(f"等待{state}稳定结束超时")
         return False
+
+    def click_dialog_next_if_visible(self, *, wait_after_click_ms: int = 800) -> bool:
+        """点击右下角可识别的剧情或 NPC 对话继续箭头。"""
+        return self.click_template_if_available(
+            self.BTN_DIALOG_NEXT,
+            timeout_ms=600,
+            description="剧情继续箭头",
+            roi=self.ROI_DIALOG_NEXT,
+            threshold=self.DIALOG_NEXT_THRESHOLD,
+            wait_after_click_ms=wait_after_click_ms,
+        )
+
+    def drain_dialog_next(self, *, max_clicks: int = DIALOG_NEXT_MAX_CLICKS) -> int:
+        """在自动寻路结束后推进残留对话，返回实际点击次数。"""
+        if max_clicks <= 0:
+            raise ValueError("max_clicks 必须大于 0")
+
+        clicks = 0
+        while clicks < max_clicks and self.click_dialog_next_if_visible():
+            clicks += 1
+        if clicks:
+            self._log(f"已推进 NPC/剧情对话 {clicks}/{max_clicks} 次")
+        return clicks
 
     def click_template_if_available(
         self,

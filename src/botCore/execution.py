@@ -77,7 +77,10 @@ class DslStepExecutor:
             if attempts > 0:
                 attempts -= 1
 
-            retry_available = attempts == -1 or attempts > 0
+            retry_available = (
+                task.should_retry_step_failure(last_error)
+                and (attempts == -1 or attempts > 0)
+            )
             retry_in_time = deadline is None or time.perf_counter() <= deadline
             if not retry_available or not retry_in_time or self._should_stop():
                 break

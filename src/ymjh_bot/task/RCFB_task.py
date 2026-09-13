@@ -107,10 +107,20 @@ class RCFBTask(YmGameTask):
         self._dungeon_entry_confirmed = False
         self._dungeon_completion_confirmed = False
 
+    @step(retry=0, timeout_ms=30000)
+    def ensure_daily_team(self) -> None:
+        """创建或复用单人日常队伍；后续活动页重试不得重复建队。"""
+        self.open_team_panel(timeout_ms=5000, wait_after_click_ms=1000)
+        if self.is_in_team():
+            self._log("已处于有效队伍状态，复用当前队伍进入日常副本")
+            self.close_all_panels(timeout_ms=self.DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS)
+            return
+
+        self.create_team("日常", min_member_count=1)
+
     @step(retry=3, timeout_ms=DAILY_START_TIMEOUT_MS)
     def start_daily_match(self) -> None:
-        """创建单人队伍并直接挑战日常副本。"""
-        self.create_team("日常", min_member_count=1)
+        """在已确认的队伍中打开日常活动页并挑战副本。"""
         self.close_all_panels(timeout_ms=self.DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS)
         self.open_daily_dungeon_panel()
         self.enter_daily_dungeon_challenge()
@@ -171,7 +181,8 @@ class RCFBTask(YmGameTask):
                     self._log(f"检测到{context}传出倒计时，判断副本完成")
                     return
 
-            if self.is_dungeon_outside_main_frame():
+            shortcuts_ready = self.ensure_top_shortcuts_expanded(timeout_ms=1000)
+            if shortcuts_ready and self.is_dungeon_outside_main_frame():
                 outside_stable_confirmations += 1
                 self._debug(
                     f"{context}自动传出后主界面稳定确认 "
@@ -306,7 +317,8 @@ class RCFBTask(YmGameTask):
                 self._log("副本外主界面复核已唤醒省电模式")
                 stable_confirmations = 0
 
-            if self.is_dungeon_outside_main_frame():
+            shortcuts_ready = self.ensure_top_shortcuts_expanded(timeout_ms=1000)
+            if shortcuts_ready and self.is_dungeon_outside_main_frame():
                 stable_confirmations += 1
                 if stable_confirmations >= self.DUNGEON_OUTSIDE_STABLE_CONFIRMATIONS:
                     return True
@@ -722,7 +734,8 @@ class RCFBTask(YmGameTask):
             transfer_out_visible = self.is_dungeon_transfer_out_visible()
             main_ready = False
             if not exit_visible and not transfer_out_visible:
-                main_ready = self.is_game_main_ready(timeout_ms=0, threshold=0.8)
+                shortcuts_ready = self.ensure_top_shortcuts_expanded(timeout_ms=1000)
+                main_ready = shortcuts_ready and self.is_game_main_ready(timeout_ms=0, threshold=0.8)
 
             if main_ready:
                 stable_confirmations += 1

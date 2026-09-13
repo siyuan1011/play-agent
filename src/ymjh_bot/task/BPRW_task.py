@@ -367,6 +367,7 @@ class BPRWTask(YmGameTask):
     def wait_bangpai_task_transition(self, description: str) -> None:
         """执行侧栏操作前，等待寻路或加载稳定完成或失败。"""
         if self.wait_auto_pathfinding(timeout_ms=120000):
+            self.drain_dialog_next()
             return
         screenshot_path = self.save_debug_screenshot("bangpai_task_transition_timeout")
         raise RuntimeError(f"{description}等待自动寻路或过图结束超时，已保存截图：{screenshot_path}")
