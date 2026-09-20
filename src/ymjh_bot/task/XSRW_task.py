@@ -259,15 +259,6 @@ class XSRWTask(YmGameTask):
 
         raise StepStopException("Stop requested")
 
-    def leave_team_if_present(self) -> None:
-        """归一化启动状态；已未组队时不视为失败。"""
-        try:
-            self.leave_team(timeout_ms=5000, wait_after_click_ms=1000)
-        except StepStopException:
-            raise
-        except Exception as exc:
-            self._log(f"悬赏启动退队检查未完成，按未组队继续：{exc}")
-
     def open_bounty_panel(self, *, refresh: bool) -> BountyPanelSnapshot:
         """从任意活动分类打开悬赏面板，并按需刷新。"""
         deposit_confirmed = self.resolve_bounty_deposit_modal_if_visible(

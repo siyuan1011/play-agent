@@ -9,7 +9,7 @@ from botCore import step
 from ymjh_bot.ym_game_task import YmGameTask
 
 
-class JianghuYingxiongbangTask(YmGameTask):
+class JHYXBTask(YmGameTask):
     """一梦江湖江湖英雄榜任务。"""
 
     task_key = "JHYXB"

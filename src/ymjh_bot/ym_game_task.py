@@ -12,7 +12,7 @@ from typing import Any, Literal
 import cv2
 import numpy as np
 
-from botCore import GameTask, ImageMatchResult, RunLogger, StepStopException, VisionEngine
+from botCore import GameTask, ImageMatchResult, RunLogger, StepStopException
 from botCore.coords import apply_random_offset
 
 
@@ -99,6 +99,7 @@ class YmGameTask(GameTask):
     BTN_JIANGHU_HUASHI_CLOSE = str(TEMPLATES_DIR / "btn_jianghu_huashi_close.png")
     BTN_ROLE_CONFIRM = str(TEMPLATES_DIR / "btn_role_confirm.png")
     BTN_HD = str(TEMPLATES_DIR / "btn_HD.png")
+    BTN_JY = str(TEMPLATES_DIR / "btn_JY.png")
     BTN_TOP_SHORTCUTS_EXPAND = str(TEMPLATES_DIR / "btn_top_shortcuts_expand.png")
     BTN_DIALOG_NEXT = str(TEMPLATES_DIR / "btn_dialog_next.png")
     BTN_JRYX = str(TEMPLATES_DIR / "btn_JRYX.png")
@@ -208,7 +209,7 @@ class YmGameTask(GameTask):
     ROI_EMOTION_PANEL = (250, 480, 730, 240)
     ROI_CHAT_SEND_BUTTON = (500, 640, 160, 80)
     ROI_POWER_SAVING = (480, 470, 340, 140)
-    POWER_SAVING_THRESHOLD = 0.8
+    POWER_SAVING_THRESHOLD = 0.75
     POWER_SAVING_CHARACTER_SPECS = (
         ("省", TEXT_POWER_SAVING_SHENG, (550, 522, 30, 32)),
         ("电", TEXT_POWER_SAVING_DIAN, (579, 522, 30, 30)),
@@ -477,7 +478,7 @@ class YmGameTask(GameTask):
                 self._log(self.SAFE_ZONE_RETURN_FAILURE_LOG.format(error=exc))
 
         if self.LEAVE_TEAM_ON_START:
-            self.leave_team_if_present()
+            self.leave_team(timeout_ms=5000, wait_after_click_ms=1000)
             self.close_all_panels(timeout_ms=self.STARTUP_FINAL_CLOSE_TIMEOUT_MS)
 
         self._run_health_precheck("任务启动")
@@ -1515,7 +1516,7 @@ class YmGameTask(GameTask):
             (self.LOGIN_STATE_ROLE_CONFIRM, "在线角色确认 - 确定", [self.BTN_ROLE_CONFIRM]),
             (self.LOGIN_STATE_ROLE, "角色页 - 进入游戏", [self.BTN_JRYX]),
             (self.LOGIN_STATE_POPUP, "活动弹窗", popup_targets),
-            (self.LOGIN_STATE_MAIN, "干净主界面", [self.BTN_HD]),
+            (self.LOGIN_STATE_MAIN, "干净主界面", [self.BTN_HD, self.BTN_JY]),
         )
 
     def _startup_close_targets(self, include_modal_controls: bool) -> list[str]:
@@ -2174,44 +2175,29 @@ class YmGameTask(GameTask):
     ) -> tuple[bool, bool]:
         """从一帧画面读取普通队伍面板可见性和成员状态。"""
         screen = self.screenshot() if screenshot is None else screenshot
-        matches = [
-            self._match_team_template(
-                screen,
-                self.TEXT_TEAM_PANEL_TITLE,
-                threshold=self.TEAM_TEMPLATE_THRESHOLD,
-                roi=self.scale_roi(self.ROI_TEAM_PANEL_TITLE),
-            ),
-            self._match_team_template(
-                screen,
-                self.BTN_TEAM_QUICK,
-                threshold=self.TEAM_TEMPLATE_THRESHOLD,
-                roi=self.scale_roi(self.ROI_TEAM_PANEL_BOTTOM_RIGHT),
-            ),
-            self._match_team_template(
-                screen,
-                self.BTN_TEAM_LEAVE,
-                threshold=self.TEAM_TEMPLATE_THRESHOLD,
-                roi=self.scale_roi(self.ROI_TEAM_PANEL_BOTTOM_RIGHT),
-            ),
-        ]
-        best = max(matches, key=lambda match: match.score)
-        self._last_match_score = best.score
-        self._last_match_center = best.center if best.found else None
-        panel_open = any(match.found for match in matches)
-        in_team = matches[-1].found
-        return panel_open, in_team
+        title_found = self.find_image(
+            self.TEXT_TEAM_PANEL_TITLE,
+            threshold=self.TEAM_TEMPLATE_THRESHOLD,
+            roi=self.scale_roi(self.ROI_TEAM_PANEL_TITLE),
+            screenshot=screen,
+        )
+        leave_found = self.find_image(
+            self.BTN_TEAM_LEAVE,
+            threshold=self.TEAM_TEMPLATE_THRESHOLD,
+            roi=self.scale_roi(self.ROI_TEAM_PANEL_BOTTOM_RIGHT),
+            screenshot=screen,
+        )
+        return title_found or leave_found, leave_found
 
     def wait_for_team_panel_open(self, *, timeout_ms: int) -> bool:
-        """等待任一可信的普通队伍面板标记出现。"""
-        deadline = self._make_deadline(timeout_ms)
-        while True:
-            if self.is_team_panel_open():
-                return True
-            if self._is_deadline_expired(deadline):
-                return False
-            remaining_ms = self._remaining_ms(deadline)
-            if remaining_ms > 0:
-                self.wait(min(250, remaining_ms))
+        """等待普通队伍面板标题出现。"""
+        return self.wait_image_appear(
+            self.TEXT_TEAM_PANEL_TITLE,
+            timeout_ms=timeout_ms,
+            threshold=self.TEAM_TEMPLATE_THRESHOLD,
+            interval_ms=250,
+            roi=self.scale_roi(self.ROI_TEAM_PANEL_TITLE),
+        )
 
     def open_team_panel(
         self,
@@ -2368,58 +2354,41 @@ class YmGameTask(GameTask):
     def is_team_matching(self, screenshot: np.ndarray | None = None) -> bool:
         """返回普通队伍面板是否显示取消匹配操作。"""
         screen = self.screenshot() if screenshot is None else screenshot
-        match = self._match_team_template(
-            screen,
+        return self.find_image(
             self.BTN_TEAM_CANCEL_MATCH,
             threshold=self.TEAM_TEMPLATE_THRESHOLD,
             roi=self.scale_roi(self.ROI_TEAM_MATCH_ACTION),
+            screenshot=screen,
         )
-        return match.found
 
     def count_team_members(self, screenshot: np.ndarray | None = None) -> int:
         """从一张截图统计当前十人副本队伍的已占用槽位数。"""
         screen = self.screenshot() if screenshot is None else screenshot
         empty_count = 0
         for roi in self.ROI_TEAM_MEMBER_SLOTS:
-            match = self._match_team_template(
-                screen,
+            empty_found = self.find_image(
                 self.ICON_TEAM_EMPTY_SLOT,
                 threshold=0.85,
                 roi=self.scale_roi(roi),
+                screenshot=screen,
             )
-            empty_count += int(match.found)
+            empty_count += int(empty_found)
         return len(self.ROI_TEAM_MEMBER_SLOTS) - empty_count
 
     def click_team_shout(self, screenshot: np.ndarray | None = None) -> None:
         """点击一键喊话喇叭；必要时回退到固定坐标。"""
         screen = self.screenshot() if screenshot is None else screenshot
-        match = self._match_team_template(
-            screen,
+        if self.find_image(
             self.ICON_TEAM_SHOUT,
             threshold=self.TEAM_TEMPLATE_THRESHOLD,
             roi=self.scale_roi(self.ROI_TEAM_SHOUT),
-        )
-        if match.found and match.center:
-            self.click_point(match.center[0], match.center[1], offset=0)
+            screenshot=screen,
+        ):
+            self.click(offset=0)
             return
 
         self._log("未识别到一键喊话小喇叭，使用固定坐标点击")
         self.click_point(self.POINT_TEAM_SHOUT[0], self.POINT_TEAM_SHOUT[1], offset=0)
-
-    def _match_team_template(
-        self,
-        screenshot: np.ndarray,
-        template: str,
-        *,
-        threshold: float,
-        roi: tuple[int, int, int, int],
-    ):
-        """匹配队伍模板，并为独立辅助函数按需提供视觉引擎。"""
-        vision = getattr(self, "_vision", None)
-        if vision is None:
-            vision = VisionEngine()
-            self._vision = vision
-        return vision.match_template(screenshot, template, threshold=threshold, roi=roi)
 
     def wait_for_team_members(self, min_member_count: int) -> None:
         """持续招募，直到队伍达到所要求人数。"""

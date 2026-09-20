@@ -10,7 +10,7 @@ from ymjh_bot.task.BPRW_task import BPRWTask
 from ymjh_bot.task.CGSS_task import CGSSTask
 from ymjh_bot.task.HSLJ_task import HSLJTask
 from ymjh_bot.task.JHXS_task import JHXSTask
-from ymjh_bot.task.JHYXB_task import JianghuYingxiongbangTask
+from ymjh_bot.task.JHYXB_task import JHYXBTask
 from ymjh_bot.task.JYPY_task import JYPYTask
 from ymjh_bot.task.KYRW_task import KYRWTask
 from ymjh_bot.task.MKSY_task import MKSYTask
@@ -92,7 +92,7 @@ def test_all_visible_queue_tasks_enable_health_recovery_by_default() -> None:
         CGSSTask,
         HSLJTask,
         JHXSTask,
-        JianghuYingxiongbangTask,
+        JHYXBTask,
         JYPYTask,
         KYRWTask,
         MKSYTask,

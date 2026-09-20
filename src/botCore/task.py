@@ -262,6 +262,7 @@ class GameTask:
         roi: tuple[int, int, int, int] | None = None,
         appear_threshold: int = 1,
         appear_mode: Literal["consecutive", "total"] = "total",
+        screenshot: np.ndarray | None = None,
     ) -> bool:
         if appear_threshold < 1:
             raise ValueError("appear_threshold must be greater than or equal to 1")
@@ -275,7 +276,12 @@ class GameTask:
         while deadline is None or time.perf_counter() < deadline:
             if self._stop_requested:
                 raise StepStopException("Stop requested")
-            if self.find_image(template, threshold=threshold, roi=roi):
+            if self.find_image(
+                template,
+                threshold=threshold,
+                roi=roi,
+                screenshot=screenshot,
+            ):
                 appear_count += 1
                 if callback:
                     callback(True)
@@ -306,6 +312,7 @@ class GameTask:
         missing_threshold: int = 3,
         callback: Callable[[bool, int], None] | None = None,
         interval_ms: int = 500,
+        screenshot: np.ndarray | None = None,
     ) -> bool:
         start = time.perf_counter()
         deadline = None if timeout_ms is None else start + timeout_ms / 1000.0
@@ -314,7 +321,11 @@ class GameTask:
         while deadline is None or time.perf_counter() < deadline:
             if self._stop_requested:
                 raise StepStopException("Stop requested")
-            found = self.find_image(template, threshold)
+            found = self.find_image(
+                template,
+                threshold=threshold,
+                screenshot=screenshot,
+            )
             if not found:
                 consecutive_missing += 1
                 if callback:

@@ -109,13 +109,7 @@ class RCFBTask(YmGameTask):
 
     @step(retry=0, timeout_ms=30000)
     def ensure_daily_team(self) -> None:
-        """创建或复用单人日常队伍；后续活动页重试不得重复建队。"""
-        self.open_team_panel(timeout_ms=5000, wait_after_click_ms=1000)
-        if self.is_in_team():
-            self._log("已处于有效队伍状态，复用当前队伍进入日常副本")
-            self.close_all_panels(timeout_ms=self.DUNGEON_FAILURE_PANEL_CLEANUP_TIMEOUT_MS)
-            return
-
+        """创建单人日常队伍；后续活动页重试不得重复建队。"""
         self.create_team("日常", min_member_count=1)
 
     @step(retry=3, timeout_ms=DAILY_START_TIMEOUT_MS)
@@ -433,7 +427,13 @@ class RCFBTask(YmGameTask):
 
     def open_daily_dungeon_panel(self) -> None:
         """从活动中打开江湖纪事，并验证其挑战面板。"""
-        if self.is_daily_dungeon_panel_visible(timeout_ms=0):
+        if self._wait_daily_binary_match(
+            self.TEXT_DAILY_PANEL_TITLE,
+            mode="light_foreground",
+            threshold=self.DAILY_PANEL_THRESHOLD,
+            roi=self.ROI_DAILY_PANEL_TITLE,
+            timeout_ms=0,
+        ).found:
             return
 
         self.open_activity_panel(
@@ -447,9 +447,13 @@ class RCFBTask(YmGameTask):
             )
             self.click_point(*self.POINT_ACTIVITY_DAILY_ENTRY, offset=0)
             self.wait(self.DAILY_ACTIVITY_SETTLE_MS)
-            if self.is_daily_dungeon_panel_visible(
+            if self._wait_daily_binary_match(
+                self.TEXT_DAILY_PANEL_TITLE,
+                mode="light_foreground",
+                threshold=self.DAILY_PANEL_THRESHOLD,
+                roi=self.ROI_DAILY_PANEL_TITLE,
                 timeout_ms=self.DAILY_ENTRY_TIMEOUT_MS,
-            ):
+            ).found:
                 return
 
         debug_path = self.save_debug_screenshot("rcfb_daily_panel_missing")
@@ -466,9 +470,13 @@ class RCFBTask(YmGameTask):
                 timeout_ms=1000,
             )
             if not confirm.found:
-                if not self.is_daily_dungeon_panel_visible(
+                if not self._wait_daily_binary_match(
+                    self.TEXT_DAILY_PANEL_TITLE,
+                    mode="light_foreground",
+                    threshold=self.DAILY_PANEL_THRESHOLD,
+                    roi=self.ROI_DAILY_PANEL_TITLE,
                     timeout_ms=self.DAILY_ENTRY_TIMEOUT_MS,
-                ):
+                ).found:
                     debug_path = self.save_debug_screenshot(
                         "rcfb_daily_panel_before_challenge_missing"
                     )
@@ -526,16 +534,6 @@ class RCFBTask(YmGameTask):
             "单人队伍确认后仍停留日常副本选择页，"
             f"已保存截图：{debug_path}"
         )
-
-    def is_daily_dungeon_panel_visible(self, *, timeout_ms: int) -> bool:
-        """返回江湖纪事挑战面板是否可见。"""
-        return self._wait_daily_binary_match(
-            self.TEXT_DAILY_PANEL_TITLE,
-            mode="light_foreground",
-            threshold=self.DAILY_PANEL_THRESHOLD,
-            roi=self.ROI_DAILY_PANEL_TITLE,
-            timeout_ms=timeout_ms,
-        ).found
 
     def wait_for_daily_dungeon_panel_close(self) -> bool:
         """进入确认后等待挑战面板消失。"""
@@ -805,15 +803,6 @@ class RCFBTask(YmGameTask):
         end = self.POINT_TASK_LIST_SCROLL_END
         self.swipe(start[0], start[1], end[0], end[1], duration_ms=350)
         self.wait(800)
-
-    def leave_team_if_present(self) -> None:
-        """离开已有队伍；已未组队时不视为失败。"""
-        try:
-            self.leave_team(timeout_ms=5000, wait_after_click_ms=1000)
-        except StepStopException:
-            raise
-        except Exception as exc:
-            self._log(f"退队检查未完成，按未组队继续：{exc}")
 
     def on_finish(self, results: list) -> None:
         """任务结束处理。"""

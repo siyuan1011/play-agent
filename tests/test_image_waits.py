@@ -9,7 +9,8 @@ from botCore import GameTask, ImageMatchResult
 
 
 class _Vision:
-    def __init__(self) -> None:
+    def __init__(self, *, found: bool = True) -> None:
+        self.found = found
         self.images: list[np.ndarray] = []
 
     def match_template(
@@ -22,9 +23,9 @@ class _Vision:
     ) -> ImageMatchResult:
         self.images.append(screenshot)
         return ImageMatchResult(
-            found=True,
-            score=threshold,
-            center=(25, 30),
+            found=self.found,
+            score=threshold if self.found else 0.0,
+            center=(25, 30) if self.found else None,
             bbox=None,
         )
 
@@ -63,6 +64,45 @@ def test_wait_image_appear_default_remains_one_hit() -> None:
     assert task.wait_image_appear("template.png", timeout_ms=None)
     assert calls == [True]
     assert task._last_match_center == (1, 1)
+
+
+def test_wait_image_appear_reuses_supplied_screenshot_for_every_confirmation() -> None:
+    task = GameTask()
+    vision = _Vision()
+    frame = np.zeros((20, 20, 3), dtype=np.uint8)
+    task._vision = vision  # type: ignore[assignment]
+    task.screenshot = lambda: pytest.fail("不应重新截图")  # type: ignore[method-assign]
+    task.wait = lambda _ms: None  # type: ignore[method-assign]
+
+    assert task.wait_image_appear(
+        "template.png",
+        timeout_ms=None,
+        interval_ms=0,
+        appear_threshold=3,
+        appear_mode="consecutive",
+        screenshot=frame,
+    )
+    assert len(vision.images) == 3
+    assert all(image is frame for image in vision.images)
+
+
+def test_wait_image_missing_reuses_supplied_screenshot_for_every_confirmation() -> None:
+    task = GameTask()
+    vision = _Vision(found=False)
+    frame = np.zeros((20, 20, 3), dtype=np.uint8)
+    task._vision = vision  # type: ignore[assignment]
+    task.screenshot = lambda: pytest.fail("不应重新截图")  # type: ignore[method-assign]
+    task.wait = lambda _ms: None  # type: ignore[method-assign]
+
+    assert task.wait_image_missing(
+        "template.png",
+        timeout_ms=None,
+        interval_ms=0,
+        missing_threshold=3,
+        screenshot=frame,
+    )
+    assert len(vision.images) == 3
+    assert all(image is frame for image in vision.images)
 
 
 def test_wait_image_appear_total_mode_accumulates_nonconsecutive_hits() -> None:

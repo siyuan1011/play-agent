@@ -74,9 +74,9 @@ def test_power_saving_requires_both_anchors_and_any_middle_character(
 @pytest.mark.parametrize(
     "scores",
     [
-        {"sheng": 0.7999, "dian": 0.9, "mo": 0.9, "shi": 0.9, "zhong": 0.9},
-        {"sheng": 0.9, "dian": 0.9, "mo": 0.9, "shi": 0.9, "zhong": 0.7999},
-        {"sheng": 0.9, "dian": 0.7999, "mo": 0.7999, "shi": 0.7999, "zhong": 0.9},
+        {"sheng": 0.7499, "dian": 0.9, "mo": 0.9, "shi": 0.9, "zhong": 0.9},
+        {"sheng": 0.9, "dian": 0.9, "mo": 0.9, "shi": 0.9, "zhong": 0.7499},
+        {"sheng": 0.9, "dian": 0.7499, "mo": 0.7499, "shi": 0.7499, "zhong": 0.9},
     ],
 )
 def test_power_saving_rejects_missing_anchor_or_middle_match(scores: dict[str, float]) -> None:
@@ -105,7 +105,7 @@ def test_power_saving_uses_one_frame_per_round_for_three_rounds() -> None:
             task.TEXT_POWER_SAVING_MO,
             task.TEXT_POWER_SAVING_SHI,
         ]
-        assert all(call[2] == 0.8 for call in round_calls)
+        assert all(call[2] == 0.75 for call in round_calls)
 
 
 def test_power_saving_uses_supplied_screenshot_only_for_first_round() -> None:
@@ -142,7 +142,7 @@ def test_power_saving_rejects_when_a_later_confirmation_frame_fails() -> None:
         def match_template(self, screenshot, template, *, threshold, roi):
             original_scores = self.scores
             if int(screenshot[0, 0, 0]) == 1:
-                self.scores = {**original_scores, "sheng": 0.79}
+                self.scores = {**original_scores, "sheng": 0.74}
             try:
                 return super().match_template(
                     screenshot,
