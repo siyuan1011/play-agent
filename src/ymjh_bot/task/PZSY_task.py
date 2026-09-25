@@ -21,17 +21,16 @@ class PZSYTask(BanquetAcquireMixin, YmGameTask):
     BTN_POZHEN_ONE_KEY_SUBMIT = str(YmGameTask.TEMPLATES_DIR / "btn_pozhen_one_key_submit.png")
     BTN_POZHEN_SUBMIT_5_TAB = str(YmGameTask.TEMPLATES_DIR / "btn_pozhen_submit_5_tab.png")
     BTN_POZHEN_SUBMIT_6_TAB = str(YmGameTask.TEMPLATES_DIR / "btn_pozhen_submit_6_tab.png")
-    BTN_MENKE_INVITE_FORWARD = str(YmGameTask.TEMPLATES_DIR / "btn_menke_invite_forward.png")
     BTN_MENKE_BANQUET_INVITE = str(YmGameTask.TEMPLATES_DIR / "btn_menke_banquet_invite.png")
     BTN_MENKE_CONFIRM_INVITE = str(YmGameTask.TEMPLATES_DIR / "btn_menke_confirm_invite.png")
     BTN_BANQUET_GET_ITEM = BTN_POZHEN_GET_ITEM
     BTN_BANQUET_ONE_KEY_SUBMIT = BTN_POZHEN_ONE_KEY_SUBMIT
     BANQUET_NAME = "破阵设宴"
+    BANQUET_INVITE_TIMEOUT_MS = 180000
     START_BANQUET_BRIGHTNESS_THRESHOLD = 120.0
 
     # 固定坐标点 (设计分辨率 1280x720 下)
     ROI_POZHEN_SHEYAN_ENTRY = (540, 230, 260, 160)
-    ROI_POZHEN_INVITE_BUTTONS = (780, 135, 170, 520)
     ROI_BANQUET_ACTION = (960, 530, 210, 110)
     ROI_START_BANQUET_BUTTON = (210, 570, 190, 65)
 
@@ -64,8 +63,8 @@ class PZSYTask(BanquetAcquireMixin, YmGameTask):
         self.open_activity_panel("帮派", wait_after_open_ms=3000)
 
     @step(retry=3, timeout_ms=30000)
-    def open_pozhen_list(self) -> None:
-        """点击破阵设宴入口，打开破阵邀约列表。"""
+    def start_pozhen_navigation(self) -> None:
+        """点击活动页前往按钮，开始前往破阵设宴 NPC。"""
         if not self.wait_find_image_in_roi(
             self.BTN_POZHEN_SHEYAN_ENTRY,
             self.ROI_POZHEN_SHEYAN_ENTRY,
@@ -85,29 +84,14 @@ class PZSYTask(BanquetAcquireMixin, YmGameTask):
         self.click()
         self.wait(1500)
 
-    @step(retry=3, timeout_ms=30000)
-    def choose_guest(self) -> None:
-        """选择任意一个可见门客，点击前往邀约。"""
+    @step(retry=0, timeout_ms=240000)
+    def invite_banquet(self) -> None:
+        """等待寻路抵达，在 NPC 对话中邀请赴宴并确认。"""
         if self.is_banquet_panel_visible():
             self._log("检测到已在破阵设宴物品面板，跳过邀约流程")
             self.jump_to("process_banquet_items")
 
-        if not self.wait_find_image_in_roi(
-            self.BTN_MENKE_INVITE_FORWARD,
-            self.ROI_POZHEN_INVITE_BUTTONS,
-            timeout_ms=10000,
-            description="破阵列表前往邀约按钮",
-        ):
-            self._log("未找到破阵列表前往邀约按钮，默认当前不可邀约或未进入破阵列表")
-            self.jump_to_end()
-        self.click()
-        self.wait(1500)
-        self._log("破阵前往邀约后等待自动寻路结束")
-        self.wait_auto_pathfinding()
-
-    @step(retry=0, timeout_ms=180000)
-    def invite_banquet(self) -> None:
-        """在 NPC 对话中点击邀请赴宴，并确认邀约。"""
+        self._log("等待自动寻路抵达并出现邀请赴宴按钮")
         if not self.wait_image_appear(
             self.BTN_MENKE_BANQUET_INVITE,
             timeout_ms=self.BANQUET_INVITE_TIMEOUT_MS,
@@ -174,7 +158,7 @@ class PZSYTask(BanquetAcquireMixin, YmGameTask):
             self._log("完成验证：活动页已无破阵设宴入口")
             return
 
-        self._log("完成验证：活动页仍存在破阵设宴入口，进入列表确认邀约状态")
+        self._log("完成验证：活动页仍存在破阵设宴入口，检查前往按钮")
         if not self.wait_find_image_in_roi(
             self.BTN_ACTIVITY_FORWARD,
             self.ROI_POZHEN_SHEYAN_ENTRY,
@@ -184,28 +168,10 @@ class PZSYTask(BanquetAcquireMixin, YmGameTask):
             self._log("完成验证：入口存在但未找到前往按钮，默认不可继续邀约")
             return
 
-        self.click()
-        self.wait(1500)
-        if self.is_banquet_panel_visible():
-            message = "完成验证：仍回到破阵设宴物品面板，任务未完成"
-            if self._started_banquet:
-                raise RuntimeError(message)
-            self._log(message)
-            return
-
-        if self.wait_find_image_in_roi(
-            self.BTN_MENKE_INVITE_FORWARD,
-            self.ROI_POZHEN_INVITE_BUTTONS,
-            timeout_ms=5000,
-            description="破阵列表前往邀约按钮",
-        ):
-            message = "完成验证：仍可前往邀约，破阵设宴未完成"
-            if self._started_banquet:
-                raise RuntimeError(message)
-            self._log(message)
-            return
-
-        self._log("完成验证：未发现可继续邀约的破阵设宴")
+        message = "完成验证：活动页仍可前往破阵设宴，任务未完成"
+        if self._started_banquet:
+            raise RuntimeError(message)
+        self._log(message)
 
     def is_banquet_panel_visible(self) -> bool:
         """返回破阵设宴主物品面板是否可见。"""

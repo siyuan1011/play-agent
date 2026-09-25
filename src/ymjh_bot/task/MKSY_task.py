@@ -16,7 +16,6 @@ class MKSYTask(BanquetAcquireMixin, YmGameTask):
 
     BTN_ACTIVITY_FORWARD = str(YmGameTask.TEMPLATES_DIR / "btn_activity_forward.png")
     BTN_MENKE_SHEYAN_ENTRY = str(YmGameTask.TEMPLATES_DIR / "btn_menke_sheyan_entry.png")
-    BTN_MENKE_INVITE_FORWARD = str(YmGameTask.TEMPLATES_DIR / "btn_menke_invite_forward.png")
     BTN_MENKE_BANQUET_INVITE = str(YmGameTask.TEMPLATES_DIR / "btn_menke_banquet_invite.png")
     BTN_MENKE_CONFIRM_INVITE = str(YmGameTask.TEMPLATES_DIR / "btn_menke_confirm_invite.png")
     BTN_MENKE_GET_ITEM = str(YmGameTask.TEMPLATES_DIR / "btn_menke_get_item.png")
@@ -33,10 +32,10 @@ class MKSYTask(BanquetAcquireMixin, YmGameTask):
     BTN_BANQUET_ONE_KEY_SUBMIT = BTN_MENKE_ONE_KEY_SUBMIT
     BTN_BANQUET_START_ACTIVE = BTN_MENKE_START_ACTIVE
     BANQUET_NAME = "门客设宴"
+    BANQUET_INVITE_TIMEOUT_MS = 180000
 
     # 固定坐标点 (设计分辨率 1280x720 下)
     ROI_MENKE_SHEYAN_ENTRY = (150, 470, 210, 145)
-    ROI_MENKE_INVITE_BUTTONS = (780, 135, 170, 520)
     ROI_BANQUET_ACTION = (960, 530, 210, 100)
     ROI_START_BANQUET_BUTTON = (242, 570, 155, 63)
     ROI_ROUTE_PANEL = (560, 70, 660, 480)
@@ -69,8 +68,8 @@ class MKSYTask(BanquetAcquireMixin, YmGameTask):
         self.open_activity_panel("帮派", wait_after_open_ms=3000)
 
     @step(retry=3, timeout_ms=30000)
-    def open_guest_list(self) -> None:
-        """点击门客设宴入口，打开门客邀约列表。"""
+    def start_guest_navigation(self) -> None:
+        """点击活动页前往按钮，开始前往门客。"""
         if not self.wait_find_image_in_roi(
             self.BTN_MENKE_SHEYAN_ENTRY,
             self.ROI_MENKE_SHEYAN_ENTRY,
@@ -90,29 +89,14 @@ class MKSYTask(BanquetAcquireMixin, YmGameTask):
         self.click()
         self.wait(1500)
 
-    @step(retry=3, timeout_ms=30000)
-    def choose_guest(self) -> None:
-        """选择任意一个可见门客，点击前往邀约。"""
+    @step(retry=0, timeout_ms=240000)
+    def invite_banquet(self) -> None:
+        """等待寻路抵达，在 NPC 对话中邀请赴宴并确认。"""
         if self.is_banquet_panel_visible():
             self._log("检测到已在门客设宴物品面板，跳过邀约流程")
             self.jump_to("process_banquet_items")
 
-        if not self.wait_find_image_in_roi(
-            self.BTN_MENKE_INVITE_FORWARD,
-            self.ROI_MENKE_INVITE_BUTTONS,
-            timeout_ms=10000,
-            description="门客列表前往邀约按钮",
-        ):
-            self._log("未找到门客列表前往邀约按钮，默认当前不可邀约或未进入门客列表")
-            self.jump_to("verify_completion")
-        self.click()
-        self.wait(1500)
-        self._log("门客前往邀约后等待自动寻路结束")
-        self.wait_auto_pathfinding()
-
-    @step(retry=0, timeout_ms=180000)
-    def invite_banquet(self) -> None:
-        """在 NPC 对话中点击邀请赴宴，并确认邀约。"""
+        self._log("等待自动寻路抵达并出现邀请赴宴按钮")
         if not self.wait_image_appear(
             self.BTN_MENKE_BANQUET_INVITE,
             timeout_ms=self.BANQUET_INVITE_TIMEOUT_MS,
@@ -174,7 +158,7 @@ class MKSYTask(BanquetAcquireMixin, YmGameTask):
             self._log("完成验证：活动页已无门客设宴入口")
             return
 
-        self._log("完成验证：活动页仍存在门客设宴入口，进入列表确认邀约状态")
+        self._log("完成验证：活动页仍存在门客设宴入口，检查前往按钮")
         if not self.wait_find_image_in_roi(
             self.BTN_ACTIVITY_FORWARD,
             self.ROI_MENKE_SHEYAN_ENTRY,
@@ -184,28 +168,10 @@ class MKSYTask(BanquetAcquireMixin, YmGameTask):
             self._log("完成验证：入口存在但未找到前往按钮，默认不可继续邀约")
             return
 
-        self.click()
-        self.wait(1500)
-        if self.is_banquet_panel_visible():
-            message = "完成验证：仍回到门客设宴物品面板，任务未完成"
-            if self._started_banquet:
-                raise RuntimeError(message)
-            self._log(message)
-            return
-
-        if self.wait_find_image_in_roi(
-            self.BTN_MENKE_INVITE_FORWARD,
-            self.ROI_MENKE_INVITE_BUTTONS,
-            timeout_ms=5000,
-            description="门客列表前往邀约按钮",
-        ):
-            message = "完成验证：仍可前往邀约，门客设宴未完成"
-            if self._started_banquet:
-                raise RuntimeError(message)
-            self._log(message)
-            return
-
-        self._log("完成验证：未发现可继续邀约的门客设宴")
+        message = "完成验证：活动页仍可前往门客设宴，任务未完成"
+        if self._started_banquet:
+            raise RuntimeError(message)
+        self._log(message)
 
     def on_finish(self, results: list) -> None:
         """任务结束处理。"""
