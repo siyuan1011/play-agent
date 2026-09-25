@@ -13,5 +13,7 @@ src/ymjh_bot/.task_queue_states/
 uv.lock.bak
 pytest-cache-files-*
 *.egg-info/
+.codex/
 .claude/
 .screenshots/
+.docs/
