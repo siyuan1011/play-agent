@@ -16,28 +16,19 @@ class BPRWTask(YmGameTask):
     BTN_BANGPAI_TASK_FORWARD = str(YmGameTask.TEMPLATES_DIR / "btn_activity_forward.png")
     BTN_BANGPAI_TASK_ACCEPT = str(YmGameTask.TEMPLATES_DIR / "btn_bangpai_task_accept.png")
     TITLE_BANGPAI_LIST = str(YmGameTask.TEMPLATES_DIR / "text_BPRW_bangpai_list_title.png")
-    TEXT_BANGPAI_FEAST_GUESTS = str(YmGameTask.TEMPLATES_DIR / "text_bangpai_feast_guests.png")
-    TEXT_BANGPAI_CONSTRUCTION = str(YmGameTask.TEMPLATES_DIR / "text_bangpai_construction.png")
-    TEXT_BANGPAI_SCOUT_ENEMY = str(YmGameTask.TEMPLATES_DIR / "text_bangpai_scout_enemy.png")
-    TEXT_BANGPAI_EMERGENCY_RESCUE = str(
-        YmGameTask.TEMPLATES_DIR / "text_bangpai_emergency_rescue.png"
-    )
-    TEXT_BANGPAI_JINLING_ESCORT = str(YmGameTask.TEMPLATES_DIR / "text_bangpai_jinling_escort.png")
-    TEXT_BANGPAI_BUXIANGWEIMOU = str(
-        YmGameTask.TEMPLATES_DIR / "text_bangpai_buxiangweimou.png"
-    )
-    TEXT_BANGPAI_RETURN = str(YmGameTask.TEMPLATES_DIR / "text_bangpai_return.png")
+    TEXT_BANGPAI_JIANGHU_CAIFENG = str(YmGameTask.TEMPLATES_DIR / "text_bangpai_jianghu_caifeng.png")  # 第一环侧栏标题模板，不含动态环数。
+    TEXT_BANGPAI_VISIT_GANGS = str(YmGameTask.TEMPLATES_DIR / "text_bangpai_visit_gangs.png")  # 第二环侧栏标题模板，不含动态环数。
+    TEXT_BANGPAI_BUY_GOODS = str(YmGameTask.TEMPLATES_DIR / "text_bangpai_buy_goods.png")  # 第三环侧栏标题模板，不含动态环数。
+    TEXT_VISIT_TJBP = str(YmGameTask.TEMPLATES_DIR / "text_BPRW_tuijianbangpai.png.png")  # 推荐帮派页前往按钮仅作为面板识别标记，不点击。
+    BANGPAI_CAIFENG_TITLE = "江湖采风"  # 第一环的稳定业务标题。
+    BANGPAI_VISIT_TITLE = "拜会各方帮派"  # 第二环的稳定业务标题。
+    BANGPAI_BUY_TITLE = "采买江湖风物"  # 第三环的稳定业务标题。
     SIDEBAR_BANGPAI_TASK_TITLE_BY_TEMPLATE = {
-        TEXT_BANGPAI_FEAST_GUESTS: "大宴宾客",
-        TEXT_BANGPAI_CONSTRUCTION: "帮派建设",
-        TEXT_BANGPAI_SCOUT_ENEMY: "刺探敌情",
-        TEXT_BANGPAI_EMERGENCY_RESCUE: "紧急救援",
-        TEXT_BANGPAI_JINLING_ESCORT: "金陵护送",
-        TEXT_BANGPAI_BUXIANGWEIMOU: "不相为谋",
-        TEXT_BANGPAI_RETURN: "回帮复命",
-    }
-    SIDEBAR_BANGPAI_TASK_TEMPLATES = list(SIDEBAR_BANGPAI_TASK_TITLE_BY_TEMPLATE)
-    SIDEBAR_BANGPAI_RETURN_TITLE = "回帮复命"
+        TEXT_BANGPAI_JIANGHU_CAIFENG: BANGPAI_CAIFENG_TITLE,
+        TEXT_BANGPAI_VISIT_GANGS: BANGPAI_VISIT_TITLE,
+        TEXT_BANGPAI_BUY_GOODS: BANGPAI_BUY_TITLE,
+    }  # 侧栏模板到三环业务标题的映射。
+    SIDEBAR_BANGPAI_TASK_TEMPLATES = list(SIDEBAR_BANGPAI_TASK_TITLE_BY_TEMPLATE)  # 当前支持的三环标题模板。
     ROUTE_WAREHOUSE = str(YmGameTask.TEMPLATES_DIR / "route_bangpai_warehouse.png")
     ROUTE_MALL = str(YmGameTask.TEMPLATES_DIR / "route_mall.png")
     ROUTE_STALL = str(YmGameTask.TEMPLATES_DIR / "route_stall.png")
@@ -52,6 +43,7 @@ class BPRWTask(YmGameTask):
     ROI_BANGPAI_TASK_CARD = (130, 230, 240, 140)
     ROI_ROUTE_PANEL = (720, 120, 480, 500)
     ROI_TRADE_ACTION = (520, 440, 330, 120)
+    ROI_BANGPAI_SIDEBAR_TITLE = (40, 135, 330, 430)  # 江湖侧栏帮派任务标题扫描区域，单位为屏幕像素。
     POINT_TASK_LIST_SCROLL_START = (190, 330)
     POINT_TASK_LIST_SCROLL_END = (190, 190)
     POINT_TASK_LIST_SCROLL_UP_START = (190, 190)
@@ -62,13 +54,14 @@ class BPRWTask(YmGameTask):
     DEFER_FOREGROUND_WAKE_TO_ON_START = True
     TASK_FLOW_TIMEOUT_MS = 900000
     TASK_ENTRY_STEP_TIMEOUT_MS = 180000
-    TASK_FLOW_RETRY_WAIT_MS = 3000
+    RESET_SAVED_PROGRESS_TO_START = True  # 旧断点仅保存步骤序号，步骤合并后需从任务入口重新判断现场。
+    TASK_FLOW_RETRY_WAIT_MS = 5000  # 两轮帮派流程检测之间的等待时长，单位为毫秒。
     SIDEBAR_TASK_CLICK_SETTLE_MS = 3000
     TASK_LIST_SCROLL_DURATION_MS = 1000
     TASK_LIST_SCROLL_UP_DURATION_MS = 400
     TASK_LIST_SCROLL_SETTLE_MS = 500
     TASK_LIST_SCROLL_UP_COUNT = 2
-    TRACKER_MISSING_CONFIRMATIONS = 2
+    TRACKER_MISSING_CONFIRMATIONS = 3  # 连续有效空轮达到三次后核验活动页。
     MAX_TRACKER_BOUNDARY_REACCEPTS = 1
     ACQUIRE_ROUTE_OPEN_SETTLE_MS = 3500
     FLOW_DETECTION_INTERVAL_MS = 1000
@@ -109,57 +102,46 @@ class BPRWTask(YmGameTask):
         self.switch_task_panel("江湖")
         task_title = self.click_bangpai_task_from_sidebar(max_scrolls=5, required=False)
         if task_title is not None:
-            self.handle_clicked_bangpai_task(task_title)
+            self.wait_bangpai_task_transition(f"恢复帮派任务“{task_title}”后")
             self._log("检测到已接取帮派任务，跳过接取流程")
             self.jump_to("run_task_flow")
         self._log("未发现已接取帮派任务，继续接取流程")
 
-    @step(retry=3, timeout_ms=30000)
+    @step(retry=3, timeout_ms=TASK_ENTRY_STEP_TIMEOUT_MS)
     def open_bangpai_activity(self) -> None:
-        """打开活动界面、切换帮派页签并点击帮派任务前往按钮。"""
+        """从活动页前往帮派任务，并在等待寻路前检查入帮状态。"""
         self.open_activity_panel("帮派", wait_after_open_ms=3000)
-        if not self.wait_find_image_in_roi(
+        if not self.find_image(
             self.BTN_BANGPAI_TASK_ENTRY,
-            self.ROI_BANGPAI_TASK_CARD,
-            timeout_ms=3000,
-            description="活动页帮派任务入口",
+            roi=self.scale_roi(self.ROI_BANGPAI_TASK_CARD),
         ):
             self._log("未找到帮派任务入口，默认帮派任务已完成")
             self.jump_to_end()
 
-        if not self.wait_find_image_in_roi(
+        if not self.find_image(
             self.BTN_BANGPAI_TASK_FORWARD,
-            self.ROI_BANGPAI_TASK_CARD,
-            timeout_ms=5000,
-            description="活动页帮派任务前往按钮",
+            roi=self.scale_roi(self.ROI_BANGPAI_TASK_CARD),
         ):
             raise RuntimeError("未找到活动页帮派任务前往按钮")
         self.click()
         self.wait(1500)
-
-    @step(retry=1, timeout_ms=TASK_ENTRY_STEP_TIMEOUT_MS)
-    def auto_pathfinding(self) -> None:
-        """等待接取前自动寻路结束。"""
+        if self.find_image(
+            self.TITLE_BANGPAI_LIST,
+            threshold=0.85,
+            roi=self.scale_roi((95, 110, 230, 90)),
+        ):
+            self._log("检测到当前未加入帮派，跳过帮派任务")
+            self.jump_to_end()
         self.wait_bangpai_task_transition("接取前自动寻路")
 
     @step(retry=3, timeout_ms=180000)
     def accept_task(self) -> None:
         """接取帮派任务。"""
-        if self.is_bangpai_list_visible():
-            self._log("检测到当前未加入帮派，跳过帮派任务")
-            self.jump_to_end()
-
-        try:
-            if not self.wait_image_appear(
-                self.BTN_BANGPAI_TASK_ACCEPT,
-                timeout_ms=120000,
-            ):
-                raise RuntimeError("未找到NPC 帮派任务按钮")
-        except RuntimeError:
-            if self.is_bangpai_list_visible():
-                self._log("检测到当前未加入帮派，跳过帮派任务")
-                self.jump_to_end()
-            raise
+        if not self.wait_image_appear(
+            self.BTN_BANGPAI_TASK_ACCEPT,
+            timeout_ms=120000,
+        ):
+            raise RuntimeError("未找到NPC 帮派任务按钮")
         self.click()
         self.wait(1500)
 
@@ -168,68 +150,68 @@ class BPRWTask(YmGameTask):
         self.click()
         self.wait(1500)
 
-    def is_bangpai_list_visible(self) -> bool:
-        """返回当前是否处于帮派加入列表，而非帮派任务对话框。"""
-        return self.find_image(
-            self.TITLE_BANGPAI_LIST,
-            threshold=0.85,
-            roi=self.scale_roi((95, 110, 230, 90)),
-        )
-
-    @step(retry=3, timeout_ms=TASK_ENTRY_STEP_TIMEOUT_MS)
-    def start_accepted_task(self) -> None:
-        """接取后从任务栏启动帮派任务。"""
-        task_title = self.click_bangpai_task_from_sidebar(max_scrolls=5, required=True)
-        if task_title is not None:
-            self.handle_clicked_bangpai_task(task_title)
-            return
-
-        if self.is_bangpai_list_visible():
-            self._log("检测到当前未加入帮派，跳过帮派任务")
-        else:
-            self._log("接取后未检测到帮派任务追踪，按当前不可执行或已完成处理")
-        self.jump_to_end()
-
     @step(retry=1, timeout_ms=TASK_FLOW_TIMEOUT_MS)
     def run_task_flow(self) -> None:
-        """循环执行帮派任务，并在跨日残环边界补接当日剩余环数。"""
-        deadline = self._make_deadline(self.TASK_FLOW_TIMEOUT_MS)
-        tracker_missing_confirmations = 0
+        """按画面优先级循环推进帮派任务，并核验跨日残环边界。"""
+        deadline = self._make_deadline(self.TASK_FLOW_TIMEOUT_MS)  # 整个帮派任务轮询的截止时刻。
+        tracker_missing_confirmations = 0  # 连续有效空轮的次数，命中任一流程后清零。
         while not self._is_deadline_expired(deadline):
             if self.close_completion_dialog_if_visible():
                 return
 
-            if (
-                self.handle_submit_panel_if_visible()
-                or self.handle_trade_panel_if_visible()
-                or self.handle_acquire_route_panel_if_visible()
-            ):
+            try:
+                handled = self.handle_bangpai_flow_once()  # 本轮是否命中并处理了任何帮派流程。
+            except TaskSidebarStateError as exc:
+                self._log(f"本轮任务侧栏状态尚未稳定，不计入任务消失次数：{exc}")
                 self.wait(self.TASK_FLOW_RETRY_WAIT_MS)
                 continue
 
-            task_title = self.click_bangpai_task_from_sidebar(max_scrolls=2, required=False)
-            if task_title is not None:
+            if handled:
                 tracker_missing_confirmations = 0
-                self.handle_clicked_bangpai_task(task_title)
             else:
                 tracker_missing_confirmations += 1
                 self._log(
-                    "有效江湖任务栏未找到帮派任务，"
-                    f"确认环数分段边界 {tracker_missing_confirmations}/"
+                    "有效江湖任务栏及其他帮派流程均未命中，"
+                    f"确认任务结束边界 {tracker_missing_confirmations}/"
                     f"{self.TRACKER_MISSING_CONFIRMATIONS}"
                 )
                 if tracker_missing_confirmations >= self.TRACKER_MISSING_CONFIRMATIONS:
                     if self.continue_after_tracker_disappeared():
                         tracker_missing_confirmations = 0
-                        continue
-                    self._log("帮派活动已不可再次接取，确认今日帮派任务完成")
-                    return
+                    else:
+                        self._log("帮派活动已不可再次接取，确认今日帮派任务完成")
+                        return
             self.wait(self.TASK_FLOW_RETRY_WAIT_MS)
 
         raise RuntimeError("帮派任务执行流程超时：未检测到完成对话或明确任务追踪消失")
 
+    def handle_bangpai_flow_once(self) -> bool:
+        """按寻路、对话、拜访、提交、获取和侧栏追踪的顺序处理一轮。"""
+        if not self.wait_auto_pathfinding(timeout_ms=120000):
+            screenshot_path = self.save_debug_screenshot("bangpai_transition_timeout")
+            raise RuntimeError(f"帮派任务寻路或过图未结束，已保存截图：{screenshot_path}")
+        if self.drain_dialog_next():
+            return True
+
+        self.wait_image_missing(
+            self.TEXT_VISIT_TJBP,
+            timeout_ms=30000,
+            threshold=0.85,
+            roi=self.scale_roi((620, 140, 130, 50)),
+        )
+
+        if self.handle_submit_panel_if_visible():
+            return True
+        if self.handle_trade_panel_if_visible() or self.handle_acquire_route_panel_if_visible():
+            return True
+
+        task_title = self.click_bangpai_task_from_sidebar(max_scrolls=5, required=False)  # 本轮侧栏命中的帮派环节标题，覆盖接取后的完整列表。
+        if task_title is not None:
+            self.wait_bangpai_task_transition(f"点击帮派任务“{task_title}”后")
+        return task_title is not None
+
     def continue_after_tracker_disappeared(self) -> bool:
-        """跨次保留的六环任务在每日次数中途结束时重新接取一次。"""
+        """跨次保留的任务在每日次数中途结束时重新接取一次。"""
         self._log("帮派任务追踪连续消失，打开活动页核验是否存在下一段可接任务")
         try:
             self.open_bangpai_activity()
@@ -246,26 +228,10 @@ class BPRWTask(YmGameTask):
             )
 
         self._log("检测到昨日残环已结束且帮派任务仍可接取，补接今日剩余环数")
-        self.auto_pathfinding()
-        try:
-            self.accept_task()
-        except StepJumpException as exc:
-            if exc.target == StepJumpException.JUMP_TO_END:
-                return False
-            raise
-
-        try:
-            self.start_accepted_task()
-        except StepJumpException as exc:
-            if exc.target != StepJumpException.JUMP_TO_END:
-                raise
-            debug_path = self.save_debug_screenshot("bprw_reaccept_tracker_missing")
-            raise RuntimeError(
-                "帮派任务跨日补接后未检测到新任务追踪，"
-                f"已保存截图：{debug_path}"
-            ) from exc
+        self.accept_task()
 
         self._tracker_boundary_reaccepts += 1
+        self._warehouse_item_checked = False
         self._log("帮派任务跨日补接成功，继续执行当日剩余环数")
         return True
 
@@ -332,7 +298,7 @@ class BPRWTask(YmGameTask):
     ) -> str | None:
         """返回精确的帮派任务侧栏标题，并保留其点击中心。"""
         deadline = self._make_deadline(timeout_ms)
-        roi = self.scale_roi((40, 135, 330, 430))
+        roi = self.scale_roi(self.ROI_BANGPAI_SIDEBAR_TITLE)
         while not self._is_deadline_expired(deadline):
             match = self._vision.match_template(
                 self.screenshot(),
@@ -357,13 +323,6 @@ class BPRWTask(YmGameTask):
         self._log("已确认江湖任务侧栏，本页未找到支持的帮派任务标题")
         return None
 
-    def handle_clicked_bangpai_task(self, task_title: str) -> bool:
-        """根据已点击追踪项的精确帮派任务标题推进流程。"""
-        self.wait_bangpai_task_transition(f"点击帮派任务“{task_title}”后")
-        if task_title == self.SIDEBAR_BANGPAI_RETURN_TITLE:
-            return self.handle_return_task_item_after_click()
-        return True
-
     def wait_bangpai_task_transition(self, description: str) -> None:
         """执行侧栏操作前，等待寻路或加载稳定完成或失败。"""
         if self.wait_auto_pathfinding(timeout_ms=120000):
@@ -371,19 +330,6 @@ class BPRWTask(YmGameTask):
             return
         screenshot_path = self.save_debug_screenshot("bangpai_task_transition_timeout")
         raise RuntimeError(f"{description}等待自动寻路或过图结束超时，已保存截图：{screenshot_path}")
-
-    def handle_return_task_item_after_click(self) -> bool:
-        """提交或获取“返回帮派”打开的最终任务物品。"""
-        self._log("检测到回帮复命，优先处理第五环任务物品")
-        if self.handle_submit_panel_if_visible():
-            return True
-        if self.handle_trade_panel_if_visible():
-            return True
-        if self.handle_acquire_route_panel_if_visible():
-            return True
-
-        self._log("回帮复命已点击，暂未出现任务物品提交或获取面板")
-        return False
 
     def confirm_sidebar_task_popup_if_needed(self) -> bool:
         """确认点击侧栏追踪项后可能出现的临时提示。"""
@@ -438,7 +384,7 @@ class BPRWTask(YmGameTask):
         return True
 
     def handle_acquire_route_panel_if_visible(self) -> bool:
-        """按仓库优先策略处理物品获取面板。"""
+        """按仓库优先策略处理第三环物品获取面板。"""
         if not self.is_acquire_route_panel_visible():
             return False
 
@@ -457,10 +403,10 @@ class BPRWTask(YmGameTask):
         if self.try_stall_route():
             return True
 
-        self._log("帮派任务物品无法通过仓库、商城或摆摊获取，关闭面板并结束本轮执行")
+        self._log("帮派任务物品无法通过仓库、商城或摆摊获取")
         self.close_transient_panels()
-        self.jump_to_end()
-        return True
+        screenshot_path = self.save_debug_screenshot("bangpai_buy_item_unavailable")
+        raise RuntimeError(f"采买江湖风物无法取得任务物品，已保存截图：{screenshot_path}")
 
     def handle_submit_panel_if_visible(self) -> bool:
         """一键提交面板出现时提交最终任务物品。"""
@@ -605,7 +551,8 @@ class BPRWTask(YmGameTask):
 
         self._log("自动打开的全服摆摊未找到可购买商品")
         self.close_transient_panels()
-        return True
+        screenshot_path = self.save_debug_screenshot("bangpai_auto_trade_item_unavailable")
+        raise RuntimeError(f"采买江湖风物的交易面板没有可购买商品，已保存截图：{screenshot_path}")
 
     def buy_from_current_trade_panel(self, description: str, *, timeout_ms: int) -> bool:
         """在当前交易面板点击购买，必要时确认二次提示。"""
@@ -620,13 +567,13 @@ class BPRWTask(YmGameTask):
         ):
             return False
 
-        confirmed = self.confirm_purchase_if_needed()
+        confirmed = self.confirm_purchase_if_needed()  # 本次购买是否出现并确认了二次提示。
         if not confirmed and self.find_image(
             self.BTN_BUY,
             threshold=self.TRADE_BUY_THRESHOLD,
             roi=self.scale_roi(self.ROI_TRADE_ACTION),
         ):
-            self._log("购买按钮点击后仍可见，重试点击")
+            self._log("购买按钮点击后仍可见，按原购买流程重试点击")
             self.click()
             self.wait(self.TRADE_ACTION_SETTLE_MS)
             self.confirm_purchase_if_needed()
@@ -644,7 +591,7 @@ class BPRWTask(YmGameTask):
             return False
 
         self.wait_bangpai_task_transition(f"重新点击帮派任务“{task_title}”后")
-        if task_title != self.SIDEBAR_BANGPAI_RETURN_TITLE:
+        if task_title != self.BANGPAI_BUY_TITLE:
             self._log(f"重新打开物品获取途径时任务已切换为：{task_title}")
             return False
 
@@ -652,13 +599,12 @@ class BPRWTask(YmGameTask):
 
     def wait_acquire_route_panel_visible(self, timeout_ms: int = 3000) -> bool:
         """等待任一受支持的获取途径出现。"""
-        return self.wait_find_image_in_roi(
+        return self.wait_image_appear(
             [self.ROUTE_WAREHOUSE, self.ROUTE_MALL, self.ROUTE_STALL],
-            self.ROI_ROUTE_PANEL,
             timeout_ms=timeout_ms,
-            description="帮派任务物品获取途径面板",
             threshold=0.8,
             interval_ms=self.FLOW_DETECTION_INTERVAL_MS,
+            roi=self.scale_roi(self.ROI_ROUTE_PANEL),
         )
 
     def is_acquire_route_panel_visible(self) -> bool:
@@ -723,13 +669,12 @@ class BPRWTask(YmGameTask):
                 interval_ms=interval_ms,
             )
         else:
-            found = self.wait_find_image_in_roi(
+            found = self.wait_image_appear(
                 template,
-                roi,
                 timeout_ms=timeout_ms,
-                description=description,
                 threshold=threshold,
                 interval_ms=interval_ms,
+                roi=self.scale_roi(roi),
             )
 
         if not found:

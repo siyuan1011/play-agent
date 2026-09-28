@@ -215,11 +215,14 @@ class TaskQueueRunner:
         if task_index >= self.total_tasks:
             step_index = 0
         else:
-            step_count = len(self.task_list[task_index].get_steps())
+            task = self.task_list[task_index]  # 当前断点所属任务实例。
+            step_count = len(task.get_steps())
             if step_count <= 0:
                 step_index = 0
             else:
                 step_index = max(0, min(step_index, step_count - 1))
+            if getattr(task, "RESET_SAVED_PROGRESS_TO_START", False):
+                step_index = 0
 
         self.current_role_index = role_index
         self.current_task_index = task_index

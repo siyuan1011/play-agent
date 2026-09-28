@@ -1,8 +1,10 @@
-"""生活任务：通过地图生活筛选定位资源并循环采集。"""
+"""生活任务：挖矿使用固定世界坐标；其他技能待配置坐标。"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
@@ -10,8 +12,11 @@ import cv2
 import numpy as np
 
 from botCore import StepStopException, step
+from botCore.vision import load_image
 from ymjh_bot.ui.task_queue_state import (
     SHRW_MATERIAL_OPTIONS,
+    SHRW_STRATEGY_CONTINUOUS,
+    SHRW_STRATEGY_FIXED_COUNT,
     SHRW_TASK_TYPE_LABELS,
     normalize_shrw_settings,
 )
@@ -92,20 +97,565 @@ def _material_specs() -> dict[str, LifeMaterialSpec]:
     return specs
 
 
+# 游戏世界坐标；其他生活技能保持原地图选择规则，(0, 0) 是禁用占位。
+LIFE_COORDINATES: dict[str, tuple[tuple[int, int], ...]] = {
+    "stone": ((1498, 1853), (1490, 1844), (1488, 1838)),
+    "brass_ore": ((1586, 1778), (1576, 1772)),
+    "silver_ore": ((1212, 1582), (1200, 1585)),
+    "gold_ore": ((1121, 1626), (1141, 1618)),
+    "emerald_ore": ((850, 1488), (906, 1524), (964, 1494)),
+    "tungsten_ore": ((846, 1696), (855, 1700)),
+    **{
+        key: ((0, 0),)
+        for skill, options in SHRW_MATERIAL_OPTIONS.items()
+        if skill != "mining"
+        for key, _label in options
+    },
+}
+MINING_COORDINATES = LIFE_COORDINATES
+
+
+class MiningConfigurationError(ValueError):
+    """不允许通过游戏操作恢复的配置错误。"""
+
+
+class MiningSignal(Enum):
+    IDLE = "idle"
+    GATHERING = "gathering"
+    COMPLETED = "completed"
+    NO_TOOL = "no_tool"
+    NO_STAMINA = "no_stamina"
+    LOADING = "loading"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class MiningObservation:
+    signal: MiningSignal
+    action: tuple[int, int] | None = None
+
+
+@dataclass(frozen=True)
+class MiningLine:
+    number: int
+    point: tuple[int, int]
+    current: bool
+    available: bool
+    page: int = 0
+
+
+class MiningFlow:
+    ACTION_WAIT_MS = 3_000
+    POLL_MS = 300
+    LINE_RECHECK_MS = 30_000
+    LINE_CHECK_ATTEMPTS = 3
+
+    def __init__(self, task: SHRWTask, ui):
+        self.task = task
+        self.ui = ui
+        self.round_number = 0
+        self.line_number = 0
+
+    def check_stop(self) -> None:
+        if self.task.is_stopped():
+            raise StepStopException("Stop requested")
+
+    def observe(self) -> MiningObservation:
+        self.check_stop()
+        observation = self.ui.observe()
+        if observation.signal in (MiningSignal.NO_TOOL, MiningSignal.NO_STAMINA):
+            reason = "没有可用的采集工具" if observation.signal == MiningSignal.NO_TOOL else "体力耗尽"
+            raise LifeTaskUnavailable(reason)
+        return observation
+
+    def require_stable_scene(self, observation: MiningObservation) -> None:
+        if observation.signal == MiningSignal.LOADING:
+            if not self.task.wait_for_main_scene_after_loading():
+                raise RuntimeError("挖矿场景加载超时")
+            raise RuntimeError("挖矿期间出现非预期场景切换，未将本次操作计为成功或无矿")
+        if observation.signal == MiningSignal.UNKNOWN:
+            raise RuntimeError("挖矿界面状态未知，未识别到工具或体力耗尽标志")
+
+    def wait_action(self) -> tuple[int, int] | None:
+        deadline = self.task._make_deadline(self.ACTION_WAIT_MS)
+        while True:
+            observation = self.observe()
+            self.require_stable_scene(observation)
+            if observation.action is not None:
+                return observation.action
+            if observation.signal != MiningSignal.IDLE:
+                raise RuntimeError("到点后仍有未完成的采集动作")
+            if self.task._is_deadline_expired(deadline):
+                return None
+            self.task.wait(min(self.POLL_MS, self.task._remaining_ms(deadline)))
+
+    def gather_once(self, action: tuple[int, int]) -> None:
+        self.check_stop()
+        self.task.click_point(*action, offset=0)
+        self.ui.reset_acceleration()
+        progress_seen = False
+        unknown_deadline = None
+        non_scene_seen = False
+
+        def on_poll(_found: bool, _missing: int) -> None:
+            nonlocal progress_seen, unknown_deadline, non_scene_seen
+            observation = self.observe()
+            if observation.signal in (MiningSignal.UNKNOWN, MiningSignal.LOADING):
+                non_scene_seen = True
+                if unknown_deadline is None:
+                    unknown_deadline = self.task._make_deadline(3_000)
+                elif self.task._is_deadline_expired(unknown_deadline):
+                    raise RuntimeError("采集后出现未确认的过渡画面或面板")
+                return
+            unknown_deadline = None
+            self.require_stable_scene(observation)
+            progress_seen |= observation.signal == MiningSignal.GATHERING
+            progress_seen |= self.ui.click_acceleration_if_visible()
+
+        marker_missing = self.task.wait_image_missing(
+            str(ASSET_DIR / "action_label.png"),
+            timeout_ms=self.task.GATHER_COMPLETE_TIMEOUT_MS,
+            threshold=0.82,
+            missing_threshold=3,
+            interval_ms=self.POLL_MS,
+            roi=self.ui.ROI_ACTION_LABEL,
+            callback=on_poll,
+        )
+        if unknown_deadline is not None:
+            while True:
+                observation = self.observe()
+                if observation.signal not in (MiningSignal.UNKNOWN, MiningSignal.LOADING):
+                    self.require_stable_scene(observation)
+                    break
+                if self.task._is_deadline_expired(unknown_deadline):
+                    raise RuntimeError("采集后出现未确认的过渡画面或面板")
+                self.task.wait(self.POLL_MS)
+        if non_scene_seen:
+            raise RuntimeError("采集期间曾出现过渡画面或普通面板，不能计为成功")
+        if not marker_missing:
+            raise RuntimeError("采集标志未消失：未确认采集完成，不能推断工具或体力耗尽")
+        if not progress_seen:
+            raise RuntimeError("采集标志消失但未观察到采集过程，不能计为成功")
+
+    def switch_line(self) -> None:
+        scope = "interconnected"
+        target_number = 1 if self.line_number == 0 else self.line_number % 7 + 1
+        for attempt in range(1, self.LINE_CHECK_ATTEMPTS + 1):
+            self.check_stop()
+            lines = self.ui.list_lines(scope)
+            order = list(range(target_number, 8)) + list(range(1, target_number))
+            if self.line_number == 0:
+                order = [1]
+            for number in order:
+                self.check_stop()
+                line = next((item for item in lines if item.number == number), None)
+                if line is None or not line.available or (self.line_number and line.current):
+                    continue
+                if line.current or self.ui.change_line(scope, line):
+                    self.line_number = number
+                    self.ui.close_lines()
+                    self.task._log(f"生活任务已切换至互联 {number} 线")
+                    return
+                self.task._log(f"互联 {number} 线当前不可进入，尝试下一条")
+            self.ui.close_lines()
+            self.task._log(f"挖矿暂无可用线路，第 {attempt}/{self.LINE_CHECK_ATTEMPTS} 次检查")
+            if attempt < self.LINE_CHECK_ATTEMPTS:
+                self.task.wait(self.LINE_RECHECK_MS)
+        raise RuntimeError("连续三次检查均无可用分线")
+
+    def run(self, coordinates: tuple[tuple[int, int], ...]) -> None:
+        self.ui.prepare_map(coordinates[0])
+        self.switch_line()  # Always start from interconnected line 1.
+        while self.task._should_continue_collecting():
+            self.check_stop()
+            self.round_number += 1
+            for index, coordinate in enumerate(coordinates, start=1):
+                self.check_stop()
+                self.task._log(
+                    f"{self.task.material.label}：第 {self.round_number} 轮，"
+                    f"互联 {self.line_number} 线，"
+                    f"坐标 {index}/{len(coordinates)} {coordinate}"
+                )
+                self.ui.move_to(coordinate)
+                action = self.wait_action()
+                if action is None:
+                    self.task._log(f"坐标 {coordinate} 未找到采集物，尝试本线下一坐标")
+                    continue
+                self.gather_once(action)
+                self.task._successful_gathers += 1
+                self.task._log(f"{self.task.material.label} 采集完成，累计 {self.task._successful_gathers} 次")
+                if not self.task._should_continue_collecting():
+                    return
+            self.switch_line()
+
+
+ASSET_DIR = TEMPLATES_DIR / "mining"
+
+
+def glyph_runs(mask: np.ndarray) -> list[tuple[int, np.ndarray]]:
+    """Split a tightly scoped numeric field by blank columns, retaining punctuation."""
+    runs = []
+    start = None
+    for x, occupied in enumerate(np.any(mask, axis=0).tolist() + [False]):
+        if occupied and start is None:
+            start = x
+        elif not occupied and start is not None:
+            glyph = mask[:, start:x]
+            rows = np.flatnonzero(np.any(glyph, axis=1))
+            runs.append((start, glyph[rows[0] : rows[-1] + 1]))
+            start = None
+    return runs
+
+
+@lru_cache(maxsize=10)
+def digit_template(digit: int) -> np.ndarray:
+    return cv2.cvtColor(load_image(str(ASSET_DIR / f"digit_{digit}.png")), cv2.COLOR_BGR2GRAY)
+
+
+@lru_cache(maxsize=10)
+def hud_digit_templates(digit: int) -> tuple[np.ndarray, ...]:
+    return tuple(cv2.cvtColor(load_image(str(p)), cv2.COLOR_BGR2GRAY)
+                 for p in sorted(ASSET_DIR.glob(f"hud_digit_{digit}_*.png")))
+
+
+@lru_cache(maxsize=10)
+def field_digit_templates(digit: int) -> tuple[np.ndarray, ...]:
+    return (digit_template(digit),) + tuple(
+        cv2.cvtColor(load_image(str(p)), cv2.COLOR_BGR2GRAY)
+        for p in sorted(ASSET_DIR.glob(f"field_digit_{digit}_*.png"))
+    )
+
+
+def read_number(mask: np.ndarray, *, hud: bool = False) -> int | None:
+    digits = []
+    for _, glyph in glyph_runs(mask):
+        height, width = glyph.shape
+        if height < 8 or (hud and height > 13) or width / height < 0.2:
+            # HUD parentheses are taller than digits; the digit 1 is narrow.
+            continue
+        scores = []
+        for digit in range(10):
+            templates = hud_digit_templates(digit) if hud else field_digit_templates(digit)
+            errors = []
+            for template in templates:
+                aspect_error = abs(width / height - template.shape[1] / template.shape[0])
+                resized = cv2.resize(glyph, (template.shape[1], template.shape[0]), interpolation=cv2.INTER_AREA)
+                error = float(np.mean(np.abs(resized.astype(float) - template))) / 255
+                errors.append(error + aspect_error * 0.4)
+            scores.append((min(errors, default=1.0), digit))
+        scores.sort()
+        if scores[0][0] > 0.26 or scores[1][0] - scores[0][0] < 0.025:
+            return None
+        digits.append(str(scores[0][1]))
+    return int("".join(digits)) if digits else None
+
+
+class MiningUI:
+    # Calibrated from logs/mining_coordinate_probe on 2026-09-22.
+    INPUT_POINTS = ((164, 634), (280, 634))
+    INPUT_CONFIRM = (1102, 80)
+    GO_POINT = (367, 634)
+    LINE_POINT = (1118, 45)
+    SCOPE_POINT = (978, 646)
+    MAX_LINE_PAGES = 20
+    ROI_ACTION_LABEL = (970, 438, 75, 55)
+    ROI_ACCELERATION = (560, 455, 170, 90)
+    REQUIRED_ASSETS = (
+        "map_coordinates", "input_confirm", "switch_to_local",
+        "switch_to_interconnected", "zhongyuan", "gathering",
+        "stamina", "tool_purchase", "tool_trade", "tool_trade_page",
+        "action_label", "acceleration",
+    )
+
+    def __init__(self, task: SHRWTask):
+        self.task = task
+        self._acceleration_visible = False
+
+    def validate_assets(self) -> None:
+        missing = [name for name in self.REQUIRED_ASSETS if not (ASSET_DIR / f"{name}.png").is_file()]
+        missing += [f"digit_{i}" for i in range(10) if not (ASSET_DIR / f"digit_{i}.png").is_file()]
+        missing += [f"hud_digit_{i}" for i in range(10) if not list(ASSET_DIR.glob(f"hud_digit_{i}_*.png"))]
+        if missing:
+            self.task._mining_configuration_failed = True
+            raise MiningConfigurationError("挖矿识别素材尚待实机补齐：" + "、".join(missing))
+
+    def screenshot(self) -> np.ndarray:
+        if self.task.is_stopped():
+            raise StepStopException("Stop requested")
+        image = self.task.screenshot()
+        if image.shape[:2] != (720, 1280):
+            raise RuntimeError("固定坐标挖矿仅支持 1280×720 游戏画面")
+        return image
+
+    def matches(self, image: np.ndarray, name: str, roi, threshold: float = 0.86) -> bool:
+        path = ASSET_DIR / f"{name}.png"
+        if not path.is_file():
+            raise MiningConfigurationError(f"挖矿识别素材缺失：{name}")
+        return self.task._vision.match_template(image, str(path), roi=roi, threshold=threshold).found
+
+    def observe(self) -> MiningObservation:
+        image = self.screenshot()
+        self._latest_image = image
+        # Specific signs take precedence over a generic non-scene classification.
+        if self.matches(image, "stamina", (250, 150, 800, 450)):
+            return MiningObservation(MiningSignal.NO_STAMINA)
+        if (self.matches(image, "tool_purchase", (200, 80, 900, 530))
+                or self.matches(image, "tool_trade", (200, 80, 900, 530))
+                or self.matches(image, "tool_trade_page", (0, 0, 160, 80))):
+            return MiningObservation(MiningSignal.NO_TOOL)
+        if self.task.is_scene_transition_loading(image):
+            return MiningObservation(MiningSignal.LOADING)
+        if not self.task.is_main_scene(image) or self.task.is_map_visible(image):
+            return MiningObservation(MiningSignal.UNKNOWN)
+        if self.matches(image, "gathering", (905, 415, 55, 35)):
+            return MiningObservation(MiningSignal.GATHERING)
+        action = self.task.find_configured_gather_action(image)
+        # The text portion reliably activates gathering; the icon can overlap
+        # the expanding combat controls immediately after leaving power saving.
+        return MiningObservation(MiningSignal.IDLE, (1000, 465) if action else None)
+
+    def reset_acceleration(self) -> None:
+        self._acceleration_visible = False
+
+    def click_acceleration_if_visible(self) -> bool:
+        visible = self.matches(self._latest_image, "acceleration", self.ROI_ACCELERATION)
+        if visible and not self._acceleration_visible:
+            self.task.click_point(637, 462, offset=0)
+            self.task._log("检测到采集加速，已点击")
+        self._acceleration_visible = visible
+        return visible
+
+    def current_coordinate(self, image: np.ndarray) -> tuple[int, int] | None:
+        if not self.matches(image, "zhongyuan", (1145, 0, 48, 22)):
+            return None
+        region = image[0:21, 1186:1280]
+        mask = cv2.inRange(region, (185, 185, 185), (255, 255, 255))
+        punctuation = [(x, glyph.shape[1]) for x, glyph in glyph_runs(mask) if glyph.shape[0] <= 6]
+        if len(punctuation) != 1:
+            return None
+        comma, width = punctuation[0]
+        x, y = read_number(mask[:, :comma], hud=True), read_number(mask[:, comma + width :], hud=True)
+        return (x, y) if x is not None and y is not None else None
+
+    def at_coordinate(self, image: np.ndarray, coordinate: tuple[int, int]) -> bool:
+        current = self.current_coordinate(image)
+        return current is not None and max(abs(a - b) for a, b in zip(current, coordinate)) <= 2
+
+    def input_coordinate(self, coordinate: tuple[int, int]) -> None:
+        if not self.matches(self.screenshot(), "map_coordinates", (0, 605, 400, 60)):
+            raise RuntimeError("未识别到地图坐标输入区域")
+        for point, value in zip(self.INPUT_POINTS, coordinate):
+            self.task.click_point(*point, offset=0)
+            self.task.wait(300)
+            if not self.matches(self.screenshot(), "input_confirm", (1050, 30, 110, 100)):
+                raise RuntimeError("地图坐标输入框未打开")
+            self.task.shell("input keyevent KEYCODE_MOVE_END")
+            self.task.shell("input keyevent " + " ".join(["KEYCODE_DEL"] * 12))
+            self.task.shell(f"input text {value:d}")
+            self.task.click_point(*self.INPUT_CONFIRM, offset=0)
+            self.task.wait(300)
+        image = self.screenshot()
+        for roi, expected in zip(((119, 619, 95, 27), (235, 619, 95, 27)), coordinate):
+            x, y, w, h = roi
+            mask = cv2.inRange(image[y:y+h, x:x+w], (190, 190, 190), (255, 255, 255))
+            if read_number(mask) != expected:
+                raise RuntimeError("地图坐标输入回读不一致，取消前往")
+
+    def move_to(self, coordinate: tuple[int, int]) -> None:
+        self.task.wake_from_power_saving_if_needed()
+        image = self.screenshot()
+        if self.task.is_main_scene(image) and self.at_coordinate(image, coordinate):
+            self.wait_arrival(coordinate)
+            return
+        self.task.close_all_panels(timeout_ms=3000)
+        self.task.open_map()
+        # Selecting the map is cheap and avoids trusting a stale remote-map view.
+        self.task.select_target_map()
+        self.task.collapse_life_filter_panel_if_visible()
+        self.input_coordinate(coordinate)
+        self.task.click_point(*self.GO_POINT, offset=0)
+        self.task.wait(300)
+        self.task.close_map_after_marker_click()
+        deadline = self.task._make_deadline(15_000)
+        while not self.task._is_deadline_expired(deadline):
+            image = self.screenshot()
+            moving = self.task._vision.match_template(image, self.task.TEXT_AUTO_PATH, threshold=0.8).found
+            if moving or self.task.is_scene_transition_loading(image):
+                if not self.task.wait_auto_pathfinding(timeout_ms=self.task.AUTO_PATH_TIMEOUT_MS, missing_threshold=3):
+                    raise RuntimeError("前往挖矿坐标的自动寻路超时")
+                break
+            if self.at_coordinate(image, coordinate):
+                break  # Short routes may finish before the first poll.
+            self.task.wait(300)
+        else:
+            raise RuntimeError("坐标前往后未检测到移动，也未到达目标坐标")
+        self.wait_arrival(coordinate)
+
+    def prepare_map(self, first_coordinate: tuple[int, int]) -> None:
+        """Select the material's configured region before opening line controls."""
+        self.task.wake_from_power_saving_if_needed()
+        self.task.close_all_panels(timeout_ms=3000)
+        self.task.open_map()
+        self.task.select_target_map()
+        self.task.close_map_after_marker_click()
+        if not self.matches(self.screenshot(), "zhongyuan", (1145, 0, 48, 22)):
+            self.move_to(first_coordinate)
+
+    def wait_arrival(self, coordinate: tuple[int, int]) -> None:
+        deadline = self.task._make_deadline(5_000)
+        stable = 0
+        while not self.task._is_deadline_expired(deadline):
+            image = self.screenshot()
+            moving = self.task._vision.match_template(image, self.task.TEXT_AUTO_PATH, threshold=0.8).found
+            if self.task.is_main_scene(image) and not moving and self.at_coordinate(image, coordinate):
+                stable += 1
+                if stable >= 3:
+                    return
+            else:
+                stable = 0
+            self.task.wait(300)
+        raise RuntimeError(f"寻路结束但未确认到达世界坐标 {coordinate}")
+
+    def panel_scope(self, image: np.ndarray) -> str | None:
+        if self.matches(image, "switch_to_local", (920, 620, 120, 48)):
+            return "interconnected"
+        if self.matches(image, "switch_to_interconnected", (920, 620, 120, 48)):
+            return "local"
+        return None
+
+    @staticmethod
+    def line_panel_visible(image: np.ndarray) -> bool:
+        """Detect the fixed panel frame when a transient toast covers its footer."""
+        gray = cv2.cvtColor(image[200:580], cv2.COLOR_BGR2GRAY)
+        left_edge = float(np.mean(gray[:, 856])) - float(np.mean(gray[:, 860]))
+        right_edge = float(np.mean(gray[:, 1097])) - float(np.mean(gray[:, 1092]))
+        return left_edge > 6 and right_edge > 6
+
+    def open_lines(self, scope: str) -> None:
+        image = self.screenshot()
+        if self.panel_scope(image) is None and not self.line_panel_visible(image):
+            if not self.task.is_main_scene(image):
+                raise RuntimeError("无法在非主场景打开分线列表")
+            self.task.click_point(*self.LINE_POINT, offset=0)
+            self.task.wait(500)
+        active_scope = None
+        for _ in range(12):
+            image = self.screenshot()
+            active_scope = self.panel_scope(image)
+            if active_scope is not None:
+                break
+            self.task.wait(500)
+        if active_scope is None:
+            raise RuntimeError("未识别到分线面板")
+        if active_scope != scope:
+            self.task.click_point(*self.SCOPE_POINT, offset=0)
+            # Changing scope can itself move the character to another line.
+            deadline = self.task._make_deadline(15_000)
+            while not self.task._is_deadline_expired(deadline):
+                self.task.wait(500)
+                image = self.screenshot()
+                if self.panel_scope(image) == scope:
+                    return
+                if (self.panel_scope(image) is None and not self.line_panel_visible(image)
+                        and self.task.is_main_scene(image)):
+                    self.task.click_point(*self.LINE_POINT, offset=0)
+            raise RuntimeError("切换分线范围后未确认目标面板")
+
+    def visible_lines(self, image: np.ndarray, scope: str, page: int) -> list[MiningLine]:
+        if self.panel_scope(image) != scope:
+            raise RuntimeError("分线面板范围不一致")
+        hsv = cv2.cvtColor(image[40:600, 885:918], cv2.COLOR_BGR2HSV)
+        colored = ((hsv[:, :, 1] > 65) & (hsv[:, :, 2] > 60)).astype(np.uint8)
+        count, _, stats, centers = cv2.connectedComponentsWithStats(colored)
+        lines = []
+        for i in range(1, count):
+            if stats[i, cv2.CC_STAT_AREA] < 70:
+                continue
+            y = 40 + round(centers[i][1])
+            if not 55 <= y <= 580:
+                continue  # Partial rows are read after scrolling.
+            x = 985 if scope == "interconnected" else 928
+            label = image[y-15:y+15, x:x+44]
+            # Cyan-gray text, including the highlighted current row.
+            mask = cv2.inRange(label, (110, 110, 110), (240, 240, 240))
+            # The numeric prefix ends before the Chinese character “线”.
+            runs = glyph_runs(mask)
+            end = next((left for left, glyph in runs if glyph.shape[1] / glyph.shape[0] > 0.85), mask.shape[1])
+            number = read_number(mask[:, :end])
+            if number is None:
+                raise RuntimeError("分线编号识别失败，禁止猜测目标线路")
+            background = image[y-20:y+20, 1045:1080]
+            current = float(np.mean(cv2.cvtColor(background, cv2.COLOR_BGR2GRAY))) > 65
+            hue = float(np.median(hsv[max(0,y-40-4):y-40+5, 11:22, 0]))
+            lines.append(MiningLine(number, (980, y), current, 15 <= hue <= 100, page))
+        return sorted(lines, key=lambda line: line.point[1])
+
+    def scroll_top(self) -> None:
+        previous = None
+        for _ in range(self.MAX_LINE_PAGES):
+            image = self.screenshot()
+            scope = self.panel_scope(image)
+            if scope is None:
+                raise RuntimeError("滚动分线列表时面板已关闭")
+            numbers = tuple(line.number for line in self.visible_lines(image, scope, 0))
+            # The translucent panel has an animated scene behind it; compare
+            # identifiers rather than requiring its pixels to become static.
+            if previous is not None and numbers == previous:
+                return
+            previous = numbers
+            self.task.swipe(1000, 140, 1000, 545, 300)
+            self.task.wait(300)
+        raise RuntimeError("分线列表未能回到顶部")
+
+    def list_lines(self, scope: str) -> list[MiningLine]:
+        self.open_lines(scope)
+        self.scroll_top()
+        return [line for line in self.visible_lines(self.screenshot(), scope, 0)
+                if 1 <= line.number <= 7]
+
+    def close_lines(self) -> None:
+        if self.panel_scope(self.screenshot()) is not None:
+            self.task.click_point(800, 80, offset=0)
+            self.task.wait(300)
+
+    def change_line(self, scope: str, line: MiningLine) -> bool:
+        self.open_lines(scope)
+        self.scroll_top()
+        candidates = self.visible_lines(self.screenshot(), scope, 0)
+        target = next((item for item in candidates if item.number == line.number), None)
+        if target is None or not target.available:
+            return False
+        self.task.click_point(*target.point, offset=0)
+        self.task.wait(1000)
+        if not self.task.wait_auto_pathfinding(timeout_ms=45_000, missing_threshold=3):
+            raise RuntimeError("换线后场景未稳定")
+        self.task.wait(2000)
+        if self.line_panel_visible(self.screenshot()):
+            self.task.click_point(800, 80, offset=0)
+            self.task.wait(500)
+        # Panel closure alone is not proof of switching. Re-read current highlight.
+        lines = self.list_lines(scope)
+        success = any(item.number == line.number and item.current for item in lines)
+        self.close_lines()
+        if not self.task.is_main_scene(self.screenshot()):
+            raise RuntimeError("换线后未恢复主场景")
+        return success
+
+
 class SHRWTask(YmGameTask):
     """一梦江湖生活资源采集。
 
-    真机地图流程：打开地图 -> 打开左侧筛选 -> 生活 -> 技能下拉 ->
-    材料 -> 地图资源标志 -> 自动寻路 -> 场景采集。
+    挖矿：进入目标地图、选择互联线路、依次前往固定矿点并采集。
     """
 
     task_key = "SHRW"
     task_name = "生活任务"
-    task_description = "按配置地图定位资源，并持续执行自动寻路和采集"
+    task_description = "挖矿按内置世界坐标循环采集，支持固定次数、持续采集与换线"
     MATERIAL_SPECS = _material_specs()
+    MINING_COORDINATES = MINING_COORDINATES
 
     # 坐标均由 1280x720 真机截图校准。
-    POINT_MAP = (1260, 90)
+    POINT_MAP = (1195, 18)
     POINT_MAP_FILTER = (20, 345)
     POINT_MAP_LIFE_TAB = (66, 117)
     POINT_MAP_WORLD = (1235, 675)
@@ -172,7 +722,6 @@ class SHRWTask(YmGameTask):
     GATHER_ACTION_WAIT_MS = 20_000
     GATHER_COMPLETE_TIMEOUT_MS = 120_000
     SCENE_TRANSITION_TIMEOUT_MS = 45_000
-    MAX_COLLECTIONS_PER_RUN = 200
     MAX_EMPTY_MARKER_RESELECTS = 2
     MAX_LIFE_PANEL_REWIND_SWIPES = 3
     MAP_RESOURCE_CHANGE_MIN_PIXELS = 500
@@ -200,22 +749,65 @@ class SHRWTask(YmGameTask):
         self.task_type = str(self.shrw_settings["task_type"])
         self.material_key = str(self.shrw_settings["material"])
         self.material = self.MATERIAL_SPECS[self.material_key]
-        # 兼容既有持久化字段；新版语义是是否持续执行采集循环。
-        self.loop_lines = bool(self.shrw_settings["loop_lines"])
+        self.collection_strategy = str(self.shrw_settings["strategy"])
+        self.collection_count = int(self.shrw_settings["count"])
+        # 保留运行时兼容开关，旧调用方仍可通过 loop_lines 停止持续采集。
+        self.loop_lines = self.collection_strategy == SHRW_STRATEGY_CONTINUOUS
         self._successful_gathers = 0
         self._known_unavailable_reason: str | None = None
         self._resource_filter_selected = False
         self._map_filter_baseline: np.ndarray | None = None
+        self._mining_configuration_failed = False
+        self._flow_failed = False
+
+    def validate_mining_coordinates(self) -> tuple[tuple[int, int], ...]:
+        coordinates = self.MINING_COORDINATES.get(self.material_key, ())
+        reason = None
+        if not coordinates:
+            reason = f"该材料尚未配置采集坐标：{self.material.label}"
+        elif coordinates == ((0, 0),):
+            reason = f"该材料坐标仍为 (0, 0) 占位，暂不可执行：{self.material.label}"
+        elif any(
+            not isinstance(point, (tuple, list)) or len(point) != 2
+            or any(type(value) is not int or not 0 <= value <= 9999 for value in point)
+            for point in coordinates
+        ):
+            reason = f"{self.material.label}采集坐标必须为 0～9999 的整数世界坐标 (X, Y)"
+        if reason:
+            self._mining_configuration_failed = True
+            raise MiningConfigurationError(reason)
+        self._mining_configuration_failed = False
+        return tuple(tuple(point) for point in coordinates)
+
+    def on_start(self) -> None:
+        # Must precede the base hook: it closes panels and can move the character.
+        self.validate_mining_coordinates()
+        if self.task_type == "mining":
+            MiningUI(self).validate_assets()
+        self._successful_gathers = 0
+        self._known_unavailable_reason = None
+        self._flow_failed = False
+        super().on_start()
+
+    def after_retry_recovery(self, retry_scope: str, failure=None) -> None:
+        if not self._mining_configuration_failed:
+            super().after_retry_recovery(retry_scope, failure)
 
     @step(retry=0, timeout_ms=None)
     def collect_life_material(self) -> None:
-        """选择配置材料后，按“标志→寻路→采集→重开地图”循环。"""
+        """挖矿走固定坐标；未配置的其他技能在游戏操作前停止。"""
+        coordinates = self.validate_mining_coordinates()
         try:
+            if self.task_type == "mining":
+                ui = MiningUI(self)
+                ui.validate_assets()
+                MiningFlow(self, ui).run(coordinates)
+                return
             self.select_configured_resource_on_map()
             visited_markers: set[tuple[int, int]] = set()
             empty_reselects = 0
 
-            for collection_index in range(1, self.MAX_COLLECTIONS_PER_RUN + 1):
+            while not self.is_stopped():
                 marker = self.choose_resource_marker(visited_markers)
                 if marker is None:
                     if empty_reselects >= self.MAX_EMPTY_MARKER_RESELECTS:
@@ -258,7 +850,9 @@ class SHRWTask(YmGameTask):
                     f"第 {self._successful_gathers} 次采集完成：{self.material.label}，"
                     f"累计 {self._successful_gathers} 次"
                 )
-                if not self.loop_lines:
+                if not self._should_continue_collecting():
+                    if self.collection_strategy == SHRW_STRATEGY_FIXED_COUNT:
+                        self._log(f"已完成固定采集 {self.collection_count} 次，按配置结束")
                     return
 
                 # 地图标志可能代表一整片资源区；一次采集后仍可再次点击同一
@@ -266,7 +860,7 @@ class SHRWTask(YmGameTask):
                 visited_markers.clear()
                 self.open_existing_resource_map()
 
-            raise RuntimeError(f"连续采集超过 {self.MAX_COLLECTIONS_PER_RUN} 次，已安全停止")
+            self._log("生活任务采集已停止")
         except StepStopException:
             raise
         except LifeTaskUnavailable as exc:
@@ -274,8 +868,17 @@ class SHRWTask(YmGameTask):
             self._log(f"生活任务停止采集：{exc}")
             return
         except Exception as exc:
+            self._flow_failed = True
             debug_path = self.save_debug_screenshot("shrw_flow_failed")
             raise RuntimeError(f"生活任务流程失败：{exc}，已保存截图：{debug_path}") from exc
+
+    def _should_continue_collecting(self) -> bool:
+        """Return whether another gather should run for the configured strategy."""
+        if self.collection_strategy == SHRW_STRATEGY_CONTINUOUS:
+            return self.loop_lines
+        if self.collection_strategy == SHRW_STRATEGY_FIXED_COUNT:
+            return self._successful_gathers < self.collection_count
+        return False
 
     def before_retry(
         self,
@@ -283,6 +886,8 @@ class SHRWTask(YmGameTask):
         failure: Exception | str | None = None,
     ) -> None:
         """地图选择错误不触发通用“脱离卡死”，避免无关传送。"""
+        if self._mining_configuration_failed:
+            return
         self._log(f"生活任务{retry_scope}重试前仅关闭地图/弹窗：{failure}")
         self.close_all_panels(timeout_ms=3000)
 
@@ -339,12 +944,20 @@ class SHRWTask(YmGameTask):
 
     def open_map(self) -> None:
         """打开右上角地图，并以右上角关闭圆钮确认地图已经出现。"""
-        if self.is_map_visible(self.screenshot()):
-            return
-        self.click_point(*self.POINT_MAP, offset=0)
-        self.wait(self.MAP_WAIT_MS)
-        if not self.is_map_visible(self.screenshot()):
-            raise RuntimeError("点击右上角地图后未打开地图")
+        for attempt in range(3):
+            image = self.screenshot()
+            if self.is_map_visible(image):
+                return
+            if not self.is_main_scene(image):
+                self.wake_from_power_saving_if_needed()
+                self.wait(500)
+            self.click_point(*self.POINT_MAP, offset=0)
+            self.wait(self.MAP_WAIT_MS)
+            if self.is_map_visible(self.screenshot()):
+                return
+            self._log(f"地图入口第 {attempt + 1}/3 次点击未生效，重试")
+            self.wait(400)
+        raise RuntimeError("点击右上角地图后未打开地图")
 
     def open_life_filter_panel(self) -> None:
         """点击地图左侧放大镜，再选择生活 Tab。"""
@@ -937,6 +1550,14 @@ class SHRWTask(YmGameTask):
         return merged
 
     def on_finish(self, results: list) -> None:
+        if self.is_stopped():
+            self._log(f"生活任务已手动停止，已确认采集 {self._successful_gathers} 次")
+            return
+        if self._mining_configuration_failed or self._flow_failed or any(
+            not result.success for result in results
+        ):
+            self._log(f"生活任务未完成，已确认采集 {self._successful_gathers} 次")
+            return
         if self._known_unavailable_reason:
             detail = f"停止原因：{self._known_unavailable_reason}"
         else:

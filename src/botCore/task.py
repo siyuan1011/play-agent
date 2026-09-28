@@ -313,6 +313,7 @@ class GameTask:
         callback: Callable[[bool, int], None] | None = None,
         interval_ms: int = 500,
         screenshot: np.ndarray | None = None,
+        roi: tuple[int, int, int, int] | None = None,
     ) -> bool:
         start = time.perf_counter()
         deadline = None if timeout_ms is None else start + timeout_ms / 1000.0
@@ -325,6 +326,7 @@ class GameTask:
                 template,
                 threshold=threshold,
                 screenshot=screenshot,
+                roi=roi,
             )
             if not found:
                 consecutive_missing += 1

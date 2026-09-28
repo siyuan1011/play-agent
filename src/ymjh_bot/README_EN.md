@@ -113,7 +113,9 @@ A per-serial run lock prevents the GUI and headless queue from starting duplicat
 | `XSRW` | 悬赏任务 | Bounties |
 | `ZGWX` | 坐观万象 | Meditation activity |
 
-Mount Hua Duel exposes independent 1v1 and 3v3 strategies for first-win, fixed-count, or continuous execution. Life Tasks expose material, line-looping, and line-scope settings.
+Mount Hua Duel exposes independent 1v1 and 3v3 strategies for first-win, fixed-count, or continuous execution. Life Tasks retain fixed-count and continuous modes. Mining visits the configured Zhongyuan world coordinates in order, then switches to the next available interconnected line among lines 1–7. It stops at the configured count or on an explicit missing-tool/stamina-exhaustion sign.
+
+`LIFE_COORDINATES` and all Life Task logic live in `task/SHRW_task.py`. Six minerals have the supplied coordinate lists. Other life materials use `(0, 0)` placeholders and are blocked before game operations. The legacy `line_scope` setting remains loadable; mining always uses interconnected lines 1–7. See the [mining validation notes](../../docs/mining_coordinate_validation.md) for remaining live checks.
 
 ## Package layout
 
