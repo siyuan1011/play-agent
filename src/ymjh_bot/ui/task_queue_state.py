@@ -22,6 +22,14 @@ DEFAULT_STATE: dict[str, Any] = {
 
 MAX_ROLE_COUNT = 5
 
+RCGM_TASK_KEY = "RCGM"  # 日常购买任务的持久化唯一标识。
+RCGM_ITEM_LABELS: dict[str, str] = {
+    "silver_box": "银票礼盒",
+    "eggs": "一筐鸡蛋",
+    "tenon": "榫头卯眼",
+    "bronze_horse": "碧铜马坯",
+}  # 四项商品的稳定配置键及中文显示名称，按购买顺序排列。
+
 HSLJ_TASK_KEY = "HSLJ"
 HSLJ_MODE_KEYS = ("1v1", "3v3")
 HSLJ_STRATEGY_FIRST_WIN = "first_win"
@@ -88,10 +96,18 @@ SHRW_LINE_SCOPE_LABELS: dict[str, str] = {
     "local": "本服分线",
     "interconnected": "互联分线",
 }
+SHRW_STRATEGY_FIXED_COUNT = "fixed_count"
+SHRW_STRATEGY_CONTINUOUS = "continuous"
+SHRW_STRATEGIES = {
+    SHRW_STRATEGY_FIXED_COUNT,
+    SHRW_STRATEGY_CONTINUOUS,
+}
+DEFAULT_SHRW_COUNT = 1
 DEFAULT_SHRW_SETTINGS: dict[str, Any] = {
     "task_type": "mining",
     "material": "stone",
-    "loop_lines": False,
+    "strategy": SHRW_STRATEGY_FIXED_COUNT,
+    "count": DEFAULT_SHRW_COUNT,
     "line_scope": "local",
 }
 
@@ -109,6 +125,7 @@ _SHRW_MATERIAL_ALIASES = {
     for alias in (material_key, label)
 }
 _SHRW_MATERIAL_ALIASES["钨金矿"] = "tungsten_ore"
+_SHRW_MATERIAL_ALIASES["钨精矿"] = "tungsten_ore"
 _SHRW_LINE_SCOPE_ALIASES = {
     "local": "local",
     "本服": "local",
@@ -302,8 +319,23 @@ def normalize_task_settings(settings: Any) -> dict[str, Any]:
             normalized[key] = normalize_hslj_settings(value)
         elif key == SHRW_TASK_KEY:
             normalized[key] = normalize_shrw_settings(value)
+        elif key == RCGM_TASK_KEY:
+            normalized[key] = normalize_rcgm_settings(value)
         else:
             normalized[key] = deepcopy(value)
+    return normalized
+
+
+def normalize_rcgm_settings(settings: Any) -> dict[str, bool]:
+    """归一化购买选项，未配置商品默认不购买。
+
+    参数：
+        settings：原始商品勾选配置；非字典值视为全部未勾选。
+    """
+    normalized: dict[str, bool] = {}  # 四项商品的独立布尔购买开关。
+    for key in RCGM_ITEM_LABELS:  # 当前商品的持久化配置键。
+        value = settings.get(key, False) if isinstance(settings, dict) else False  # 原始开关值。
+        normalized[key] = value is True or type(value) is int and value == 1
     return normalized
 
 
@@ -324,18 +356,32 @@ def normalize_shrw_settings(settings: Any) -> dict[str, Any]:
         material = SHRW_MATERIAL_OPTIONS[task_type][0][0]
     normalized["material"] = material
 
-    raw_loop = settings.get("loop_lines", normalized["loop_lines"])
-    if isinstance(raw_loop, str):
-        normalized["loop_lines"] = raw_loop.strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-            "是",
-            "开启",
-        }
-    else:
-        normalized["loop_lines"] = bool(raw_loop)
+    strategy = str(settings.get("strategy", "") or "").strip()
+    if strategy not in SHRW_STRATEGIES and "loop_lines" in settings:
+        raw_loop = settings["loop_lines"]
+        if isinstance(raw_loop, str):
+            loop_lines = raw_loop.strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+                "是",
+                "开启",
+            }
+        else:
+            loop_lines = bool(raw_loop)
+        strategy = (
+            SHRW_STRATEGY_CONTINUOUS if loop_lines else SHRW_STRATEGY_FIXED_COUNT
+        )
+    if strategy not in SHRW_STRATEGIES:
+        strategy = str(normalized["strategy"])
+    normalized["strategy"] = strategy
+
+    try:
+        count = int(settings.get("count", normalized["count"]))
+    except (TypeError, ValueError):
+        count = int(normalized["count"])
+    normalized["count"] = max(1, min(count, 9999))
 
     raw_scope = str(settings.get("line_scope", normalized["line_scope"]) or "").strip()
     normalized["line_scope"] = _SHRW_LINE_SCOPE_ALIASES.get(

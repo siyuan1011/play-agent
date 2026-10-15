@@ -108,14 +108,17 @@ A per-serial run lock prevents the GUI and headless queue from starting duplicat
 | `MKSY` | 门客设宴 | Retainer banquet |
 | `MRYG` | 每日一卦 | Daily fortune |
 | `PZSY` | 破阵设宴 | Formation banquet |
+| `RCGM` | 日常购买 | Daily purchases |
 | `RCFB` | 日常副本 | Daily dungeons |
 | `SHRW` | 生活任务 | Life-skill gathering |
 | `XSRW` | 悬赏任务 | Bounties |
 | `ZGWX` | 坐观万象 | Meditation activity |
 
-Mount Hua Duel exposes independent 1v1 and 3v3 strategies for first-win, fixed-count, or continuous execution. Life Tasks retain fixed-count and continuous modes. Mining visits the configured Zhongyuan world coordinates in order, then switches to the next available interconnected line among lines 1–7. It stops at the configured count or on an explicit missing-tool/stamina-exhaustion sign.
+Mount Hua Duel exposes independent 1v1 and 3v3 strategies for first-win, fixed-count, or continuous execution. Life Tasks retain fixed-count and continuous modes. Materials with configured coordinates share one map transition, coordinate gathering, and interconnected line 1–7 rotation flow. Gathering stops at the configured count or on an explicit missing-tool or stamina-exhaustion sign.
 
-`LIFE_COORDINATES` and all Life Task logic live in `task/SHRW_task.py`. Six minerals have the supplied coordinate lists. Other life materials use `(0, 0)` placeholders and are blocked before game operations. The legacy `line_scope` setting remains loadable; mining always uses interconnected lines 1–7. See the [mining validation notes](../../docs/mining_coordinate_validation.md) for remaining live checks.
+`LIFE_COORDINATES`, the four map transition waypoints, and Life Task logic live in `task/SHRW_task.py`. A map transition first enters and reads back its waypoint coordinates, then requires automatic pathfinding to start and finish with scene loading. Six minerals have configured gathering points. Other materials retain `(0, 0)` placeholders and are blocked before game operations. The legacy `line_scope` setting remains loadable; Life Tasks use interconnected lines 1–7. See the [mining validation notes](../../docs/mining_coordinate_validation.md) for remaining live checks.
+
+For Daily Purchases (`RCGM`), add the task to the queue, select any of the four independent checkboxes (银票礼盒, 一筐鸡蛋, 榫头卯眼, 碧铜马坯), and press 确定 to save. All choices default to off. The GUI and queue CLI share the saved options. The task follows the mall, commerce miscellaneous sale, and antique material routes, entering `99` through the game's numeric keypad. The game limits the actual quantity to the remaining daily allowance. Exhausted goods are skipped. An unconfirmed payment saves failure evidence and blocks another purchase during the same task's retries.
 
 ## Package layout
 

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
+import numpy as np
+
 from botCore import StepStopException
 
 from ymjh_bot.ym_game_task import YmGameTask
@@ -17,6 +21,12 @@ class StallPurchaseCancelError(RuntimeError):
 
 class BanquetAcquireMixin:
     """可复用于宴席任务的物品获取流程。"""
+
+    TEXT_BANQUET_PANEL_TITLE = str(YmGameTask.TEMPLATES_DIR / "text_menke_banquet_panel_title.png")  # 两种设宴物品面板共用的左上角标题模板。
+    ROI_BANQUET_PANEL_TITLE = (175, 45, 215, 60)  # 标题搜索范围，设计分辨率 1280×720 的像素坐标。
+    BANQUET_PANEL_TITLE_THRESHOLD = 0.85  # 标题模板的最低匹配分数。
+    BANQUET_PANEL_MISSING_TIMEOUT_MS = 2000  # 抵达后确认标题稳定缺失的最长时间，单位毫秒。
+    BANQUET_ENTRY_POLL_INTERVAL_MS = 500  # 邀约入口状态轮询间隔，单位毫秒。
 
     ROUTE_MENKE_WAREHOUSE_RECOMMENDED = str(YmGameTask.TEMPLATES_DIR / "route_menke_warehouse_recommended.png")
     ROUTE_MENKE_MALL = str(YmGameTask.TEMPLATES_DIR / "route_mall.png")
@@ -50,6 +60,47 @@ class BanquetAcquireMixin:
         except Exception as exc:
             self._log(f"设宴邀约失败截图保存失败，保留原异常：{exc}")
         raise RuntimeError(reason)
+
+    def wait_for_banquet_entry(self) -> Literal["panel", "invite"]:
+        """在同一邀约期限内等待寻路结束，并辨别物品面板或 NPC 邀请按钮。
+
+        参数：
+            self：当前设宴任务实例。
+        """
+        deadline = self._make_deadline(self.BANQUET_INVITE_TIMEOUT_MS)  # 本次前往和邀约入口共用的截止时间。
+        self._log(f"等待自动寻路抵达{self.BANQUET_NAME}")
+        if not self.wait_auto_pathfinding(timeout_ms=self._remaining_ms(deadline)):
+            self._raise_banquet_invite_failure(
+                f"前往{self.BANQUET_NAME}时自动寻路或过图超时",
+                "pathfinding_timeout",
+            )
+
+        title_missing = self.wait_image_missing(  # 抵达后标题是否连续三帧缺失。
+            self.TEXT_BANQUET_PANEL_TITLE,
+            timeout_ms=min(self.BANQUET_PANEL_MISSING_TIMEOUT_MS, self._remaining_ms(deadline)),
+            threshold=self.BANQUET_PANEL_TITLE_THRESHOLD,
+            missing_threshold=3,
+            interval_ms=self.BANQUET_ENTRY_POLL_INTERVAL_MS,
+            roi=self.scale_roi(self.ROI_BANQUET_PANEL_TITLE),
+        )
+        if not title_missing and self.is_banquet_panel_visible():
+            return "panel"
+
+        while not self._is_deadline_expired(deadline):
+            screenshot = self.screenshot()  # 同一帧同时检查迟到的物品面板和 NPC 邀请按钮。
+            if self.is_banquet_panel_visible(screenshot=screenshot):
+                return "panel"
+            if self.find_image(self.BTN_MENKE_BANQUET_INVITE, screenshot=screenshot):
+                self._log("检测到 NPC 邀请赴宴按钮")
+                return "invite"
+            remaining_ms = self._remaining_ms(deadline)  # 距离本次邀约入口超时的剩余毫秒数。
+            if remaining_ms > 0:
+                self.wait(min(self.BANQUET_ENTRY_POLL_INTERVAL_MS, remaining_ms))
+
+        self._raise_banquet_invite_failure(
+            "未找到NPC 邀请赴宴按钮",
+            "invite_button_missing",
+        )
 
     def process_banquet_items(self) -> None:
         """依次处理每个已配置的宴席物品槽位。"""
@@ -423,15 +474,18 @@ class BanquetAcquireMixin:
         self._log(f"未确认返回{self.BANQUET_NAME}面板")
         return False
 
-    def is_banquet_panel_visible(self) -> bool:
-        """返回宴席主物品面板是否可见。"""
-        action_roi = self.scale_roi(self.ROI_BANQUET_ACTION)
-        start_roi = self.scale_roi(self.ROI_START_BANQUET_BUTTON)
-        action_templates = self._banquet_action_templates()
-        start_template = getattr(self, "BTN_BANQUET_START_ACTIVE", None)
-        return (
-            bool(action_templates and self.find_image(action_templates, threshold=0.8, roi=action_roi))
-            or bool(start_template and self.find_image(start_template, threshold=0.8, roi=start_roi))
+    def is_banquet_panel_visible(self, *, screenshot: np.ndarray | None = None) -> bool:
+        """使用稳定的共用标题判断宴席物品面板是否可见。
+
+        参数：
+            self：当前设宴任务实例。
+            screenshot：可复用的当前画面；为 None 时重新截图。
+        """
+        return self.find_image(
+            self.TEXT_BANQUET_PANEL_TITLE,
+            threshold=self.BANQUET_PANEL_TITLE_THRESHOLD,
+            roi=self.scale_roi(self.ROI_BANQUET_PANEL_TITLE),
+            screenshot=screenshot,
         )
 
     def is_start_banquet_enabled(self) -> bool:

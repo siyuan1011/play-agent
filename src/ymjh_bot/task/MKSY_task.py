@@ -92,19 +92,11 @@ class MKSYTask(BanquetAcquireMixin, YmGameTask):
     @step(retry=0, timeout_ms=240000)
     def invite_banquet(self) -> None:
         """等待寻路抵达，在 NPC 对话中邀请赴宴并确认。"""
-        if self.is_banquet_panel_visible():
+        entry_state = self.wait_for_banquet_entry()  # 抵达后识别出的物品面板或 NPC 邀约入口。
+        if entry_state == "panel":
             self._log("检测到已在门客设宴物品面板，跳过邀约流程")
             self.jump_to("process_banquet_items")
 
-        self._log("等待自动寻路抵达并出现邀请赴宴按钮")
-        if not self.wait_image_appear(
-            self.BTN_MENKE_BANQUET_INVITE,
-            timeout_ms=self.BANQUET_INVITE_TIMEOUT_MS,
-        ):
-            self._raise_banquet_invite_failure(
-                "未找到NPC 邀请赴宴按钮",
-                "invite_button_missing",
-            )
         self.click()
         self.wait(1500)
 
@@ -120,9 +112,10 @@ class MKSYTask(BanquetAcquireMixin, YmGameTask):
         self.wait(1500)
 
         if not self.wait_image_appear(
-            [self.BTN_MENKE_GET_ITEM, self.BTN_MENKE_ONE_KEY_SUBMIT, self.BTN_MENKE_START_ACTIVE],
+            self.TEXT_BANQUET_PANEL_TITLE,
             timeout_ms=self.BANQUET_PANEL_TIMEOUT_MS,
-            threshold=0.8,
+            threshold=self.BANQUET_PANEL_TITLE_THRESHOLD,
+            roi=self.scale_roi(self.ROI_BANQUET_PANEL_TITLE),
         ):
             self._raise_banquet_invite_failure(
                 "未进入门客设宴物品面板",

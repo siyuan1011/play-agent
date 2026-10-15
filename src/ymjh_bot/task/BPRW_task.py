@@ -19,7 +19,7 @@ class BPRWTask(YmGameTask):
     TEXT_BANGPAI_JIANGHU_CAIFENG = str(YmGameTask.TEMPLATES_DIR / "text_bangpai_jianghu_caifeng.png")  # 第一环侧栏标题模板，不含动态环数。
     TEXT_BANGPAI_VISIT_GANGS = str(YmGameTask.TEMPLATES_DIR / "text_bangpai_visit_gangs.png")  # 第二环侧栏标题模板，不含动态环数。
     TEXT_BANGPAI_BUY_GOODS = str(YmGameTask.TEMPLATES_DIR / "text_bangpai_buy_goods.png")  # 第三环侧栏标题模板，不含动态环数。
-    TEXT_VISIT_TJBP = str(YmGameTask.TEMPLATES_DIR / "text_BPRW_tuijianbangpai.png.png")  # 推荐帮派页前往按钮仅作为面板识别标记，不点击。
+    TITLE_BPRW_VISIT = [str(YmGameTask.TEMPLATES_DIR / "title_BPRW_visit1.png"), str(YmGameTask.TEMPLATES_DIR / "title_BPRW_visit2.png")]  # 推荐帮派页前往按钮仅作为面板识别标记，不点击。
     BANGPAI_CAIFENG_TITLE = "江湖采风"  # 第一环的稳定业务标题。
     BANGPAI_VISIT_TITLE = "拜会各方帮派"  # 第二环的稳定业务标题。
     BANGPAI_BUY_TITLE = "采买江湖风物"  # 第三环的稳定业务标题。
@@ -194,10 +194,10 @@ class BPRWTask(YmGameTask):
             return True
 
         self.wait_image_missing(
-            self.TEXT_VISIT_TJBP,
+            self.TITLE_BPRW_VISIT,
             timeout_ms=30000,
             threshold=0.85,
-            roi=self.scale_roi((620, 140, 130, 50)),
+            roi=self.scale_roi((178, 148, 84, 276)),
         )
 
         if self.handle_submit_panel_if_visible():

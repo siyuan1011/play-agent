@@ -47,19 +47,25 @@ from ymjh_bot.runner.task_factory import create_task_instances
 from ymjh_bot.runner.task_queue_runner import TaskQueueRunner
 from ymjh_bot.ui.task_queue_state import (
     DEFAULT_HSLJ_COUNT,
+    DEFAULT_SHRW_COUNT,
     HSLJ_MODE_KEYS,
     HSLJ_STRATEGY_FIRST_WIN,
     HSLJ_STRATEGY_FIXED_COUNT,
     HSLJ_STRATEGY_INFINITE,
     HSLJ_TASK_KEY,
     MAX_ROLE_COUNT,
+    RCGM_ITEM_LABELS,
+    RCGM_TASK_KEY,
     SHRW_LINE_SCOPE_LABELS,
     SHRW_MATERIAL_OPTIONS,
+    SHRW_STRATEGY_CONTINUOUS,
+    SHRW_STRATEGY_FIXED_COUNT,
     SHRW_TASK_KEY,
     SHRW_TASK_TYPE_LABELS,
     clear_progress,
     load_state_for_serial,
     normalize_hslj_settings,
+    normalize_rcgm_settings,
     normalize_selected_role_indices,
     normalize_shrw_settings,
     restore_selected_tasks,
@@ -73,6 +79,11 @@ HSLJ_STRATEGY_OPTIONS = (
     (HSLJ_STRATEGY_FIRST_WIN, "刷首胜"),
     (HSLJ_STRATEGY_INFINITE, "无限刷"),
     (HSLJ_STRATEGY_FIXED_COUNT, "固定次数"),
+)
+
+SHRW_STRATEGY_OPTIONS = (
+    (SHRW_STRATEGY_FIXED_COUNT, "固定次数"),
+    (SHRW_STRATEGY_CONTINUOUS, "持续采集"),
 )
 
 
@@ -358,8 +369,28 @@ class TaskQueueWindow(QMainWindow):
         shrw_layout.addWidget(QLabel("采集物品"), 1, 0)
         shrw_layout.addWidget(self.shrw_material_widget, 1, 1, 1, 3)
 
-        self.shrw_loop_lines_check = QCheckBox("持续采集")
-        shrw_layout.addWidget(self.shrw_loop_lines_check, 2, 0, 1, 2)
+        shrw_layout.addWidget(QLabel("采集次数"), 2, 0)
+        shrw_strategy_widget = QWidget()
+        shrw_strategy_layout = QHBoxLayout(shrw_strategy_widget)
+        shrw_strategy_layout.setContentsMargins(0, 0, 0, 0)
+        self.shrw_strategy_group = QButtonGroup(self.shrw_settings_widget)
+        self.shrw_strategy_group.setExclusive(True)
+        self.shrw_strategy_checks: dict[str, QRadioButton] = {}
+        for strategy, label in SHRW_STRATEGY_OPTIONS:
+            check = QRadioButton(label)
+            self.shrw_strategy_group.addButton(check)
+            self.shrw_strategy_checks[strategy] = check
+            shrw_strategy_layout.addWidget(check)
+            check.toggled.connect(self._update_shrw_count_state)
+            if strategy == SHRW_STRATEGY_FIXED_COUNT:
+                self.shrw_count_edit = QLineEdit()
+                self.shrw_count_edit.setValidator(
+                    QIntValidator(1, 9999, self.shrw_count_edit)
+                )
+                self.shrw_count_edit.setFixedWidth(80)
+                shrw_strategy_layout.addWidget(self.shrw_count_edit)
+        shrw_strategy_layout.addStretch()
+        shrw_layout.addWidget(shrw_strategy_widget, 2, 1, 1, 3)
 
         self.shrw_line_scope_group = QButtonGroup(self.shrw_settings_widget)
         self.shrw_line_scope_group.setExclusive(True)
@@ -373,24 +404,59 @@ class TaskQueueWindow(QMainWindow):
             self.shrw_line_scope_checks[scope] = check
             line_scope_layout.addWidget(check)
         line_scope_layout.addStretch()
-        # 保留原有线路范围控件，避免既有 GUI 配置看起来消失；新版地图
-        # 采集不再依赖它，但仍会原样保存以兼容已有任务配置。
-        shrw_layout.addWidget(QLabel("线路范围（兼容）"), 3, 0)
-        shrw_layout.addWidget(line_scope_widget, 3, 1, 1, 2)
-        shrw_layout.addWidget(QLabel("目标地图"), 4, 0)
-        shrw_layout.addWidget(QLabel("由采集物自动选择"), 4, 1, 1, 2)
-
+        shrw_layout.addWidget(line_scope_widget, 5, 1, 1, 2)
+        line_scope_widget.hide()  # Keep legacy settings readable and writable.
+        shrw_layout.addWidget(QLabel("采集线路"), 3, 0)
+        shrw_layout.addWidget(QLabel("互联 1～7 线（固定）"), 3, 1, 1, 2)
+        self.shrw_flow_hint = QLabel(
+            "按采集物选择地图，前往该地图的切换落点；寻路及过图结束后，"
+            "每条互联线依次检查内置采集坐标。\n"
+            "固定次数达标或确认工具、体力耗尽后结束。未配置采集坐标的材料暂不可执行。"
+        )
+        self.shrw_flow_hint.setWordWrap(True)
+        shrw_layout.addWidget(self.shrw_flow_hint, 4, 0, 1, 4)
         self.shrw_settings_confirm_btn = QPushButton("确定")
         self.shrw_settings_confirm_btn.clicked.connect(self.confirm_task_settings)
         shrw_layout.addWidget(self.shrw_settings_confirm_btn, 0, 3)
         shrw_layout.setColumnStretch(1, 1)
         self._on_shrw_task_type_changed()
+        self._update_shrw_count_state()
 
         self.task_settings_stack.addWidget(self.no_task_settings_widget)
         self.task_settings_stack.addWidget(self.hslj_settings_widget)
         self.task_settings_stack.addWidget(self.shrw_settings_widget)
+        self.task_settings_stack.addWidget(self._build_rcgm_settings_panel())
         layout.addWidget(self.task_settings_stack)
         return box
+
+    def _build_rcgm_settings_panel(self) -> QWidget:
+        """创建日常购买商品勾选面板；self 为当前队列窗口。"""
+        self.rcgm_settings_widget = QWidget()  # 日常购买参数面板。
+        layout = QGridLayout(self.rcgm_settings_widget)  # 商品复选框的网格布局。
+        self.rcgm_item_checks: dict[str, QCheckBox] = {}  # 各商品独立的购买开关组件。
+        for column, (key, label) in enumerate(RCGM_ITEM_LABELS.items()):  # column 为零起始列号，key 为商品键，label 为中文名称。
+            check = QCheckBox(label)  # 当前商品的购买复选框，默认不勾选。
+            self.rcgm_item_checks[key] = check
+            layout.addWidget(check, 0, column)
+        layout.addWidget(
+            QLabel("仅购买勾选商品，数量输入 99，由游戏限制实际可购数量。"), 1, 0, 1, 4
+        )
+        self.rcgm_settings_confirm_btn = QPushButton("确定")  # 保存日常购买参数的按钮。
+        self.rcgm_settings_confirm_btn.clicked.connect(self.confirm_task_settings)
+        layout.addWidget(self.rcgm_settings_confirm_btn, 0, 4)
+        layout.setColumnStretch(3, 1)
+        return self.rcgm_settings_widget
+
+    def _apply_rcgm_settings(self, settings: dict | None) -> None:
+        """还原商品开关；self 为队列窗口，settings 为购买配置，None 表示全部关闭。"""
+        normalized = normalize_rcgm_settings(settings)  # 安全归一化后的商品开关。
+        for key, check in self.rcgm_item_checks.items():  # key 为商品键，check 为对应复选框。
+            check.setChecked(normalized[key])
+
+    def _collect_rcgm_settings_from_ui(self) -> dict[str, bool]:
+        """读取四项独立购买开关；self 为队列窗口。"""
+        # key 为商品键，check 为对应复选框。
+        return {key: check.isChecked() for key, check in self.rcgm_item_checks.items()}
 
     def _add_hslj_mode_settings_row(self, layout: QGridLayout, row: int, mode: str) -> None:
         """Add one Huashan mode strategy row."""
@@ -615,6 +681,12 @@ class TaskQueueWindow(QMainWindow):
             return
 
         task_key = str(task_info.get("key") or "")
+        if task_key == RCGM_TASK_KEY:
+            self._apply_rcgm_settings(
+                (self._state.get("task_settings") or {}).get(RCGM_TASK_KEY)
+            )
+            self.task_settings_stack.setCurrentWidget(self.rcgm_settings_widget)
+            return
         if task_key == SHRW_TASK_KEY:
             settings = normalize_shrw_settings(
                 (self._state.get("task_settings") or {}).get(SHRW_TASK_KEY)
@@ -669,7 +741,13 @@ class TaskQueueWindow(QMainWindow):
         material = str(settings.get("material") or "stone")
         if material in self.shrw_material_checks:
             self.shrw_material_checks[material].setChecked(True)
-        self.shrw_loop_lines_check.setChecked(bool(settings.get("loop_lines", False)))
+        strategy = str(settings.get("strategy") or SHRW_STRATEGY_FIXED_COUNT)
+        self.shrw_strategy_checks.get(
+            strategy,
+            self.shrw_strategy_checks[SHRW_STRATEGY_FIXED_COUNT],
+        ).setChecked(True)
+        self.shrw_count_edit.setText(str(settings.get("count", DEFAULT_SHRW_COUNT)))
+        self._update_shrw_count_state()
         line_scope = str(settings.get("line_scope") or "local")
         self.shrw_line_scope_checks.get(
             line_scope,
@@ -686,13 +764,33 @@ class TaskQueueWindow(QMainWindow):
             (key for key, check in self.shrw_line_scope_checks.items() if check.isChecked()),
             "local",
         )
+        strategy = next(
+            (key for key, check in self.shrw_strategy_checks.items() if check.isChecked()),
+            SHRW_STRATEGY_FIXED_COUNT,
+        )
+        try:
+            count = int(self.shrw_count_edit.text())
+        except ValueError:
+            count = DEFAULT_SHRW_COUNT
+        count = max(1, min(count, 9999))
+        self.shrw_count_edit.setText(str(count))
         return normalize_shrw_settings(
             {
                 "task_type": str(self.shrw_task_type_combo.currentData() or "mining"),
                 "material": material,
-                "loop_lines": self.shrw_loop_lines_check.isChecked(),
+                "strategy": strategy,
+                "count": count,
                 "line_scope": line_scope,
             }
+        )
+
+    def _update_shrw_count_state(self, _checked: bool | None = None) -> None:
+        """Only enable the count input for fixed-count gathering."""
+        fixed_count = self.shrw_strategy_checks.get(SHRW_STRATEGY_FIXED_COUNT)
+        self.shrw_count_edit.setEnabled(
+            self._queue_editing_enabled
+            and fixed_count is not None
+            and fixed_count.isChecked()
         )
 
     def _apply_hslj_settings(self, settings: dict) -> None:
@@ -758,16 +856,19 @@ class TaskQueueWindow(QMainWindow):
         if not task_info:
             return
         task_key = str(task_info.get("key") or "")
-        if task_key not in {HSLJ_TASK_KEY, SHRW_TASK_KEY}:
+        if task_key not in {HSLJ_TASK_KEY, SHRW_TASK_KEY, RCGM_TASK_KEY}:
             return
 
         task_settings = dict(self._state.get("task_settings") or {})
         if task_key == HSLJ_TASK_KEY:
             task_settings[HSLJ_TASK_KEY] = self._collect_hslj_settings_from_ui()
             message = "华山论剑任务设置已保存。"
-        else:
+        elif task_key == SHRW_TASK_KEY:
             task_settings[SHRW_TASK_KEY] = self._collect_shrw_settings_from_ui()
             message = "生活任务设置已保存。"
+        else:
+            task_settings[RCGM_TASK_KEY] = self._collect_rcgm_settings_from_ui()
+            message = "日常购买设置已保存。"
         self._state["task_settings"] = task_settings
         self._save_state_from_ui()
         self._append_log(message)
@@ -785,7 +886,7 @@ class TaskQueueWindow(QMainWindow):
             return []
 
     def start_queue(self) -> None:
-        """Start executing the task queue."""
+        """Start a fresh queue; only pause/resume preserves the running position."""
         serial = self._current_ui_serial().strip()
         if not serial:
             QMessageBox.warning(self, "未选择设备", "请先选择或输入设备端口。")
@@ -813,7 +914,6 @@ class TaskQueueWindow(QMainWindow):
             return create_task_instances(task_blueprint, task_settings)
 
         self._save_state_from_ui()
-        initial_progress = self._state.get("progress")
         self._stop_requested_by_user = False
         self._latest_run_summary = {}
         run_lock = serial_run_lock(self.state_dir, serial)
@@ -821,6 +921,7 @@ class TaskQueueWindow(QMainWindow):
             QMessageBox.warning(self, "端口已占用", f"{serial} 已有任务运行中，请勿重复启动。")
             return
         self._run_lock = run_lock
+        self._clear_saved_progress()
 
         self.thread = QThread(self)
         self.worker = QueueRunnerWorker(
@@ -828,7 +929,6 @@ class TaskQueueWindow(QMainWindow):
             adb_path=adb_path,
             serial=serial,
             log_dir=self.repo_root / "logs" / safe_serial_name(serial),
-            initial_progress=initial_progress if isinstance(initial_progress, dict) else None,
             verbose=self.verbose_log_check.isChecked(),
             role_indices=role_indices,
             task_factory=task_factory if len(role_indices) > 1 else None,
@@ -851,21 +951,12 @@ class TaskQueueWindow(QMainWindow):
         self.stop_btn.setEnabled(True)
         self.verbose_log_check.setEnabled(False)
         self._set_queue_editing_enabled(False)
-        self._append_log("任务队列已开始。")
+        self._append_log(
+            f"任务队列从头开始：角色{role_indices[0] + 1}，"
+            f"任务 1/{len(task_instances)}：{task_instances[0].task_name}。"
+        )
         role_labels = "、".join(f"角色{role_index + 1}" for role_index in role_indices)
         self._append_log(f"账号角色队列：{role_labels}；将按编号升序执行。")
-        if initial_progress:
-            role_cursor = int(initial_progress.get("current_role_index", 0))
-            role_number = (
-                role_indices[role_cursor] + 1
-                if 0 <= role_cursor < len(role_indices)
-                else "未知"
-            )
-            self._append_log(
-                f"恢复进度：角色={role_number}, "
-                f"任务={initial_progress.get('current_task_index', 0)}, "
-                f"步骤={initial_progress.get('current_step_index', 0)}"
-            )
 
     def pause_queue(self) -> None:
         """Pause the task queue."""
@@ -1259,12 +1350,18 @@ class TaskQueueWindow(QMainWindow):
             self.hslj_settings_confirm_btn.setEnabled(enabled)
         if hasattr(self, "shrw_task_type_combo"):
             self.shrw_task_type_combo.setEnabled(enabled)
-            self.shrw_loop_lines_check.setEnabled(enabled)
             for check in self.shrw_material_checks.values():
                 check.setEnabled(enabled)
+            for check in self.shrw_strategy_checks.values():
+                check.setEnabled(enabled)
+            self._update_shrw_count_state()
             for check in self.shrw_line_scope_checks.values():
                 check.setEnabled(enabled)
             self.shrw_settings_confirm_btn.setEnabled(enabled)
+        if hasattr(self, "rcgm_item_checks"):
+            for purchase_check in self.rcgm_item_checks.values():  # 日常购买的各商品复选框。
+                purchase_check.setEnabled(enabled)
+            self.rcgm_settings_confirm_btn.setEnabled(enabled)
 
 
 def main():

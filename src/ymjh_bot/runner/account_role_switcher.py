@@ -18,6 +18,10 @@ class AccountRoleSwitcher(YmGameTask):
 
     POINT_SYSTEM_MENU_MORE = (1225, 195)
     POINT_SETTINGS = (1215, 665)
+    POINT_SYSTEM_MENU_SCROLL_START = (1200, 600)  # 二级系统菜单上拖起点，屏幕像素坐标。
+    POINT_SYSTEM_MENU_SCROLL_END = (1200, 260)  # 二级系统菜单上拖终点，屏幕像素坐标。
+    SYSTEM_MENU_SCROLL_DURATION_MS = 400  # 将设置入口拖至菜单底部的手势时长，单位毫秒。
+    SYSTEM_MENU_SCROLL_SETTLE_MS = 500  # 菜单滚动后等待布局稳定的时长，单位毫秒。
     POINT_SWITCH_ROLE = (368, 307)
     ROLE_POINTS = (
         (1125, 61),
@@ -85,18 +89,19 @@ class AccountRoleSwitcher(YmGameTask):
                 f"打开设置，第 {attempt}/{self.SETTINGS_NAV_MAX_ATTEMPTS} 次导航"
             )
 
-            # When the secondary system menu is already expanded, Settings is
-            # directly available at this point.
+            # 帮派地图的菜单条目较多，先上拖至底部，避免固定坐标点到排行榜。
+            self._scroll_system_menu_to_bottom()
             self.click_point(*self.POINT_SETTINGS, offset=0)
             if self._wait_for_settings_page(self.SETTINGS_PAGE_TIMEOUT_MS):
                 self._log("设置页复核通过")
                 return
 
             # Otherwise the same coordinate belongs to the normal action bar.
-            # Expand the secondary system menu, then click Settings again.
+            # 二级菜单未展开时先展开，再上拖至底部点击设置。
             self._log("设置页未出现，展开右侧二级系统菜单后重试")
             self.click_point(*self.POINT_SYSTEM_MENU_MORE, offset=0)
             self.wait(self.SETTINGS_OPEN_WAIT_MS)
+            self._scroll_system_menu_to_bottom()
             self.click_point(*self.POINT_SETTINGS, offset=0)
             if self._wait_for_settings_page(self.SETTINGS_PAGE_TIMEOUT_MS):
                 self._log("二级系统菜单已展开，设置页复核通过")
@@ -104,6 +109,15 @@ class AccountRoleSwitcher(YmGameTask):
 
         debug_path = self.save_debug_screenshot("settings_page_not_found")
         raise RuntimeError(f"未能打开设置页，已保存截图：{debug_path}")
+
+    def _scroll_system_menu_to_bottom(self) -> None:
+        """上拖右侧二级系统菜单，使末尾的设置入口进入屏幕。"""
+        self.swipe(
+            *self.POINT_SYSTEM_MENU_SCROLL_START,
+            *self.POINT_SYSTEM_MENU_SCROLL_END,
+            duration_ms=self.SYSTEM_MENU_SCROLL_DURATION_MS,
+        )
+        self.wait(self.SYSTEM_MENU_SCROLL_SETTLE_MS)
 
     def _request_role_page_from_settings(self) -> None:
         """Click Switch Role, confirm the warning, and wait through loading."""

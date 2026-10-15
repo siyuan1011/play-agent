@@ -25,6 +25,7 @@ class RCFBTask(YmGameTask):
         str(YmGameTask.TEMPLATES_DIR / "text_rcfb_daily_tracker_light.png"),
     ]
     TEXT_DUNGEON_TRANSFER_OUT = str(YmGameTask.TEMPLATES_DIR / "text_rcfb_chuangchu.png")
+    TEXT_DUNGEON_REWARD_TITLE = str(YmGameTask.TEMPLATES_DIR / "text_rcfb_reward_title.png")  # 副本结算“恭喜获得”遮罩标题模板。
     ICON_DUNGEON_EXIT = str(YmGameTask.TEMPLATES_DIR / "icon_exit.png")
     BTN_DUNGEON_EXIT_TEAM = str(YmGameTask.TEMPLATES_DIR / "btn_rcfb_exit_team.png")
     TEXT_DAILY_PANEL_TITLE = str(
@@ -40,8 +41,10 @@ class RCFBTask(YmGameTask):
     POINT_ACTIVITY_DAILY_ENTRY = (888, 580)
     POINT_TASK_LIST_SCROLL_START = (190, 520)
     POINT_TASK_LIST_SCROLL_END = (190, 220)
+    POINT_DISMISS_DUNGEON_REWARD = (250, 470)  # 奖励面板外的安全点击坐标，设计分辨率 1280×720。
 
     ROI_DUNGEON_EXIT = (960, 155, 85, 85)
+    ROI_DUNGEON_REWARD_TITLE = (480, 90, 310, 115)  # 奖励标题搜索范围，设计分辨率像素坐标。
     ROI_DAILY_PANEL_TITLE = (0, 0, 260, 80)
     ROI_DAILY_CHALLENGE = (1040, 600, 220, 110)
     ROI_DAILY_CONFIRM = (930, 530, 270, 130)
@@ -50,6 +53,7 @@ class RCFBTask(YmGameTask):
     DUNGEON_TRANSFER_OUT_THRESHOLD = 0.85
     DUNGEON_EXIT_THRESHOLD = 0.9
     DUNGEON_EXIT_TEAM_THRESHOLD = 0.9
+    DUNGEON_REWARD_TITLE_THRESHOLD = 0.85  # 奖励遮罩标题的最低匹配分数。
     DAILY_PANEL_THRESHOLD = 0.90
     DAILY_CHALLENGE_THRESHOLD = 0.90
     DAILY_CONFIRM_THRESHOLD = 0.75
@@ -72,6 +76,8 @@ class RCFBTask(YmGameTask):
     DUNGEON_TRACKER_REFRESH_INTERVAL_MS = 60000
     DUNGEON_EXIT_ACTION_TIMEOUT_MS = 5000
     DUNGEON_EXIT_MAX_ATTEMPTS = 3
+    DUNGEON_REWARD_DISMISS_MAX_ATTEMPTS = 2  # 奖励遮罩最多允许的面板外点击次数。
+    DUNGEON_REWARD_DISMISS_TIMEOUT_MS = 3000  # 单次等待奖励遮罩关闭的最长时间，单位毫秒。
     DUNGEON_AUTO_TRANSFER_TIMEOUT_MS = 330000
     DUNGEON_TRANSFER_POLL_INTERVAL_MS = 500
     DUNGEON_TRANSFER_STABLE_CONFIRMATIONS = 3
@@ -372,9 +378,53 @@ class RCFBTask(YmGameTask):
             return
         self.mark_dungeon_exited()
 
+    def is_dungeon_reward_overlay_visible(self) -> bool:
+        """返回副本结算奖励遮罩是否可见。
+
+        参数：
+            self：当前副本任务实例。
+        """
+        return self.find_image_once(
+            self.TEXT_DUNGEON_REWARD_TITLE,
+            threshold=self.DUNGEON_REWARD_TITLE_THRESHOLD,
+            roi=self.scale_roi(self.ROI_DUNGEON_REWARD_TITLE),
+        )
+
+    def dismiss_dungeon_reward_overlay_if_visible(self) -> bool:
+        """只在识别到副本奖励遮罩时点击面板外，并确认标题消失。
+
+        参数：
+            self：当前副本任务实例。
+        """
+        if not self.is_dungeon_reward_overlay_visible():
+            return False
+
+        for attempt in range(1, self.DUNGEON_REWARD_DISMISS_MAX_ATTEMPTS + 1):  # attempt 为从 1 开始的当前关闭尝试序号。
+            if attempt > 1 and not self.is_dungeon_reward_overlay_visible():
+                self._log("副本奖励遮罩已关闭")
+                return True
+            self._log(f"关闭副本奖励遮罩 {attempt}/{self.DUNGEON_REWARD_DISMISS_MAX_ATTEMPTS}")
+            self.click_point(*self.POINT_DISMISS_DUNGEON_REWARD, offset=0)
+            if self.wait_image_missing(
+                self.TEXT_DUNGEON_REWARD_TITLE,
+                timeout_ms=self.DUNGEON_REWARD_DISMISS_TIMEOUT_MS,
+                threshold=self.DUNGEON_REWARD_TITLE_THRESHOLD,
+                missing_threshold=3,
+                roi=self.scale_roi(self.ROI_DUNGEON_REWARD_TITLE),
+            ):
+                self._log("副本奖励遮罩已关闭")
+                return True
+
+        if not self.is_dungeon_reward_overlay_visible():
+            self._log("副本奖励遮罩已关闭")
+            return True
+        debug_path = self.save_debug_screenshot("rcfb_reward_overlay_stuck")  # 奖励遮罩无法关闭时的现场截图路径。
+        raise RuntimeError(f"副本奖励遮罩未关闭，已保存截图：{debug_path}")
+
     def click_dungeon_exit_team_with_retries(self) -> bool:
         """尝试打开副本退出对话框，并点击离开副本和队伍。"""
         for attempt in range(1, self.DUNGEON_EXIT_MAX_ATTEMPTS + 1):
+            self.dismiss_dungeon_reward_overlay_if_visible()
             if self.click_visible_dungeon_exit_team_button():
                 self._log("检测到已打开的副本退出弹框，点击退本退队")
                 return True
@@ -728,6 +778,7 @@ class RCFBTask(YmGameTask):
             if self.is_stopped():
                 raise StepStopException("Stop requested")
 
+            self.dismiss_dungeon_reward_overlay_if_visible()
             exit_visible = self.is_dungeon_exit_visible()
             transfer_out_visible = self.is_dungeon_transfer_out_visible()
             main_ready = False
