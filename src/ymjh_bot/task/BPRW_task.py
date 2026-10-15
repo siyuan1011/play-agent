@@ -323,10 +323,19 @@ class BPRWTask(YmGameTask):
         self._log("已确认江湖任务侧栏，本页未找到支持的帮派任务标题")
         return None
 
-    def wait_bangpai_task_transition(self, description: str) -> None:
-        """执行侧栏操作前，等待寻路或加载稳定完成或失败。"""
+    def wait_bangpai_task_transition(
+        self, description: str, *, advance_dialog: bool = True,
+    ) -> None:
+        """等待寻路或加载结束，可将对话交回提交后的接取检查。
+
+        参数：
+            self：当前帮派任务实例。
+            description：触发过渡等待的业务动作，用于失败日志。
+            advance_dialog：是否继续推进剧情；提交后先检查接取按钮时传 False。
+        """
         if self.wait_auto_pathfinding(timeout_ms=120000):
-            self.drain_dialog_next()
+            if advance_dialog:
+                self.drain_dialog_next()
             return
         screenshot_path = self.save_debug_screenshot("bangpai_task_transition_timeout")
         raise RuntimeError(f"{description}等待自动寻路或过图结束超时，已保存截图：{screenshot_path}")
@@ -409,7 +418,10 @@ class BPRWTask(YmGameTask):
         raise RuntimeError(f"采买江湖风物无法取得任务物品，已保存截图：{screenshot_path}")
 
     def handle_submit_panel_if_visible(self) -> bool:
-        """一键提交面板出现时提交最终任务物品。"""
+        """提交物品后短暂检查后续任务，有接取入口则跳回接取步骤。
+
+        参数：self：当前帮派任务实例。
+        """
         if not self.click_template_if_available(
             self.BTN_ONE_KEY_SUBMIT,
             timeout_ms=600,
@@ -422,7 +434,12 @@ class BPRWTask(YmGameTask):
             return False
 
         self.confirm_submit_if_needed()
-        self.wait_bangpai_task_transition("提交帮派任务物品后")
+        self.wait_bangpai_task_transition("提交帮派任务物品后", advance_dialog=False)
+        if self.wait_image_appear(self.BTN_BANGPAI_TASK_ACCEPT, timeout_ms=3000):
+            self._log("提交后检测到后续帮派任务，跳回接取任务步骤")
+            self._warehouse_item_checked = False
+            self.jump_to("accept_task")
+        self.drain_dialog_next()
         return True
 
     def try_warehouse_route(self, *, route_panel_ready: bool = False) -> bool:
