@@ -123,10 +123,15 @@ class RCGMTask(YmGameTask):
             for name in ([names] if isinstance(names, str) else names)
         ]
 
-    def _find(self, names: str | list[str], roi: tuple[int, int, int, int]) -> bool:
-        """self 为任务实例，names 为模板名，roi 为 1280×720 像素搜索区域。"""
+    def _find(
+        self, names: str | list[str], roi: tuple[int, int, int, int],
+        *, screenshot: np.ndarray | None = None,
+    ) -> bool:
+        """self 为任务实例，names 为模板名，roi 为像素搜索区域，screenshot 为复用帧，None 时重新截图。"""
         self._check_stop()
-        return self.find_image(self._paths(names), threshold=self.MATCH_THRESHOLD, roi=roi)
+        return self.find_image(
+            self._paths(names), threshold=self.MATCH_THRESHOLD, roi=roi, screenshot=screenshot,
+        )
 
     def _require_marker(self, names: str | list[str], roi: tuple[int, int, int, int], label: str) -> None:
         """self 为任务实例，names 为模板名，roi 为像素搜索区域，label 为日志描述。"""
@@ -243,7 +248,8 @@ class RCGMTask(YmGameTask):
         deadline = time.monotonic() + 5  # 购买结果最多等待五秒。
         while time.monotonic() < deadline:
             self._check_stop()
-            if self._find(["buy_success", "silver_success"], self.ROI_TOAST):
+            image = self.screenshot()  # 同一购买反馈帧，同时检查成功提示和明确拒绝提示。
+            if self._find(["buy_success", "silver_success"], self.ROI_TOAST, screenshot=image):
                 self._completed_items.add(key)
                 self._pending_item = None
                 self._log(f"{label}购买成功")
@@ -252,6 +258,9 @@ class RCGMTask(YmGameTask):
                     self.click(offset=0)
                     self.wait(300)
                 return
+            if self._find("temporary_bag_full", self.ROI_TOAST, screenshot=image):
+                self._pending_item = None
+                self._fail(f"{label}购买被游戏拒绝：请先清理临时包裹")
             self.wait(150)
         self._fail(f"{label}未确认购买成功；保留未决状态，避免重复扣款")
 
