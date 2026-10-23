@@ -17,18 +17,20 @@ DEFAULT_STATE: dict[str, Any] = {
     "serial": "",
     "selected_role_indices": [0],
     "selected_task_keys": [],
+    "available_task_order": [],  # 可用任务的完整排序，空列表表示沿用已有队列顺序。
     "task_settings": {},
 }
 
 MAX_ROLE_COUNT = 5
 
-RCGM_TASK_KEY = "RCGM"  # 日常购买任务的持久化唯一标识。
+RCGM_TASK_KEY = "RCGM"  # 日常任务的持久化标识，沿用旧键以兼容已保存队列。
 RCGM_ITEM_LABELS: dict[str, str] = {
     "silver_box": "银票礼盒",
     "eggs": "一筐鸡蛋",
     "tenon": "榫头卯眼",
     "bronze_horse": "碧铜马坯",
-}  # 四项商品的稳定配置键及中文显示名称，按购买顺序排列。
+    "shanhe": "山河器",
+}  # 日常任务各选项的稳定配置键及中文显示名称，按执行顺序排列。
 
 HSLJ_TASK_KEY = "HSLJ"
 HSLJ_MODE_KEYS = ("1v1", "3v3")
@@ -185,6 +187,7 @@ def load_state(path: Path) -> dict[str, Any]:
     else:
         state["selected_task_keys"] = normalize_task_keys(state["selected_task_keys"])
     state["adb_path"] = str(state.get("adb_path") or "adb")
+    state["available_task_order"] = normalize_task_keys(state.get("available_task_order"))
     state["serial"] = str(state.get("serial") or "")
     if "selected_role_indices" in data:
         state["selected_role_indices"] = normalize_selected_role_indices(
@@ -214,6 +217,7 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
         serializable.get("selected_role_indices")
     )
     serializable["selected_task_keys"] = normalize_task_keys(serializable.get("selected_task_keys"))
+    serializable["available_task_order"] = normalize_task_keys(serializable.get("available_task_order"))
     serializable["task_settings"] = normalize_task_settings(serializable.get("task_settings"))
     if "progress" in state:
         progress = normalize_progress(state.get("progress"))
@@ -327,13 +331,13 @@ def normalize_task_settings(settings: Any) -> dict[str, Any]:
 
 
 def normalize_rcgm_settings(settings: Any) -> dict[str, bool]:
-    """归一化购买选项，未配置商品默认不购买。
+    """归一化日常任务选项，未配置的项目默认不执行。
 
     参数：
-        settings：原始商品勾选配置；非字典值视为全部未勾选。
+        settings：原始日常任务勾选配置；非字典值视为全部未勾选。
     """
-    normalized: dict[str, bool] = {}  # 四项商品的独立布尔购买开关。
-    for key in RCGM_ITEM_LABELS:  # 当前商品的持久化配置键。
+    normalized: dict[str, bool] = {}  # 各项日常任务的独立布尔开关。
+    for key in RCGM_ITEM_LABELS:  # 当前日常任务选项的持久化配置键。
         value = settings.get(key, False) if isinstance(settings, dict) else False  # 原始开关值。
         normalized[key] = value is True or type(value) is int and value == 1
     return normalized

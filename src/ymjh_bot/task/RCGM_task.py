@@ -1,4 +1,4 @@
-"""日常购买：按勾选选项购买商城及商会商品。"""
+"""日常任务：按勾选选项购买商品及执行山河器免费搜索。"""
 
 from __future__ import annotations
 
@@ -14,11 +14,20 @@ from ymjh_bot.ym_game_task import YmGameTask
 
 
 class RCGMTask(YmGameTask):
-    """购买指定日常商品，购买结果不明时禁止再次扣款。"""
+    """执行勾选的购买和免费搜索，购买结果不明时禁止再次扣款。"""
 
     task_key = "RCGM"  # 队列与参数持久化的唯一任务键。
-    task_name = "日常购买"  # GUI 中显示的任务名称。
-    task_description = "按勾选商品输入99购买，实际数量由游戏限购规则决定"  # 用户可见用途。
+    task_name = "日常任务"  # GUI 中显示的任务名称。
+    task_description = "购买勾选商品，并执行勾选的山河器免费搜索"  # 用户可见用途。
+    PURCHASE_KEYS = ("silver_box", "eggs", "tenon", "bronze_horse")  # 原有购买选项，排除免费搜索。
+    ROI_SYSTEM_MENU = (1180, 160, 90, 80)  # 包裹旁系统菜单入口，1280×720 像素区域。
+    ROI_NUMERIC_SYSTEM = (1170, 250, 100, 65)  # 菜单内数值系统分类名称区域，单位像素。
+    ROI_SHANHE_ENTRY = (1105, 397, 72, 70)  # 数值系统展开后的山河器入口区域，单位像素。
+    ROI_SHANHE_TITLE = (20, 0, 140, 50)  # 山河器页面左上标题区域，单位像素。
+    ROI_SHANHE_SEARCH_TAB = (1160, 80, 120, 95)  # 山河器搜索页签激活标记区域，单位像素。
+    ROI_SHANHE_FREE = (820, 640, 165, 50)  # 只识别免费搜索文字，避开右侧雇佣十连，单位像素。
+    ROI_SHANHE_CONTINUE = (450, 640, 380, 65)  # 搜索动画和结果页底部继续提示区域，单位像素。
+    ROI_SHANHE_COMPASS_CLOSE = (1175, 18, 45, 44)  # 罗盘弹层关闭按钮区域，避开页面本身右上关闭叉，单位像素。
     ASSET_DIR = YmGameTask.TEMPLATES_DIR / "daily_purchase"  # 本任务真实模板目录。
     ROI_PANEL_TITLE = (20, 0, 190, 65)  # 珍宝阁标题区域，1280×720 像素坐标。
     ROI_ENTRY = (700, 0, 440, 100)  # 主场景右上角珍宝阁入口区域。
@@ -46,11 +55,22 @@ class RCGMTask(YmGameTask):
     MATCH_THRESHOLD = 0.84  # 名称及界面标记的最低模板匹配分数。
 
     def __init__(self, rcgm_settings: dict[str, Any] | None = None):
-        """self 为任务实例，rcgm_settings 为四项商品开关，None 表示全部关闭。"""
+        """self 为任务实例，rcgm_settings 为日常任务选项开关，None 表示全部关闭。"""
         super().__init__()
         self.rcgm_settings = normalize_rcgm_settings(rcgm_settings)  # 当前角色的独立商品购买配置。
         self._completed_items: set[str] = set()  # 本实例已购买或已达限购的商品；完整任务重试时保留。
         self._pending_item: str | None = None  # 已点击购买但尚未确认结果的商品；None 表示没有未决扣款。
+        self._shanhe_search_clicked = False  # 本实例是否已尝试点击免费搜索；完整任务重试中保留，防止重复点击。
+
+    def before_start(self) -> None:
+        """self 为任务实例；先退出山河器，避免通用省电唤醒点击落入搜索按钮。"""
+        if (
+            self._find("shanhe_title", self.ROI_SHANHE_TITLE)
+            or self._find(["shanhe_animation", "shanhe_result"], self.ROI_SHANHE_CONTINUE)
+            or self._find("shanhe_compass_close", self.ROI_SHANHE_COMPASS_CLOSE)
+        ):
+            self._close_shanhe_panel()
+        super().before_start()
 
     @step(retry=0, timeout_ms=180_000)
     def purchase_selected_goods(self) -> bool:
@@ -58,8 +78,8 @@ class RCGMTask(YmGameTask):
         self._check_stop()
         if self._pending_item is not None:
             self._fail(f"{RCGM_ITEM_LABELS[self._pending_item]}上次购买结果不明，禁止重复购买")
-        if not any(self.rcgm_settings.values()):
-            self._log("未勾选日常购买商品，跳过购买")
+        if not any(self.rcgm_settings[key] for key in self.PURCHASE_KEYS):  # key 为原有购买选项键。
+            self._log("未勾选购买商品，跳过购买")
             return True
         if not self._find("panel_title", self.ROI_PANEL_TITLE):
             if not self.ensure_top_shortcuts_expanded():
@@ -105,11 +125,61 @@ class RCGMTask(YmGameTask):
         self.close_all_panels(timeout_ms=6000)
         return not self._find("panel_title", self.ROI_PANEL_TITLE)
 
+    @step(retry=1, timeout_ms=40_000)
+    def search_shanhe(self) -> bool:
+        """执行一次山河器免费搜索并退出；self 为当前角色的任务实例。"""
+        self._check_stop()
+        if not self.rcgm_settings["shanhe"]:
+            return True
+        if self._shanhe_search_clicked:
+            self._log("本次任务已点击山河器免费搜索，仅清理页面")
+            return self._close_shanhe_panel()
+        if not self._find("shanhe_title", self.ROI_SHANHE_TITLE):
+            if not self._find("shanhe_entry", self.ROI_SHANHE_ENTRY):
+                if not self._find("numeric_system", self.ROI_NUMERIC_SYSTEM):
+                    self._click_marker("system_menu", self.ROI_SYSTEM_MENU, "包裹旁菜单按钮")
+                self._click_marker("numeric_system", self.ROI_NUMERIC_SYSTEM, "数值系统分类")
+            self._click_marker("shanhe_entry", self.ROI_SHANHE_ENTRY, "山河器入口")
+        self._require_marker("shanhe_title", self.ROI_SHANHE_TITLE, "山河器页面")
+        self._require_marker("shanhe_search_tab", self.ROI_SHANHE_SEARCH_TAB, "山河器搜索页")
+        if self.wait_find_image_in_roi(
+            self._paths("shanhe_free"), self.ROI_SHANHE_FREE,
+            timeout_ms=2000, interval_ms=200, threshold=self.MATCH_THRESHOLD,
+            description="山河器免费搜索",
+        ):
+            self._shanhe_search_clicked = True
+            self.click(offset=0)
+            self._log("已点击一次山河器免费搜索")
+            self.wait(1500)
+        else:
+            self._log("山河器无免费搜索，直接退出")
+        return self._close_shanhe_panel()
+
+    def _close_shanhe_panel(self) -> bool:
+        """关闭山河器及可能出现的结果面板；self 为当前任务实例。"""
+        deadline = time.monotonic() + 15  # 动画、结果及页面清理共用的有限截止秒数。
+        while time.monotonic() < deadline:
+            self._check_stop()
+            if self._find("shanhe_compass_close", self.ROI_SHANHE_COMPASS_CLOSE):
+                self.click(offset=0)
+                self.wait(500)
+                continue
+            if self._find(["shanhe_animation", "shanhe_result"], self.ROI_SHANHE_CONTINUE):
+                self.click(offset=0)
+                self.wait(1000)
+                continue
+            if self._find("system_menu", self.ROI_SYSTEM_MENU):
+                return True
+            if self._find("shanhe_title", self.ROI_SHANHE_TITLE):
+                self.close_all_panels(timeout_ms=2000)
+            self.wait(300)
+        self._fail("山河器页面未关闭或搜索结果未退出")
+
     def cleanup_after_failure(self, failure: Exception | str | None = None) -> None:
         """清理购买界面；self 为任务实例，failure 为队列传入的失败原因。"""
         self.close_all_panels(timeout_ms=6000)
         if self._find("panel_title", self.ROI_PANEL_TITLE):
-            self._fail("日常购买失败后珍宝阁面板仍未关闭")
+            self._fail("日常任务失败后珍宝阁面板仍未关闭")
 
     def _needs_purchase(self, key: str) -> bool:
         """self 为任务实例，key 为商品键；已完成商品在完整任务重试中跳过。"""
@@ -267,11 +337,11 @@ class RCGMTask(YmGameTask):
     def _fail(self, message: str) -> None:
         """保存失败现场并抛错；self 为任务实例，message 为中文失败原因。"""
         if self._stop_requested:
-            raise StepStopException("用户停止日常购买")
+            raise StepStopException("用户停止日常任务")
         path = self.save_debug_screenshot("daily_purchase_failed")  # 失败原始截图路径。
         raise RuntimeError(f"{message}，已保存截图：{path}")
 
     def _check_stop(self) -> None:
         """在截图与拖动边界响应停止；self 为当前任务实例。"""
         if self._stop_requested:
-            raise StepStopException("用户停止日常购买")
+            raise StepStopException("用户停止日常任务")

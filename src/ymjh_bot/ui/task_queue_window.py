@@ -11,8 +11,8 @@ from pathlib import Path
 
 import cv2
 from dotenv import load_dotenv
-from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
-from PySide6.QtGui import QIntValidator
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import QCloseEvent, QIntValidator
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -67,6 +67,7 @@ from ymjh_bot.ui.task_queue_state import (
     normalize_hslj_settings,
     normalize_rcgm_settings,
     normalize_selected_role_indices,
+    normalize_task_keys,
     normalize_shrw_settings,
     restore_selected_tasks,
     safe_serial_name,
@@ -88,6 +89,11 @@ SHRW_STRATEGY_OPTIONS = (
 
 
 _LOG_TIMESTAMP_PATTERN = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]")
+
+DEFAULT_AVAILABLE_TASK_ORDER = (
+    "RCGM", "MRYG", "CGSS", "ZGWX", "JYPY", "JHXS", "HSLJ",
+    "JHYXB", "BPRW", "PZSY", "MKSY", "KYRW",
+)  # 无历史配置时采用截图中的队列顺序，其余任务保持发现顺序追加。
 
 
 def _format_log_text(text: str) -> str:
@@ -198,6 +204,8 @@ class TaskQueueWindow(QMainWindow):
         self._suppress_state_switch = False
         self._current_serial = str(self._state.get("serial") or "")
         self._stop_requested_by_user = False
+        self._closing = False  # 是否正在等待队列停止后关闭窗口。
+        self._adb_shutdown_done = False  # 本次窗口退出是否已尝试清理 ADB 服务。
         self._latest_run_summary: dict = {}
         self._queue_editing_enabled = True
 
@@ -286,10 +294,12 @@ class TaskQueueWindow(QMainWindow):
         layout = QHBoxLayout(box)
 
         # Left: Available tasks
-        left_group = QGroupBox("可用任务")
+        left_group = QGroupBox("可用任务（拖动排序）")  # 支持拖动调整候选任务顺序的区域。
         left_layout = QVBoxLayout(left_group)
         self.available_list = QListWidget()
         self.available_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.available_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        self.available_list.model().rowsMoved.connect(self._on_available_reordered)
         left_layout.addWidget(self.available_list)
         self.refresh_tasks_btn = QPushButton("刷新任务")
         self.refresh_tasks_btn.clicked.connect(self.refresh_tasks)
@@ -430,32 +440,29 @@ class TaskQueueWindow(QMainWindow):
         return box
 
     def _build_rcgm_settings_panel(self) -> QWidget:
-        """创建日常购买商品勾选面板；self 为当前队列窗口。"""
-        self.rcgm_settings_widget = QWidget()  # 日常购买参数面板。
-        layout = QGridLayout(self.rcgm_settings_widget)  # 商品复选框的网格布局。
-        self.rcgm_item_checks: dict[str, QCheckBox] = {}  # 各商品独立的购买开关组件。
-        for column, (key, label) in enumerate(RCGM_ITEM_LABELS.items()):  # column 为零起始列号，key 为商品键，label 为中文名称。
-            check = QCheckBox(label)  # 当前商品的购买复选框，默认不勾选。
+        """创建日常任务勾选面板；self 为当前队列窗口。"""
+        self.rcgm_settings_widget = QWidget()  # 日常任务参数面板。
+        layout = QGridLayout(self.rcgm_settings_widget)  # 日常任务复选框的网格布局。
+        self.rcgm_item_checks: dict[str, QCheckBox] = {}  # 各项日常任务独立的开关组件。
+        for column, (key, label) in enumerate(RCGM_ITEM_LABELS.items()):  # column 为零起始列号，key 为选项键，label 为中文名称。
+            check = QCheckBox(label)  # 当前选项的复选框，默认不勾选。
             self.rcgm_item_checks[key] = check
             layout.addWidget(check, 0, column)
-        layout.addWidget(
-            QLabel("仅购买勾选商品，数量输入 99，由游戏限制实际可购数量。"), 1, 0, 1, 4
-        )
-        self.rcgm_settings_confirm_btn = QPushButton("确定")  # 保存日常购买参数的按钮。
+        self.rcgm_settings_confirm_btn = QPushButton("确定")  # 保存日常任务参数的按钮。
         self.rcgm_settings_confirm_btn.clicked.connect(self.confirm_task_settings)
-        layout.addWidget(self.rcgm_settings_confirm_btn, 0, 4)
-        layout.setColumnStretch(3, 1)
+        layout.addWidget(self.rcgm_settings_confirm_btn, 0, len(RCGM_ITEM_LABELS))
+        layout.setColumnStretch(len(RCGM_ITEM_LABELS) - 1, 1)
         return self.rcgm_settings_widget
 
     def _apply_rcgm_settings(self, settings: dict | None) -> None:
-        """还原商品开关；self 为队列窗口，settings 为购买配置，None 表示全部关闭。"""
-        normalized = normalize_rcgm_settings(settings)  # 安全归一化后的商品开关。
-        for key, check in self.rcgm_item_checks.items():  # key 为商品键，check 为对应复选框。
+        """还原日常任务开关；self 为队列窗口，settings 为选项配置，None 表示全部关闭。"""
+        normalized = normalize_rcgm_settings(settings)  # 安全归一化后的日常任务选项开关。
+        for key, check in self.rcgm_item_checks.items():  # key 为选项键，check 为对应复选框。
             check.setChecked(normalized[key])
 
     def _collect_rcgm_settings_from_ui(self) -> dict[str, bool]:
-        """读取四项独立购买开关；self 为队列窗口。"""
-        # key 为商品键，check 为对应复选框。
+        """读取各项独立日常任务开关；self 为队列窗口。"""
+        # key 为日常任务选项键，check 为对应复选框。
         return {key: check.isChecked() for key, check in self.rcgm_item_checks.items()}
 
     def _add_hslj_mode_settings_row(self, layout: QGridLayout, row: int, mode: str) -> None:
@@ -569,9 +576,35 @@ class TaskQueueWindow(QMainWindow):
             except Exception as e:
                 self._append_log(f"[警告] 加载 {file_path.name} 失败：{e}")
 
+        self._sort_available_tasks()
         self._update_available_list()
         if restore_saved:
             self._restore_selected_tasks_from_state()
+
+    def _sort_available_tasks(self) -> None:
+        """按已保存排序或旧队列顺序排列完整任务目录；self 为当前窗口。"""
+        order = normalize_task_keys(self._state.get("available_task_order"))  # 用户保存的完整任务顺序。
+        if not order:
+            order = normalize_task_keys(self._state.get("selected_task_keys"))
+        order = normalize_task_keys(order + list(DEFAULT_AVAILABLE_TASK_ORDER))
+        positions = {key: index for index, key in enumerate(order)}  # key 为任务键，index 为零起始排序位置。
+        # task 为目录中的单个任务；未配置任务保持发现时的相对顺序。
+        self.available_tasks.sort(key=lambda task: positions.get(str(task.get("key")), len(positions)))
+        self._state["available_task_order"] = task_keys_from_infos(self.available_tasks)
+
+    def _on_available_reordered(self, *args) -> None:
+        """保存拖动后的候选顺序；self 为当前窗口，args 为 Qt 行移动事件参数。"""
+        visible_tasks = iter(
+            self.available_list.item(row).data(Qt.ItemDataRole.UserRole)
+            for row in range(self.available_list.count())  # row 为可用任务列表的零起始行号。
+        )  # 拖动后的可用任务迭代器，按显示顺序读取。
+        selected_keys = set(task_keys_from_infos(self.selected_tasks))  # 已入队任务保持完整目录中的原位置。
+        self.available_tasks = [
+            task if str(task.get("key")) in selected_keys else next(visible_tasks)
+            for task in self.available_tasks  # task 为完整目录中待保留或替换位置的任务。
+        ]
+        self._state["available_task_order"] = task_keys_from_infos(self.available_tasks)
+        self._save_state_from_ui()
 
     def _load_task_class_from_file(self, file_path: Path) -> type[GameTask] | None:
         """Load GameTask subclass from a Python file."""
@@ -613,19 +646,21 @@ class TaskQueueWindow(QMainWindow):
         self.selected_tasks = ordered_tasks
 
     def add_selected_tasks(self) -> None:
-        """Add selected available tasks to queue."""
-        selected_indexes = self.available_list.selectedIndexes()
+        """按可用列表显示顺序加入所选任务；self 为当前窗口。"""
+        selected_indexes = self.available_list.selectedIndexes()  # 当前选中的可用任务索引。
         if not selected_indexes:
             return
 
-        for index in sorted(selected_indexes, key=lambda i: i.row(), reverse=True):
-            item = self.available_list.item(index.row())
+        # index 为当前选中行索引，i 为排序时使用的行索引。
+        for index in sorted(selected_indexes, key=lambda i: i.row()):
+            item = self.available_list.item(index.row())  # 当前可用任务列表项。
             if item is None:
                 continue
-            task_info = item.data(Qt.ItemDataRole.UserRole)
+            task_info = item.data(Qt.ItemDataRole.UserRole)  # 列表项关联的任务定义。
             if not isinstance(task_info, dict):
                 continue
-            key = str(task_info.get("key"))
+            key = str(task_info.get("key"))  # 用于防止重复加入的任务键。
+            # selected 为已经加入队列的任务定义。
             if any(str(selected.get("key")) == key for selected in self.selected_tasks):
                 continue
             self.selected_tasks.append(task_info.copy())
@@ -868,7 +903,7 @@ class TaskQueueWindow(QMainWindow):
             message = "生活任务设置已保存。"
         else:
             task_settings[RCGM_TASK_KEY] = self._collect_rcgm_settings_from_ui()
-            message = "日常购买设置已保存。"
+            message = "日常任务设置已保存。"  # 当前任务设置保存结果的提示文字。
         self._state["task_settings"] = task_settings
         self._save_state_from_ui()
         self._append_log(message)
@@ -1053,6 +1088,36 @@ class TaskQueueWindow(QMainWindow):
         """Clean up worker reference after thread finishes."""
         self.worker = None
         self.thread = None
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """队列停止后清理 ADB 服务，再允许窗口退出。
+
+        参数：
+            self：当前队列窗口。
+            event：窗口关闭事件，线程运行期间暂缓接受。
+        """
+        if self.thread is not None and self.thread.isRunning():
+            event.ignore()
+            if not self._closing:
+                self._closing = True
+                self.setEnabled(False)
+                self._append_log("正在停止任务队列，结束后清理 ADB 服务并退出。")
+                self.stop_queue()
+            # runner 可能尚在初始化；重试停止也覆盖 run() 重置停止标记的时序。
+            if self.worker is not None and self.worker.runner is not None:
+                self.worker.runner.stop()
+            QTimer.singleShot(100, self.close)
+            return
+
+        if not self._adb_shutdown_done:
+            self._adb_shutdown_done = True
+            adb_path = self.adb_path_edit.text().strip() or "adb"  # 界面配置的 ADB 命令。
+            try:
+                ADBClient.kill_server(adb_path=adb_path)
+            except ADBError as exc:  # 本次服务清理失败原因，向用户显示后仍允许退出。
+                QMessageBox.warning(self, "ADB 服务清理失败", str(exc))
+        self._release_run_lock()
+        event.accept()
 
     def _release_run_lock(self) -> None:
         """Release the current serial run lock if held."""
@@ -1359,7 +1424,7 @@ class TaskQueueWindow(QMainWindow):
                 check.setEnabled(enabled)
             self.shrw_settings_confirm_btn.setEnabled(enabled)
         if hasattr(self, "rcgm_item_checks"):
-            for purchase_check in self.rcgm_item_checks.values():  # 日常购买的各商品复选框。
+            for purchase_check in self.rcgm_item_checks.values():  # 日常任务的各项复选框。
                 purchase_check.setEnabled(enabled)
             self.rcgm_settings_confirm_btn.setEnabled(enabled)
 

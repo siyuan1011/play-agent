@@ -40,6 +40,23 @@ class DeviceInfo:
 
 
 class ADBClient:
+    @staticmethod
+    def kill_server(adb_path: str = "adb", timeout_sec: int = 10) -> None:
+        """停止共享 ADB 服务。
+
+        参数：
+            adb_path：ADB 可执行文件路径或可通过 PATH 查找的命令。
+            timeout_sec：命令等待上限，单位为秒。
+        """
+        try:
+            proc = _run_adb_process(
+                [adb_path, "kill-server"], text=True, timeout_sec=timeout_sec
+            )  # 停止服务命令的执行结果。
+        except (OSError, subprocess.TimeoutExpired) as exc:  # 启动失败或超时原因。
+            raise ADBError(f"停止 ADB 服务失败：{exc}") from exc
+        if proc.returncode != 0:
+            raise ADBError(proc.stderr.strip() or "停止 ADB 服务失败")
+
     def __init__(self, adb_path: str = "adb", serial: str | None = None, timeout_sec: int = 15):
         self.adb_path = adb_path
         self.serial = serial
