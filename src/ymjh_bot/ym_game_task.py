@@ -113,6 +113,7 @@ class YmGameTask(GameTask):
     ICON_TASK_QY = str(TEMPLATES_DIR / "icon_task_qy.png")
     TASK_SIDEBAR_ENTRY_V2 = str(TEMPLATES_DIR / "task_sidebar_entry_v2.png")
     TASK_SIDEBAR_ENTRY_TEAM_V2 = str(TEMPLATES_DIR / "task_sidebar_entry_team_v2.png")
+    TASK_SIDEBAR_ENTRY_DUNGEON = str(TEMPLATES_DIR / "task_sidebar_entry_dungeon.png")  # 副本队伍栏上方的白色任务入口。
     TASK_SIDEBAR_EXPAND_V2 = str(TEMPLATES_DIR / "task_sidebar_expand_v2.png")
     TASK_FULLSCREEN_PANEL_V2 = str(TEMPLATES_DIR / "task_fullscreen_panel_v2.png")
     TEXT_TASK_PANEL_TITLE = str(TEMPLATES_DIR / "text_task_panel_title.png")
@@ -2456,7 +2457,13 @@ class YmGameTask(GameTask):
         timeout_ms: int = 5000,
         wait_after_click_ms: int = 1000,
     ) -> bool:
-        """若存在当前队伍则离开。"""
+        """若存在当前队伍则离开，兼容副本离队触发传送。
+
+        参数：
+            self：当前游戏任务实例。
+            timeout_ms：队伍按钮单次确认时限，单位毫秒。
+            wait_after_click_ms：点击后等待时间，单位毫秒。
+        """
         self.open_team_panel()
         if not self.is_in_team():
             self._log("当前未组队，跳过退出队伍")
@@ -2474,7 +2481,29 @@ class YmGameTask(GameTask):
             description="未组队状态",
             threshold=0.9,
         ):
-            raise RuntimeError("退出队伍后未回到未组队状态")
+            # 副本离队会关闭队伍面板并过图，不能在加载页继续等面板按钮。
+            loading = self.find_image_once(
+                self.SCENE_LOADING_LOGO_TEMPLATES,
+                threshold=self.SCENE_LOADING_THRESHOLD,
+                roi=self.scale_roi(self.ROI_SCENE_LOADING_LOGO),
+            )  # 当前是否处于离队触发的场景加载页。
+            if loading:
+                self._log("离队触发场景传送，等待过图后重新确认队伍状态")
+                if not self.check_runtime_status("loading", timeout_ms=self.LOGIN_LOADING_TIMEOUT_MS):
+                    debug_path = self.save_debug_screenshot("team_leave_loading_timeout")  # 离队传送超时现场。
+                    raise RuntimeError(f"离队后过图超时，已保存截图：{debug_path}")
+            if loading or self.is_game_main_ready(timeout_ms=timeout_ms):
+                self.open_team_panel()
+                if self.wait_find_image_in_roi(
+                    self.BTN_TEAM_QUICK,
+                    self.ROI_TEAM_PANEL_BOTTOM_RIGHT,
+                    timeout_ms=timeout_ms,
+                    description="传送后未组队状态",
+                    threshold=0.9,
+                ):
+                    return True
+            debug_path = self.save_debug_screenshot("team_leave_unconfirmed")  # 离队状态无法确认的现场。
+            raise RuntimeError(f"退出队伍后未回到未组队状态，已保存截图：{debug_path}")
 
         return True
 
@@ -2903,6 +2932,7 @@ class YmGameTask(GameTask):
         templates = [
             self.TASK_SIDEBAR_ENTRY_V2,
             self.TASK_SIDEBAR_ENTRY_TEAM_V2,
+            self.TASK_SIDEBAR_ENTRY_DUNGEON,
             self.TASK_SIDEBAR_EXPAND_V2,
             self.BTN_CHAT_SEND,
             self.TEXT_TASK_PANEL_TITLE,
@@ -3199,9 +3229,9 @@ class YmGameTask(GameTask):
         if len(found_active) == 1:
             active_panel = found_active[0][0]
 
-        entry_match = self._vision.match_binary_template(
+        entry_match = self._vision.match_binary_template(  # 任务入口最佳匹配，覆盖主场景与副本队伍栏。
             image,
-            [self.TASK_SIDEBAR_ENTRY_V2, self.TASK_SIDEBAR_ENTRY_TEAM_V2],
+            [self.TASK_SIDEBAR_ENTRY_V2, self.TASK_SIDEBAR_ENTRY_TEAM_V2, self.TASK_SIDEBAR_ENTRY_DUNGEON],
             mode="light_foreground",
             threshold=threshold,
             roi=entry_roi,

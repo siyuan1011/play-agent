@@ -26,7 +26,11 @@ class RCFBTask(YmGameTask):
     ]
     TEXT_DUNGEON_TRANSFER_OUT = str(YmGameTask.TEMPLATES_DIR / "text_rcfb_chuangchu.png")
     TEXT_DUNGEON_REWARD_TITLE = str(YmGameTask.TEMPLATES_DIR / "text_rcfb_reward_title.png")  # 副本结算“恭喜获得”遮罩标题模板。
-    ICON_DUNGEON_EXIT = str(YmGameTask.TEMPLATES_DIR / "icon_exit.png")
+    ICON_DUNGEON_EXIT = [
+        str(YmGameTask.TEMPLATES_DIR / "icon_exit.png"),
+        str(YmGameTask.TEMPLATES_DIR / "icon_exit_dungeon.png"),
+        str(YmGameTask.TEMPLATES_DIR / "icon_exit_dungeon_completed.png"),
+    ]  # 副本退出图标的历史和当前实机外观，统一用于识别、点击与退本验证。
     BTN_DUNGEON_EXIT_TEAM = str(YmGameTask.TEMPLATES_DIR / "btn_rcfb_exit_team.png")
     TEXT_DAILY_PANEL_TITLE = str(
         YmGameTask.TEMPLATES_DIR / "text_xsrw_daily_panel_title.png"
