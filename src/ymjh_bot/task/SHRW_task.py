@@ -11,7 +11,7 @@ from typing import Any, ClassVar
 import cv2
 import numpy as np
 
-from botCore import StepStopException, step
+from botCore import StepStopException, VisionEngine, step
 from botCore.vision import load_image
 from ymjh_bot.ui.task_queue_state import (
     SHRW_MATERIAL_OPTIONS,
@@ -33,7 +33,7 @@ class LifeMaterialSpec:
 
 
 class LifeTaskUnavailable(RuntimeError):
-    """体力或采集工具不足时用于正常结束生活任务循环。"""
+    """体力、采集工具或技能等级不足时用于正常结束生活任务循环。"""
 
 
 TARGET_MAP_LABELS = {
@@ -93,9 +93,9 @@ def _material_specs() -> dict[str, LifeMaterialSpec]:
 LIFE_COORDINATES: dict[str, tuple[tuple[int, int], ...]] = {
     "stone": ((1498, 1853), (1490, 1844), (1488, 1838)),
     "brass_ore": ((1586, 1778), (1576, 1772)),
-    "silver_ore": ((1212, 1582), (1200, 1585)),
+    "silver_ore": ((1212, 1586), (1200, 1585)),  # 首点向矿石靠近，避免旧落点处于交互范围外。
     "gold_ore": ((1121, 1626), (1141, 1618)),
-    "emerald_ore": ((850, 1488), (906, 1524), (964, 1494)),
+    "emerald_ore": ((1481, 1744), (856, 1488), (906, 1524), (964, 1494)),  # 东侧点避开邻近金矿；西侧首点由 emerald_action.png 实机确认。
     "tungsten_ore": ((846, 1696), (855, 1700)),
     **{
         key: ((0, 0),)
@@ -115,6 +115,7 @@ class LifeSignal(Enum):
     GATHERING = "gathering"
     NO_TOOL = "no_tool"
     NO_STAMINA = "no_stamina"
+    SKILL_LOCKED = "skill_locked"  # 游戏明确提示采集技能等级不足。
     LOADING = "loading"
     UNKNOWN = "unknown"
 
@@ -152,10 +153,15 @@ class LifeFlow:
             raise StepStopException("Stop requested")
 
     def observe(self) -> LifeObservation:
+        """检查实际采集状态和游戏明确限制；self 为当前采集流程。"""
         self.check_stop()
-        observation = self.ui.observe()
-        if observation.signal in (LifeSignal.NO_TOOL, LifeSignal.NO_STAMINA):
-            reason = "没有可用的采集工具" if observation.signal == LifeSignal.NO_TOOL else "体力耗尽"
+        observation = self.ui.observe()  # 当前帧的采集状态及入口位置。
+        if observation.signal in (LifeSignal.NO_TOOL, LifeSignal.NO_STAMINA, LifeSignal.SKILL_LOCKED):
+            reason = {  # 游戏明确限制原因，不作为采集成功。
+                LifeSignal.NO_TOOL: "没有可用的采集工具",
+                LifeSignal.NO_STAMINA: "体力不足，无法继续采集",
+                LifeSignal.SKILL_LOCKED: "采集技能等级不足",
+            }[observation.signal]
             raise LifeTaskUnavailable(reason)
         return observation
 
@@ -181,52 +187,32 @@ class LifeFlow:
             self.task.wait(min(self.POLL_MS, self.task._remaining_ms(deadline)))
 
     def gather_once(self, action: tuple[int, int]) -> None:
+        """监听采集动作开始及稳定结束，邻近资源入口仍存在也可完成。
+
+        参数：self 为当前采集流程；action 为识别出的屏幕采集按钮坐标。
+        """
         self.check_stop()
         self.task.click_point(*action, offset=0)
         self.ui.reset_acceleration()
-        progress_seen = False
-        unknown_deadline = None
-        non_scene_seen = False
-
-        def on_poll(_found: bool, _missing: int) -> None:
-            nonlocal progress_seen, unknown_deadline, non_scene_seen
-            observation = self.observe()
-            if observation.signal in (LifeSignal.UNKNOWN, LifeSignal.LOADING):
-                non_scene_seen = True
-                if unknown_deadline is None:
-                    unknown_deadline = self.task._make_deadline(3_000)
-                elif self.task._is_deadline_expired(unknown_deadline):
-                    raise RuntimeError("采集后出现未确认的过渡画面或面板")
-                return
-            unknown_deadline = None
+        deadline = self.task._make_deadline(self.task.GATHER_COMPLETE_TIMEOUT_MS)  # 整次动作有限截止时间。
+        progress_seen = False  # 已观察到采集中状态或加速提示。
+        completion_seen = False  # 已观察到本次采集的通用结算文字，避免白边末段漏检提前计数。
+        idle_frames = 0  # 采集开始后连续恢复空闲的帧数。
+        while not self.task._is_deadline_expired(deadline):
+            observation = self.observe()  # 当前真实设备状态，同时检查停止与工具/体力限制。
             self.require_stable_scene(observation)
-            progress_seen |= observation.signal == LifeSignal.GATHERING
-            progress_seen |= self.ui.click_acceleration_if_visible()
-
-        marker_missing = self.task.wait_image_missing(
-            str(LIFE_ASSET_DIR / f"{self.ui.action_label_asset}.png"),
-            timeout_ms=self.task.GATHER_COMPLETE_TIMEOUT_MS,
-            threshold=0.82,
-            missing_threshold=3,
-            interval_ms=self.POLL_MS,
-            roi=self.ui.action_label_roi,
-            callback=on_poll,
-        )
-        if unknown_deadline is not None:
-            while True:
-                observation = self.observe()
-                if observation.signal not in (LifeSignal.UNKNOWN, LifeSignal.LOADING):
-                    self.require_stable_scene(observation)
-                    break
-                if self.task._is_deadline_expired(unknown_deadline):
-                    raise RuntimeError("采集后出现未确认的过渡画面或面板")
-                self.task.wait(self.POLL_MS)
-        if non_scene_seen:
-            raise RuntimeError("采集期间曾出现过渡画面或普通面板，不能计为成功")
-        if not marker_missing:
-            raise RuntimeError("采集标志未消失：未确认采集完成，不能推断工具或体力耗尽")
-        if not progress_seen:
-            raise RuntimeError("采集标志消失但未观察到采集过程，不能计为成功")
+            if progress_seen:
+                completion_seen |= self.ui.gather_completed()
+            accelerating = self.ui.click_acceleration_if_visible()  # 同一加速标志只点击一次。
+            if observation.signal == LifeSignal.GATHERING or accelerating:
+                progress_seen = True
+                idle_frames = 0
+            elif progress_seen:
+                idle_frames += 1
+                if idle_frames >= 3 and completion_seen:
+                    return
+            self.task.wait(self.POLL_MS)
+        raise RuntimeError("未确认采集动作开始并稳定结束，不能计为成功")
 
     def switch_line(self) -> None:
         scope = "interconnected"
@@ -363,7 +349,7 @@ class LifeUI:
     ROI_ACTION_LABELS = ((970, 438, 75, 55), (955, 535, 75, 55))
     ROI_ACTION_LABEL = ROI_ACTION_LABELS[0]
     # 两个采集交互行的采集中标志区域，单位为屏幕像素。
-    ROI_GATHERING = ((905, 415, 55, 35), (890, 512, 55, 35))
+    ROI_GATHERING = ((890, 410, 95, 100), (875, 507, 95, 100))
     ROI_ACCELERATION = (560, 455, 170, 90)
     # 每种技能的动作文字模板；尚未取得实机素材的技能在启动前拦截。
     ACTION_LABEL_ASSETS: ClassVar[dict[str, str]] = {"mining": "action_label"}
@@ -378,7 +364,9 @@ class LifeUI:
     # 各技能共用的地图、数字、分线和采集状态识别素材名称。
     REQUIRED_ASSETS = (
         "map_coordinates", "input_confirm", "switch_to_local",
-        "switch_to_interconnected", "gathering", "stamina", "acceleration",
+        "switch_to_interconnected", "gathering", "gathering_border_left", "gathering_border_right", "stamina",
+        "acceleration", "acceleration_rain", "skill_required", "gather_success", "gather_success_gold",
+        "stamina_insufficient_action",
     )
 
     def __init__(self, task: SHRWTask):
@@ -430,9 +418,12 @@ class LifeUI:
         return self.task._vision.match_template(image, str(path), roi=roi, threshold=threshold).found
 
     def observe(self) -> LifeObservation:
-        image = self.screenshot()
+        """检查限制提示、动作及入口；self 为当前生活任务观察器。"""
+        image = self.screenshot()  # 用同一真实帧判定所有采集状态。
         self._latest_image = image
         # Specific signs take precedence over a generic non-scene classification.
+        if self.matches(image, "skill_required", (250, 250, 700, 200), threshold=0.85):
+            return LifeObservation(LifeSignal.SKILL_LOCKED)
         if self.matches(image, "stamina", (250, 150, 800, 450)):
             return LifeObservation(LifeSignal.NO_STAMINA)
         # name：耗尽页面模板名；roi：对应的屏幕像素识别区域。
@@ -445,10 +436,29 @@ class LifeUI:
             return LifeObservation(LifeSignal.LOADING)
         if not self.task.is_main_scene(image) or self.task.is_map_visible(image):
             return LifeObservation(LifeSignal.UNKNOWN)
-        if self.matches(image, "gathering", self.ROI_GATHERING[self.task.material.gather_slot]):
+        # 体力不足时操作文字会替换为红色体力图标和需求数值，不一定弹出对话框。
+        # 只识别当前交互行的图标，不依赖矿种或具体体力需求数值。
+        if self.matches(image, "stamina_insufficient_action", self.action_label_roi):
+            return LifeObservation(LifeSignal.NO_STAMINA)
+        if self.matches(image, "gathering", self.ROI_GATHERING[self.task.material.gather_slot]) or self.task._vision.match_binary_template(
+            image, [str(LIFE_ASSET_DIR / "gathering.png"), str(LIFE_ASSET_DIR / "gathering_border_left.png"), str(LIFE_ASSET_DIR / "gathering_border_right.png")],
+            mode="light_foreground", threshold=0.92,
+            roi=self.ROI_GATHERING[self.task.material.gather_slot],
+        ).found:
             return LifeObservation(LifeSignal.GATHERING)
         action = self.task.find_configured_gather_action(image)
         return LifeObservation(LifeSignal.IDLE, action)
+
+    def gather_completed(self) -> bool:
+        """识别各矿种共用的采集结算文字，不校验矿名或熟练度数值。
+
+        参数：self 为保存当前观察帧的界面观察器。
+        """
+        return self._latest_image is not None and self.task._vision.match_template(
+            self._latest_image,
+            [str(LIFE_ASSET_DIR / "gather_success.png"), str(LIFE_ASSET_DIR / "gather_success_gold.png")],
+            threshold=0.85, roi=(250, 140, 700, 300),
+        ).found
 
     def reset_acceleration(self) -> None:
         self._acceleration_visible = False
@@ -456,7 +466,11 @@ class LifeUI:
     def click_acceleration_if_visible(self) -> bool:
         if self._latest_image is None:
             return False
-        visible = self.matches(self._latest_image, "acceleration", self.ROI_ACCELERATION)
+        visible = self.task._vision.match_template(
+            self._latest_image,
+            [str(LIFE_ASSET_DIR / "acceleration.png"), str(LIFE_ASSET_DIR / "acceleration_rain.png")],
+            threshold=0.86, roi=self.ROI_ACCELERATION,
+        ).found  # 同一加速文字的普通与雨天背景实机模板。
         if visible and not self._acceleration_visible:
             self.task.click_point(637, 462, offset=0)
             self.task._log("检测到采集加速，已点击")
@@ -464,19 +478,100 @@ class LifeUI:
         return visible
 
     def current_coordinate(self, image: np.ndarray) -> tuple[int, int] | None:
-        """从主场景右上角读取世界坐标；image 为 1280×720 截图。"""
-        region = image[0:21, 1186:1280]
-        mask = cv2.inRange(region, (185, 185, 185), (255, 255, 255))
-        punctuation = [(x, glyph.shape[1]) for x, glyph in glyph_runs(mask) if glyph.shape[0] <= 6]
-        if len(punctuation) != 1:
-            return None
-        comma, width = punctuation[0]
-        x, y = read_number(mask[:, :comma], hud=True), read_number(mask[:, comma + width :], hud=True)
-        return (x, y) if x is not None and y is not None else None
+        """读取 HUD 坐标，拒绝漏字，并用更亮的阈值分离浅色小地图背景。
+
+        参数：self 为生活界面观察器；image 为 1280×720 游戏截图。
+        """
+        region = image[0:21, 1186:1280]  # 右上角完整坐标字段的像素区域。
+        mask = cv2.inRange(region, (185, 185, 185), (255, 255, 255))  # 原有白色字形分割。
+        punctuation = [(left, glyph.shape[1]) for left, glyph in glyph_runs(mask) if glyph.shape[0] <= 6]  # left 为候选逗号横坐标；glyph 为候选字形。
+        candidates = set()  # 不同逗号候选读出的完整坐标；歧义时拒绝到点。
+        for comma, width in punctuation:  # comma 为候选分隔符横坐标；width 为其像素宽度。
+            x = self.read_hud_field(region[:, :comma], left_parenthesis=True)  # 可能为 None 的 X 世界坐标。
+            y = self.read_hud_field(region[:, comma + width :], left_parenthesis=False)  # 可能为 None 的 Y 世界坐标。
+            if x is not None and y is None:
+                # 四位 Y 数字占逗号后 40 像素；只在完整字段失败时排除下方小地图装饰和右括号。
+                y = self.read_hud_field(region[2:16, comma + width : comma + width + 40], left_parenthesis=False)
+                if y is not None and not 1000 <= y <= 9999:
+                    y = None  # 裁剪回退必须读出完整四位数，不能接受截断字段。
+            if x is not None and y is not None:
+                candidates.add((x, y))
+        return next(iter(candidates)) if len(candidates) == 1 else None
+
+    @staticmethod
+    def read_hud_field(region: np.ndarray, *, left_parenthesis: bool) -> int | None:
+        """完整读取逗号一侧，不能把粘连的大块背景跳过后当成短数字。
+
+        参数：region 为单侧坐标的彩色像素；left_parenthesis 表示括号位于左侧而非右侧。
+        """
+        for lower in (185, 200, 215, 225):  # lower 为备用白色分割阈值；优先沿用原有字形。
+            mask = cv2.inRange(region, (lower,) * 3, (255,) * 3)  # 当前阈值下的字段像素。
+            runs = glyph_runs(mask)  # 当前字段所有连通列段，包括边缘括号。
+            if not runs:
+                continue
+            edge, bracket = runs[0 if left_parenthesis else -1]  # edge 为外侧括号起点；bracket 为该段像素。
+            if bracket.shape[0] > 13 and bracket.shape[1] <= 5:
+                mask = mask[:, edge + bracket.shape[1]:] if left_parenthesis else mask[:, :edge]
+                runs = glyph_runs(mask)
+            if not runs or any(not (8 <= glyph.shape[0] <= 13 and glyph.shape[1] / glyph.shape[0] >= 0.2) for _left, glyph in runs):  # _left 为段起点；glyph 为必须完整识别的数字像素。
+                continue
+            value = read_number(mask, hud=True)  # 整个字段都能识别时的数值，失败为 None。
+            if value is not None:
+                return value
+        return None
 
     def at_coordinate(self, image: np.ndarray, coordinate: tuple[int, int]) -> bool:
         current = self.current_coordinate(image)
         return current is not None and max(abs(a - b) for a, b in zip(current, coordinate)) <= 2
+
+    def map_coordinate(self, image: np.ndarray) -> tuple[int, int] | None:
+        """读取地图左下角当前坐标，避开 HUD 图标遮挡。
+
+        参数：self 为生活界面观察器；image 为已打开地图的 1280×720 截图。
+        """
+        if not self.task.is_map_visible(image):
+            return None
+        mask = cv2.inRange(image[675:704, 125:440], (185,) * 3, (255,) * 3)  # 当前坐标文字，排除上方“前往坐标”输入框。
+        runs = glyph_runs(mask)  # 包含地图名称、括号、数字及逗号的列段。
+        brackets = [(left, glyph.shape[1]) for left, glyph in runs if 20 <= glyph.shape[0] <= 24 and glyph.shape[1] <= 6]  # left 为窄高括号候选起点；glyph 为对应字形。
+        candidates = set()  # 只有一个完整合法坐标时才确认结果。
+        for (opening, opening_width), (closing, _closing_width) in zip(brackets, brackets[1:]):  # opening/opening_width 为左括号起点/宽度；closing/_closing_width 为右括号起点/宽度。
+            field = mask[:, opening + opening_width:closing]  # 两个括号之间的完整数值区域。
+            punctuation = [(left, glyph.shape[1]) for left, glyph in glyph_runs(field) if glyph.shape[0] <= 7]  # left 为候选逗号起点；glyph 为候选逗号字形。
+            if len(punctuation) != 1:
+                continue
+            comma, comma_width = punctuation[0]  # 分隔 X/Y 的逗号起点和宽度。
+            values = []  # 顺序保存完整识别的 X 和 Y，任何漏字均拒绝。
+            for part in (field[:, :comma], field[:, comma + comma_width:]):  # part 为逗号一侧的数值字段。
+                digits = glyph_runs(part)  # 当前字段的全部数字列段。
+                if not 1 <= len(digits) <= 4 or any(not 14 <= glyph.shape[0] <= 19 for _left, glyph in digits):  # _left 为数字起点；glyph 为必须完整识别的字形。
+                    break
+                value = read_number(part)  # 复用地图输入数字字形，不增加另一套识别阈值。
+                if value is None:
+                    break
+                values.append(value)
+            if len(values) == 2:
+                candidates.add(tuple(values))
+        return next(iter(candidates)) if len(candidates) == 1 else None
+
+    def confirm_arrival_on_map(self, coordinate: tuple[int, int]) -> bool:
+        """HUD 不可读时，要求地图当前坐标连续三帧到点并恢复主界面。
+
+        参数：self 为生活界面观察器；coordinate 为目标世界坐标，容差仍为两单位。
+        """
+        self.task.ensure_local_map_open(wait_after_click_ms=self.task.MAP_WAIT_MS)
+        confirmed = True  # 三帧均确认到点且关闭地图后才允许返回成功。
+        try:
+            self.task.collapse_life_filter_panel_if_visible()
+            for _attempt in range(3):  # _attempt 为连续回读的零起始序号。
+                current = self.map_coordinate(self.screenshot())  # 地图实际当前位置，不能读取“前往坐标”。
+                if current is None or max(abs(current[0] - coordinate[0]), abs(current[1] - coordinate[1])) > 2:
+                    confirmed = False
+                    break
+                self.task.wait(300)
+        finally:
+            self.task.close_map_after_navigation()
+        return confirmed and self.task.is_main_scene(self.screenshot())
 
     def input_coordinate(self, coordinate: tuple[int, int]) -> None:
         if not self.matches(self.screenshot(), "map_coordinates", (0, 605, 400, 60)):
@@ -525,7 +620,9 @@ class LifeUI:
                 break  # Short routes may finish before the first poll.
             self.task.wait(300)
         else:
-            raise RuntimeError("坐标前往后未检测到移动，也未到达目标坐标")
+            # 已在目标点时可能不会开始寻路，HUD 遮挡也不能直接判为未到达。
+            self.wait_arrival(coordinate)
+            return
         self.wait_arrival(coordinate)
 
     def travel_to_target_map(self) -> None:
@@ -564,18 +661,39 @@ class LifeUI:
         raise RuntimeError(f"前往{TARGET_MAP_LABELS[self.task.material.map_key]}地图落点未开始自动寻路")
 
     def wait_arrival(self, coordinate: tuple[int, int]) -> None:
-        deadline = self.task._make_deadline(5_000)
-        stable = 0
+        """确认寻路结束后的采集入口或实际到点，HUD 被遮挡时回读地图。
+
+        参数：self 为生活界面观察器；coordinate 为目标世界坐标。
+        """
+        deadline = self.task._make_deadline(self.task.AUTO_PATH_TIMEOUT_MS)  # 整个到点等待预算，包含传送后寻路延迟恢复的间隙。
+        stable = 0  # 连续到点帧数，三帧确认成功。
+        image = self.screenshot()  # 最后检查的现场帧，供超时后判断能否使用地图备用回读。
+        moving = True  # 未完成静止检查前不允许打开备用地图。
         while not self.task._is_deadline_expired(deadline):
             image = self.screenshot()
             moving = self.task._vision.match_template(image, self.task.TEXT_AUTO_PATH, threshold=0.8).found
-            if self.task.is_main_scene(image) and not moving and self.at_coordinate(image, coordinate):
+            if moving or self.task.is_scene_transition_loading(image):
+                remaining_ms = self.task._remaining_ms(deadline)  # 后续寻路仍可等待的毫秒数。
+                if remaining_ms <= 0 or not self.task.wait_auto_pathfinding(timeout_ms=remaining_ms, missing_threshold=3):
+                    raise RuntimeError("确认采集点时后续寻路或过图超时")
+                stable = 0
+                continue
+            # 可执行入口比 HUD 数字更直接；必须在寻路结束后的主场景连续确认。
+            actionable = self.task.find_configured_gather_action(image) is not None  # 当前点是否有可执行的采集入口。
+            if self.task.is_main_scene(image) and not moving and (actionable or self.at_coordinate(image, coordinate)):
                 stable += 1
                 if stable >= 3:
                     return
             else:
                 stable = 0
             self.task.wait(300)
+        if (
+            self.task.is_main_scene(image) and not moving
+            and self.current_coordinate(image) is None
+            and self.confirm_arrival_on_map(coordinate)
+        ):
+            self.task._log(f"HUD 坐标被遮挡，已通过地图当前坐标确认到达 {coordinate}")
+            return
         raise RuntimeError(f"寻路结束但未确认到达世界坐标 {coordinate}")
 
     def panel_scope(self, image: np.ndarray) -> str | None:
@@ -594,7 +712,18 @@ class LifeUI:
         return left_edge > 6 and right_edge > 6
 
     def open_lines(self, scope: str) -> None:
+        """打开分线前清理采集后延迟出现的配方提示。
+
+        参数：self 为生活界面观察器；scope 为互联或本服分线范围。
+        """
+        # image：同帧检查配方提示和分线面板的设备截图。
         image = self.screenshot()
+        if self.task._vision.match_template(
+            image, self.task.GENERAL_CLOSE_TEMPLATES,
+            threshold=0.85, roi=(1050, 210, 100, 80),
+        ).found:
+            self.task.close_all_panels(timeout_ms=3000)
+            image = self.screenshot()
         if self.panel_scope(image) is None and not self.line_panel_visible(image):
             if not self.task.is_main_scene(image):
                 raise RuntimeError("无法在非主场景打开分线列表")
@@ -670,10 +799,32 @@ class LifeUI:
         raise RuntimeError("分线列表未能回到顶部")
 
     def list_lines(self, scope: str) -> list[LifeLine]:
-        self.open_lines(scope)
-        self.scroll_top()
-        return [line for line in self.visible_lines(self.screenshot(), scope, 0)
-                if 1 <= line.number <= 7]
+        """读取线路；掉落提示清理重开，滚动公告等待重读，最多重试两次。
+
+        参数：self 为生活界面观察器；scope 为互联或本服线路范围。
+        """
+        for attempt in range(3):  # attempt 为从零开始的读取尝试序号。
+            try:
+                self.open_lines(scope)
+                self.scroll_top()
+                return [line for line in self.visible_lines(self.screenshot(), scope, 0)
+                        if 1 <= line.number <= 7]  # line 为已识别的线路信息。
+            except StepStopException:
+                raise
+            except RuntimeError:
+                image = self.screenshot()  # 失败后核实是否确有掉落物提示遮挡。
+                if attempt == 2:
+                    raise
+                if self.task._vision.match_template(
+                    image, self.task.GENERAL_CLOSE_TEMPLATES,
+                    threshold=0.85, roi=(1050, 210, 100, 80),
+                ).found:
+                    self.task._log("掉落物提示遮挡分线列表，清理后重新读取")
+                    self.task.close_all_panels(timeout_ms=3000)
+                else:
+                    self.task._log("分线编号暂不可读，等待公告消退后重新识别")
+                    self.task.wait(1500)
+        raise RuntimeError("分线列表读取失败")
 
     def close_lines(self) -> None:
         if self.panel_scope(self.screenshot()) is not None:
@@ -681,9 +832,7 @@ class LifeUI:
             self.task.wait(300)
 
     def change_line(self, scope: str, line: LifeLine) -> bool:
-        self.open_lines(scope)
-        self.scroll_top()
-        candidates = self.visible_lines(self.screenshot(), scope, 0)
+        candidates = self.list_lines(scope)  # 复用有遮挡恢复的读取路径，重新确认目标线路。
         target = next((item for item in candidates if item.number == line.number), None)
         if target is None or not target.available:
             return False
@@ -854,11 +1003,7 @@ class SHRWTask(YmGameTask):
 
     def select_target_map(self) -> None:
         """在地图界面选中材料所在区域；角色尚未完成跨图。"""
-        if not self.is_world_map_visible_quiet():
-            self.click_point(*self.POINT_MAP_WORLD, offset=0)
-            self.wait(self.MAP_WAIT_MS)
-        if not self.is_world_map_visible_quiet():
-            raise RuntimeError("未能从区域地图切换到世界地图")
+        self.ensure_world_map_open(wait_after_click_ms=self.MAP_WAIT_MS)
 
         target = self.POINT_TARGET_MAPS[self.material.map_key]
         self.click_point(*target, offset=0)
@@ -870,21 +1015,14 @@ class SHRWTask(YmGameTask):
         self._log(f"地图界面已选择{TARGET_MAP_LABELS[self.material.map_key]}区域")
 
     def open_map(self) -> None:
-        """打开右上角地图，并以右上角关闭圆钮确认地图已经出现。"""
-        for attempt in range(3):
-            image = self.screenshot()
-            if self.is_map_visible(image):
-                return
-            if not self.is_main_scene(image):
-                self.wake_from_power_saving_if_needed()
-                self.wait(500)
-            self.click_point(*self.POINT_MAP, offset=0)
-            self.wait(self.MAP_WAIT_MS)
-            if self.is_map_visible(self.screenshot()):
-                return
-            self._log(f"地图入口第 {attempt + 1}/3 次点击未生效，重试")
-            self.wait(400)
-        raise RuntimeError("点击右上角地图后未打开地图")
+        """通过世界/区域标志确认已打开地图，复用安全区导航入口。
+
+        参数：self 为当前生活任务实例。
+        """
+        if self.is_map_visible(self.screenshot()):
+            return
+        self.wake_from_power_saving_if_needed()
+        self.ensure_local_map_open(wait_after_click_ms=self.MAP_WAIT_MS)
 
 
     def collapse_life_filter_panel_if_visible(self) -> None:
@@ -921,11 +1059,21 @@ class SHRWTask(YmGameTask):
         self,
         image: np.ndarray,
     ) -> tuple[int, int] | None:
-        """仅在当前产物对应的交互行中识别该技能的采集工具。"""
+        """识别当前交互行的采集入口，挖矿只要求通用操作文字。
+
+        参数：self 为当前任务实例；image 为 1280×720 的同帧游戏截图。
+        """
         slot = self.material.gather_slot
         point = self.POINT_GATHER_ACTIONS[slot]
         if self.is_map_visible(image) or not self.is_main_scene(image):
             return None
+
+        # 挖矿必须匹配真实操作文字，浅色山坡不能仅凭亮色像素被当成按钮。
+        if self.task_type == "mining":
+            return point if self._vision.match_template(
+                image, str(LIFE_ASSET_DIR / "action_label.png"),
+                threshold=0.82, roi=LifeUI.ROI_ACTION_LABELS[slot],
+            ).found else None
 
         templates = self.configured_gather_templates()
         if templates:
@@ -974,8 +1122,17 @@ class SHRWTask(YmGameTask):
 
     @classmethod
     def is_map_visible(cls, image: np.ndarray) -> bool:
-        """地图右上角始终存在大型圆形关闭按钮。"""
-        return bool(cls.find_circles(image, cls.ROI_MAP_CLOSE, min_radius=24, max_radius=44))
+        """使用安全区流程的世界/区域模板判断同帧地图状态。
+
+        参数：cls 为生活任务类；image 为 1280×720 的待检查截图。
+        """
+        vision = VisionEngine()  # 无设备依赖的模板匹配器，保持调用方同帧判断。
+        return vision.match_template(
+            image,
+            [cls.MAP_BTN_WORLD, cls.MAP_BTN_REGION],
+            threshold=cls.MAP_TEMPLATE_THRESHOLD,
+            roi=cls.ROI_MAP_WORLD_BUTTON,
+        ).found
 
     @staticmethod
     def is_life_filter_panel_visible(image: np.ndarray) -> bool:

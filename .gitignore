@@ -17,3 +17,23 @@ pytest-cache-files-*
 .claude/
 .screenshots/
 .docs/
+
+# 本机会话产物；旧目录仅作兼容，不再新增产物。
+/.local/
+/artifacts/
+
+# 开发日志与轮转日志（结构化事件保留在日志或会话目录内）。
+*.log
+*.log.*
+
+# 本机配置与开发工具缓存。
+.env
+.env.*
+!.env.example
+.cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml

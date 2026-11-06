@@ -74,6 +74,8 @@ class MyTask(GameTask):
 
 ## 日志
 
+开发过程的计划、临时脚本、验证报告和衍生文件统一按会话存放在 `.local/sessions/`，由 Git 忽略，详见 [开发产物管理](docs/DEVELOPMENT_ARTIFACTS.md)。
+
 每次运行都会在 `logs/` 下建立独立的 `run_*` 目录：
 
 - `events.jsonl`：结构化事件与步骤结果

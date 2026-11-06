@@ -28,12 +28,16 @@ src/
     ├── templates/            # 模板图片
     └── ui/                   # 一梦江湖任务队列 UI
 
-docs/                         # 文档
+docs/                         # 持续维护的正式文档
+.local/sessions/              # 按会话归档的开发过程产物（Git 忽略）
+logs/                         # 应用运行日志（Git 忽略）
 tests/                        # 测试
 launch_gui.py                 # 开发调试 GUI 快捷入口
 ```
 
 ## 模块职责
+
+会话计划、临时脚本、截图和验证报告遵循 [开发产物管理](DEVELOPMENT_ARTIFACTS.md)。
 
 ### botCore
 

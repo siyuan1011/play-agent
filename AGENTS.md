@@ -34,11 +34,12 @@ DSL API 优先从 `botCore` 公共出口导入，例如 `GameTask`、`step`、`S
 | `src/game_bot/`、`launch_gui.py` | 开发调试 GUI/CLI 及快捷入口，不承载正式游戏队列 UI |
 | `src/ymjh_bot/` | 游戏共享基类、任务、模板、队列 runner、角色切换、UI 与构建入口 |
 | `tests/`、`tests/fixtures/` | 单元与流程测试、整理后的真实截图夹具；普通测试不依赖当前模拟器状态 |
-| `docs/`、`docs/assets/` | 架构、DSL、任务流程及验证记录，文档使用的静态素材 |
+| `docs/`、`docs/assets/` | 持续维护的架构、DSL、任务流程及正式文档素材 |
 | `pyproject.toml`、`uv.lock` | 依赖、命令入口、pytest 配置和依赖锁定 |
 | `.env.example`、本地 `.env` | 公开配置示例与本机 ADB 配置；不要将本机私有配置混入提交或发布产物 |
 | `ymjh_bot.spec`、`build/`、`dist/` | PyInstaller 配置、中间产物和发布包；不手工修改生成结果代替源码修复 |
-| `logs/`、`artifacts/` | 运行或验证产物；其中临时输出不作为源码，不默认加入提交 |
+| `.local/sessions/<会话标识>/` | 会话计划、临时脚本、验证报告、截图及衍生产物；Git 忽略 |
+| `logs/` | 应用运行日志与现场截图；Git 忽略，沿用运行时清理规则 |
 | `.venv/`、各类缓存和 `*.egg-info/` | 本地环境、缓存与生成元数据，不作为功能实现位置 |
 
 详细背景见 [README](README.md)、[项目结构说明](docs/PROJECT_STRUCTURE.md)、[DSL 指南](docs/DSL_GUIDE.md) 和 [ymjh_bot 说明](src/ymjh_bot/README.md)。引用其中命令、路径和 API 前，应核对当前源码；发现文档过时时，不复制失效内容。
@@ -92,6 +93,9 @@ def remaining_wait_ms(timeout_ms: int, elapsed_ms: int) -> int:
 
 ## Agent 工作约定
 
+- 每次会话首次产生过程文件前，确定唯一目录 `.local/sessions/YYYYMMDD-HHMMSS-主题-短标识/`（北京时间；有会话 ID 时使用其短标识）。同一会话后续工作复用此目录，不同会话不得共用。创建 `README.md` 记录主题、会话 ID（可获取时）、时间、来源与验证边界，按需分设 `plans/`、`scripts/`、`reports/`、`shots/`、`logs/`、`exports/`；中间物和衍生版本均留在该会话内。
+- 临时探针、一次性测试脚本、排查报告、命令输出和截图不得散落到仓库根、`docs/`、`tests/` 或旧 `artifacts/`。自定义 `RunLogger` 的验证脚本显式指定会话内的日志目录；应用正常运行仍使用 `logs/`。完整规范见 [开发产物管理](docs/DEVELOPMENT_ARTIFACTS.md)。
+- 只有复用价值明确的正式文档、回归测试及其夹具、业务模板才提升到对应源码目录；持续维护的文件不得依赖 Git 忽略目录。历史产物无法确认会话时归入 `legacy-主题`，记录原路径，不虚构会话归属。
 - 默认使用简洁中文沟通。先阅读目标文件、相关调用点与测试，优先用 `rg` 搜索代码和文件，再决定实现方式。
 - 优先复用已有接口和共同执行路径；修复根因，保持命名与代码风格一致。不要为局部需求复制一套 ADB、视觉、runner 或游戏恢复逻辑。
 - 开工时查看 Git 状态，保护用户已有修改。只做任务需要的局部改动，不覆盖未提交工作，不顺手重构、批量格式化或清理无关文件。

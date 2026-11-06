@@ -50,7 +50,7 @@ class BountyPanelSnapshot:
         return tuple(
             card
             for card in self.cards
-            if card.action == "接取" and card.category is not None and card.reward_eligible
+            if card.action == "接取" and card.category == "江湖纪事" and card.reward_eligible
         )
 
 
@@ -78,7 +78,7 @@ class XSRWTask(YmGameTask):
 
     task_key = "XSRW"
     task_name = "悬赏任务"
-    task_description = "接取悬赏盒子 100 以上任务并自动完成聚义平冤/日常副本"
+    task_description = "仅接取奖励盒子 100 以上的日常副本悬赏并自动完成"  # 队列展示的接取范围。
     DEFER_FOREGROUND_WAKE_TO_ON_START = True
     LEAVE_TEAM_ON_START = True
     STARTUP_CLOSE_SETTLE_WAIT_MS = 1000
@@ -287,9 +287,28 @@ class XSRWTask(YmGameTask):
             self.wait(self.PANEL_OPEN_SETTLE_MS)
             snapshot = self._wait_bounty_panel(timeout_ms=self.PANEL_OPEN_TIMEOUT_MS)
 
+        snapshot = self.select_daily_bounty_category()  # 分类选择后的最新卡片状态。
         if refresh:
             return self.refresh_bounty_panel(snapshot)
         return snapshot
+
+    def select_daily_bounty_category(self) -> BountyPanelSnapshot:
+        """在已确认面板上选择日常分类。参数：self 为当前任务。"""
+        if self.find_image(
+            str(self.TEMPLATES_DIR / "xsrw_category_unchecked.png"),
+            threshold=0.95, roi=(770, 110, 55, 60),
+        ):
+            self.click(offset=0)
+            self.wait(self.ACCEPT_SETTLE_MS)
+        if self.find_image(
+            str(self.TEMPLATES_DIR / "xsrw_category_daily.png"),
+            threshold=0.90, roi=(260, 175, 880, 360),
+        ):
+            self.click(offset=0)
+            self.wait(self.ACCEPT_SETTLE_MS)
+            return self._wait_bounty_panel(timeout_ms=self.PANEL_OPEN_TIMEOUT_MS)
+        # 已在分类卡片页时无需反复切换；接取时仍校验类型。
+        return self._wait_bounty_panel(timeout_ms=self.PANEL_OPEN_TIMEOUT_MS)
 
     def refresh_bounty_panel(
         self,
@@ -389,7 +408,7 @@ class XSRWTask(YmGameTask):
         """点击一次接取操作，并在返回前始终刷新。"""
         if card.action != "接取" or card.action_center is None:
             raise ValueError("Only a confirmed accept card can be clicked")
-        if card.category is None or not card.reward_eligible:
+        if card.category != "江湖纪事" or not card.reward_eligible:
             raise ValueError("Refusing to click an unknown or low-reward bounty")
 
         before_pending = len(before.pending_cards)

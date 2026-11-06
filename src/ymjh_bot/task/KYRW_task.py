@@ -41,14 +41,28 @@ class KYRWTask(YmGameTask):
     TEXT_LIEXUE_PREFIX = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_liexue.png")
     TEXT_XUNDAO_PREFIX = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_xundao.png")
     TEXT_DUANXIN_PREFIX = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_duanxin.png")
-    KEYE_SIDEBAR_TEMPLATES = [
+    TEXT_YINFENG_PREFIX = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_yinfeng.png")  # 吟风门派课业的侧栏前缀。
+    KEYE_SIDEBAR_TEMPLATES = [  # 各门派课业的侧栏文本模板。
         TEXT_KEYE_PREFIX,
         TEXT_ZHISHA_PREFIX,
         TEXT_ZHUOJIAN_PREFIX,
         TEXT_LIEXUE_PREFIX,
         TEXT_XUNDAO_PREFIX,
         TEXT_DUANXIN_PREFIX,
+        TEXT_YINFENG_PREFIX,
     ]
+    FULL_TASK_EXPANDED = str(YmGameTask.TEMPLATES_DIR / "kyrw_full_task_expanded.png")  # 完整列表已展开的任务分类。
+    FULL_JIANGHU_COLLAPSED = str(YmGameTask.TEMPLATES_DIR / "kyrw_full_jianghu_collapsed.png")  # 完整列表未展开的江湖分类。
+    FULL_KEYE_PREFIX = str(YmGameTask.TEMPLATES_DIR / "kyrw_full_keye_prefix.png")  # 完整列表中的课业条目前缀。
+    TRACK_UNCHECKED = str(YmGameTask.TEMPLATES_DIR / "kyrw_track_unchecked.png")  # 未显示在任务界面的复选框及文字。
+    TRACK_CHECKED = str(YmGameTask.TEMPLATES_DIR / "kyrw_track_checked.png")  # 已显示在任务界面的复选框及文字。
+    CARD_REFRESH = str(YmGameTask.TEMPLATES_DIR / "kyrw_card_refresh.png")  # 课业选卡面板左下角刷新入口，仅识别，不点击。
+    POINT_FULL_TASK_OPEN = (20, 166)  # 1280×720 主界面的完整任务列表入口，单位像素。
+    POINT_TRACK_CHECKBOX = (677, 582)  # 完整列表的追踪复选框中心，单位像素。
+    ROI_FULL_CATEGORIES = (120, 125, 260, 490)  # 完整列表分类区域，x/y/宽/高，单位像素。
+    ROI_FULL_KEYE_LIST = (135, 220, 240, 395)  # 完整列表课业条目搜索区域，单位像素。
+    ROI_TRACK_CHECKBOX = (650, 550, 210, 60)  # 追踪复选框及文字区域，单位像素。
+    TRACK_CHECKBOX_THRESHOLD = 0.95  # 区分勾选与未勾选所需的最低匹配分数。
     TEXT_EXISTING_KEYE_TOAST = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_existing_keye_toast.png")
     TEXT_KEYE_COMPLETE = str(YmGameTask.TEMPLATES_DIR / "text_kyrw_complete.png")
     ROUTE_MALL = str(YmGameTask.TEMPLATES_DIR / "route_mall.png")
@@ -114,11 +128,13 @@ class KYRWTask(YmGameTask):
         super().__init__(default_interval_ms=default_interval_ms)
         self._item_acquire_rounds = 0
         self._npc_accept_recoveries = 0
+        self._existing_keye_expected = False  # NPC 已确认尚有课业，不能将侧栏缺失视为完成。
 
     def reset_startup_state(self) -> None:
         """在通用启动清理前重置本次运行计数器。"""
         self._item_acquire_rounds = 0
         self._npc_accept_recoveries = 0
+        self._existing_keye_expected = False
 
     def after_startup_panel_close(self) -> None:
         """每轮启动清理后关闭科举完成弹窗。"""
@@ -259,6 +275,10 @@ class KYRWTask(YmGameTask):
         if self.close_keye_completion_dialog_if_visible():
             return self.KEYE_FLOW_STATE_HANDLED
         if self.cancel_refresh_confirm_if_visible():
+            return self.KEYE_FLOW_STATE_HANDLED
+        if self.find_image_once(self.CARD_REFRESH, threshold=0.9, roi=(190, 570, 160, 80)):
+            if not self.try_select_default_keye_card():
+                raise RuntimeError("课业选卡面板可见，但选择后未确认课业追踪或剧情")
             return self.KEYE_FLOW_STATE_HANDLED
         if self.handle_yinshi_task_if_visible():
             return self.KEYE_FLOW_STATE_HANDLED
@@ -569,7 +589,22 @@ class KYRWTask(YmGameTask):
                 missing_confirmations = 0
                 continue
 
-            if self.click_keye_task_from_sidebar(max_scrolls=2, required=False):
+            try:
+                sidebar_found = self.click_keye_task_from_sidebar(  # 本轮是否找到并点击课业追踪。
+                    max_scrolls=2, required=False,
+                )
+            except TaskSidebarStateError:
+                if self.find_image_once(
+                    self.SCENE_LOADING_LOGO_TEMPLATES,
+                    threshold=self.SCENE_LOADING_THRESHOLD, roi=self.ROI_SCENE_LOADING_LOGO,
+                ):
+                    self._log("课业侧栏扫描期间进入过图，返回寻路等待后重试")
+                    continue
+                if self._handle_keye_flow_state_once() == self.KEYE_FLOW_STATE_HANDLED:
+                    self._log("课业侧栏扫描期间出现交互面板，处理后继续")
+                    continue
+                raise
+            if sidebar_found:
                 missing_confirmations = 0
                 continue
 
@@ -579,6 +614,8 @@ class KYRWTask(YmGameTask):
                 f"({missing_confirmations}/{self.KEYE_TASK_MISSING_CONFIRMATIONS})"
             )
             if missing_confirmations >= self.KEYE_TASK_MISSING_CONFIRMATIONS:
+                if self._existing_keye_expected:
+                    raise RuntimeError("NPC 确认已有课业，但恢复追踪后仍找不到任务，停止重复接取")
                 self._log("课业追踪已稳定消失，进入完成验证")
                 return
 
@@ -629,6 +666,9 @@ class KYRWTask(YmGameTask):
         ):
             self._log("检测到已有当前布置课业，关闭面板后继续执行")
             self.close_all_panels(timeout_ms=3000)
+            self._existing_keye_expected = True
+            if not self.find_keye_task_in_sidebar(max_scrolls=5):
+                self.restore_hidden_keye_tracking()
             return True
 
         self.close_all_panels(timeout_ms=3000)
@@ -643,8 +683,55 @@ class KYRWTask(YmGameTask):
 
         self._log("点击任务栏课业任务")
         self.click(offset=0)
+        self._existing_keye_expected = False
         self.wait(1500)
         return True
+
+    def restore_hidden_keye_tracking(self) -> None:
+        """在 NPC 确认已有课业后，从完整任务列表恢复隐藏追踪。
+
+        参数：
+            self：当前课业任务实例；恢复失败交给 runner 重试，不再次接取。
+        """
+        self.ensure_left_task_sidebar_visible()
+        self.click_point(*self.POINT_FULL_TASK_OPEN, offset=0)
+        self.wait(800)
+        if not self._match_task_fullscreen_panel(self.screenshot()).found:
+            raise RuntimeError("恢复隐藏课业失败：未确认完整任务面板")
+        if self.find_image_once(self.FULL_TASK_EXPANDED, threshold=0.85, roi=self.ROI_FULL_CATEGORIES):
+            self.click(offset=0)
+            self.wait(400)
+        if self.find_image_once(self.FULL_JIANGHU_COLLAPSED, threshold=0.85, roi=self.ROI_FULL_CATEGORIES):
+            self.click(offset=0)
+            self.wait(400)
+        for page_index in range(8):  # page_index：完整列表从零开始的扫描页号，最多八页。
+            match = self._vision.match_template(  # match：当前完整列表的课业条目匹配结果。
+                self.screenshot(), self.FULL_KEYE_PREFIX,
+                threshold=0.9, roi=self.ROI_FULL_KEYE_LIST,
+            )
+            if match.found:
+                self.click_point(*match.center, offset=0)
+                self.wait(500)
+                if self.find_image_once(
+                    self.TRACK_UNCHECKED, threshold=self.TRACK_CHECKBOX_THRESHOLD,
+                    roi=self.ROI_TRACK_CHECKBOX,
+                ):
+                    self.click_point(*self.POINT_TRACK_CHECKBOX, offset=0)
+                    self.wait(500)
+                if not self.wait_image_appear(
+                    self.TRACK_CHECKED, timeout_ms=2000,
+                    threshold=self.TRACK_CHECKBOX_THRESHOLD, roi=self.ROI_TRACK_CHECKBOX,
+                ):
+                    raise RuntimeError("恢复隐藏课业失败：未确认显示在任务界面已勾选")
+                self.close_all_panels(timeout_ms=3000)
+                if not self.find_keye_task_in_sidebar(max_scrolls=5):
+                    raise RuntimeError("恢复隐藏课业失败：勾选后侧栏仍无支持的课业追踪")
+                self._log("已从完整任务列表恢复课业追踪")
+                return
+            if page_index < 7:
+                self.swipe(250, 570, 250, 310, duration_ms=500)
+                self.wait(500)
+        raise RuntimeError("NPC 确认已有课业，但完整任务列表未找到课业，停止重复接取")
 
     def find_keye_task_in_sidebar(self, *, max_scrolls: int) -> bool:
         """在江湖任务面板中查找科举任务文本。"""

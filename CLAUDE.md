@@ -12,6 +12,7 @@
 
 ## 开发规范
 
+- 会话过程文件统一存放于 `.local/sessions/<会话标识>/`，遵守根目录 `AGENTS.md` 和 [开发产物管理](docs/DEVELOPMENT_ARTIFACTS.md)；不要向 `docs/` 或旧 `artifacts/` 写入临时报告与探针。
 - 使用 `uv` 管理依赖和虚拟环境
 - 子 bot 任务脚本统一从 `botCore` 导入 DSL API
 - 一梦江湖任务放在 `src/ymjh_bot/task/`
